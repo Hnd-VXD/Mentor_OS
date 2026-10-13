@@ -124,7 +124,18 @@ class Installer
         if (!File.Exists(Path.Combine(unpacked, @"bin\qemu-system-x86_64w.exe")))
             throw new SetupException("What arrived as Mentor's QEMU is not it.");
         if (Directory.Exists(target)) Directory.Delete(target, true);
-        Directory.Move(unpacked, target);
+        // A virus scanner reads programs that have just been unpacked, and while it holds one
+        // the folder cannot be renamed ("access denied"). It lets go within seconds: wait for it.
+        for (int attempt = 1; ; attempt++)
+        {
+            try { Directory.Move(unpacked, target); break; }
+            catch (Exception e)
+            {
+                if (!(e is IOException || e is UnauthorizedAccessException) || attempt >= 60) throw;
+                if (Cancelled) throw new OperationCanceledException();
+                System.Threading.Thread.Sleep(1000);
+            }
+        }
         File.Delete(archive);
         Step(0, "done");
     }
