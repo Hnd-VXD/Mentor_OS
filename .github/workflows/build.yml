@@ -1,0 +1,50 @@
+# Builds Mentor.exe and MentorSetup.exe from the source in launcher/, on GitHub's own
+# machines, so that what is released can be shown to come from this repository.
+# The programs and their SHA-256 are kept with each run ("Artifacts").
+#
+# Signing is the step marked below. It is off until the project has a certificate
+# (SignPath Foundation signs for open-source projects, and only what a workflow like
+# this one built). MentorSetup.exe is replaced in a release only when it has to be:
+# Windows trusts a file more the more often the same one is downloaded.
+name: Build the launcher and the setup
+
+on:
+  push:
+    branches: [main]
+    paths: ['launcher/**', '.github/workflows/build.yml']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          ./launcher/build-launcher.ps1 -Out (Join-Path $PWD 'dist\Mentor.exe')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./launcher/build-setup.ps1 -Out (Join-Path $PWD 'dist\MentorSetup.exe')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Signing goes here, before the checksums:
+      #   - uses: signpath/github-action-submit-signing-request@v1
+      #     with: { ... }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Tee-Object dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mentor-windows
+          path: dist/
