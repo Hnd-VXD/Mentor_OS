@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Mentor watcher a few minutes after login and a few times a day
+
+[Timer]
+OnStartupSec=3min
+OnUnitInactiveSec=6h
+
+[Install]
+WantedBy=timers.target

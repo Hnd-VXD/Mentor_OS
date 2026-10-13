@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mentor": {
+      "command": "/usr/local/bin/mentor-mcp",
+      "env": {
+        "MENTOR_SANDBOX": "${MENTOR_SANDBOX:-default}"
+      }
+    }
+  }
+}

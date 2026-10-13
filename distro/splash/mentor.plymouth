@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Mentor
+Description=One of the Mentor emblems, a different one each boot, over a spinner.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/mentor
+ScriptFile=/usr/share/plymouth/themes/mentor/mentor.script

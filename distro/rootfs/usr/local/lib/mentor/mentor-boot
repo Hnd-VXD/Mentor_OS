@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# Entry point of the safe start-up steps (see mentor_boot.py), for systemd and pacman.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_boot
+
+sys.exit(mentor_boot.main(sys.argv[1:]))

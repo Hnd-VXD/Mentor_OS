@@ -1,0 +1,13 @@
+# After every transaction (and after mkinitcpio's own hook): a new kernel or
+# initramfs is tried once at the next start instead of replacing the one that works.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Noting what the next start has to prove...
+When = PostTransaction
+Exec = /usr/local/lib/mentor/mentor-boot arm

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Mentor Assistant
+Comment=Puts the assistant on the desktop
+Exec=/usr/local/bin/mentor-chat
+NoDisplay=true
+X-GNOME-Autostart-Phase=Application

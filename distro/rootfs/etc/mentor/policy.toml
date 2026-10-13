@@ -1,0 +1,32 @@
+# Policy for the privileged side of the agent layer (read by root, not by the agent).
+# Every privileged action also needs the user's approval in the polkit dialog.
+
+[packages]
+# The agent may not remove these.
+protected = [
+    "base", "linux", "systemd", "pacman", "glibc", "bash", "python",
+    "sudo", "polkit", "networkmanager", "gdm", "gnome-shell",
+]
+
+[services]
+# The agent may not stop, disable or mask these.
+protected = ["gdm.service", "dbus.service", "dbus-broker.service", "polkit.service", "systemd-logind.service"]
+
+[files]
+# Extra paths file_write may not touch. The agent layer itself, sudoers, the
+# account databases and polkit are always protected and need not be listed.
+protected = ["/boot/EFI", "/etc/fstab"]
+
+[root_shell]
+# Arbitrary root commands. Set to false to limit the agent to the structured tools.
+enabled = true
+# Regexes matched against the command. A safety net against obvious accidents,
+# not a security boundary: the approval dialog is.
+deny_patterns = [
+    'rm\s+(-\w+\s+)*-\w*r\w*\s+(-\w+\s+)*/(\s|\*|$)',
+    '\bmkfs(\.\w+)?\b',
+    '\bdd\b.*\bof=/dev/',
+    '>\s*/dev/(sd|vd|nvme)',
+    # The agent may not rewrite the rules it runs under.
+    '/etc/mentor|/usr/local/(lib|bin)/mentor|polkit-1|/etc/sudoers|/etc/shadow',
+]

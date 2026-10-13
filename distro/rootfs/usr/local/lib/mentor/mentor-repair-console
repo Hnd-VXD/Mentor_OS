@@ -1,0 +1,11 @@
+#!/bin/sh
+# The repair console: logs in the user the desktop logs in by itself (or the first ordinary
+# user), on the first console. Run by mentor-repair-console.service.
+user=$(sed -n 's/^ *AutomaticLogin *= *//p' /etc/gdm/custom.conf 2>/dev/null | head -1)
+id "$user" >/dev/null 2>&1 || user=$(id -nu 1000 2>/dev/null)
+# Larger letters than the console's own, where the kernel has them: the window is a whole screen.
+setfont -d 2>/dev/null || true
+if [ -n "$user" ]; then
+    exec /usr/bin/agetty --autologin "$user" --noclear tty1 linux
+fi
+exec /usr/bin/agetty --noclear tty1 linux

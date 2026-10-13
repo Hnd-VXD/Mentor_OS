@@ -1,0 +1,86 @@
+# Packages installed on top of the base system, one per line.
+# The disk image adds: base linux mkinitcpio. The ISO adds these to archiso's releng list.
+
+# Core
+base-devel
+devtools
+sudo
+polkit
+networkmanager
+nano
+git
+github-cli
+openssh
+python
+nodejs
+npm
+flatpak
+qemu-guest-agent
+plymouth
+librsvg
+
+# Assistant: its window, its entry in Files' right-click menu, its notifications
+libadwaita
+python-nautilus
+libnotify
+pacman-contrib
+
+# Shared clipboard (mentor-clipboard runs as a GTK 3 client on Xwayland)
+python-gobject
+gtk3
+xorg-xwayland
+
+# Audio
+pipewire
+pipewire-pulse
+wireplumber
+
+# GNOME
+gdm
+gnome-shell
+gnome-shell-extension-dash-to-panel
+gnome-shell-extension-appindicator
+gnome-control-center
+gnome-console
+gnome-text-editor
+gnome-system-monitor
+gnome-tweaks
+gnome-backgrounds
+gnome-keyring
+nautilus
+loupe
+xdg-user-dirs
+xdg-desktop-portal-gnome
+mesa
+vulkan-icd-loader
+vulkan-tools
+vulkan-virtio
+noto-fonts
+noto-fonts-emoji
+
+gvfs
+gvfs-mtp
+ttf-liberation
+
+# Audio and video codecs
+ffmpeg
+gst-plugins-good
+gst-plugins-bad
+gst-plugins-ugly
+gst-libav
+
+# Archives
+file-roller
+zip
+unzip
+7zip
+unrar
+
+# Apps
+chromium
+opencode
+showtime
+decibels
+papers
+gnome-calculator
+gnome-disk-utility

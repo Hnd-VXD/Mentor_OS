@@ -1,0 +1,330 @@
+#!/usr/bin/python3
+"""Command line front end of the Mentor agent layer: try tools by hand, connect an agent, read the audit log."""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_core
+import mentor_tools
+
+MCP_SERVER = "/usr/local/bin/mentor-mcp"
+ACCEPTED = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mentor", "verify-accepted.json")
+SOURCE = "/etc/mentor/source"  # every file of Mentor's as it was built, and a list of what each should contain
+CONNECT = {
+    "claude": ["claude", "mcp", "add", "--scope", "user", "mentor", "--", MCP_SERVER],
+    "codex": ["codex", "mcp", "add", "mentor", "--", MCP_SERVER],
+    "gemini": ["agy", "mcp", "add", "mentor", MCP_SERVER],  # Google's Antigravity CLI
+}
+
+
+def cmd_tools(args):
+    for name, (description, schema, _) in mentor_tools.TOOLS.items():
+        params = ", ".join(schema["properties"]) or "-"
+        print(f"{name}\n    {description}\n    arguments: {params}")
+
+
+def cmd_call(args):
+    try:
+        arguments = json.loads(args.arguments)
+    except ValueError as e:
+        sys.exit(f"arguments must be JSON: {e}")
+    ok, text = mentor_tools.call(args.tool, arguments)
+    print(text)
+    sys.exit(0 if ok else 1)
+
+
+def cmd_connect(args):
+    argv = CONNECT[args.agent]
+    try:
+        sys.exit(subprocess.run(argv).returncode)
+    except FileNotFoundError:
+        sys.exit(f"'{argv[0]}' is not installed. Install it, then run this again.\n"
+                 f"Any other MCP-capable agent works too: register the stdio server {MCP_SERVER}")
+
+
+def run_tool(name, arguments):
+    ok, text = mentor_tools.call(name, arguments)
+    if not ok:
+        sys.exit(text)
+    print(text)
+
+
+def cmd_scale(args):
+    """Scale the desktop the way the host's screen is scaled, so that it is drawn sharp.
+
+    The launcher says how much (it reaches /run/mentor/host-scale, see mentor_boot.py). The
+    shell goes back to its own idea of the scale whenever the window, and with it the
+    resolution, changes, so the mentor extension runs this again each time. What is set is
+    kept (monitors.xml), so the next start in a window of the same size begins with it and
+    nothing has to change in front of the user. Does nothing where no launcher said anything.
+
+    The shell asks the user whether to keep a display setting that is to last. With --keep,
+    which the extension passes, that question is the extension's to answer: it is told so
+    through /run/mentor/scale-kept. Without it the setting is for this session only.
+    """
+    import glob
+    import re
+    try:
+        with open("/run/mentor/host-scale") as f:
+            wanted = float(f.read())
+    except (OSError, ValueError):
+        return
+    # A scale the user chose in Settings goes before the host's (the extension notes it).
+    try:
+        with open(os.path.expanduser("~/.config/mentor/scale")) as f:
+            wanted = float(f.read())
+    except (OSError, ValueError):
+        pass
+    shown = subprocess.run(["gdctl", "show"], capture_output=True, text=True).stdout
+    monitor, scale = re.search(r"Monitor (\S+)", shown), re.search(r"Scale: ([\d.]+)", shown)
+    current = re.search(r"Current mode\s*\n\W*(\d+x\d+)@", shown)
+    if not monitor or not scale:
+        return
+    # What is kept names a resolution too. When that is one the screen always offers, the
+    # shell holds on to it in a window of another size: back to the one the window asks
+    # for, which the kernel lists first.
+    mode = []
+    for path in glob.glob(f"/sys/class/drm/card*-{monitor.group(1)}/modes"):
+        try:
+            with open(path) as f:
+                asked = f.readline().strip()
+        except OSError:
+            continue
+        if asked and current and asked != current.group(1):
+            modes = subprocess.run(["gdctl", "show", "--modes"], capture_output=True, text=True).stdout
+            if found := re.search(rf"\b{re.escape(asked)}@[\d.]+", modes):
+                mode = ["--mode", found.group(0)]
+    # A scale the resolution cannot take (2 with an odd height, say) is refused; then the
+    # nearest whole one, and failing that it stays as it is.
+    for candidate in dict.fromkeys((wanted, float(round(wanted)))):
+        if not mode and abs(float(scale.group(1)) - candidate) < 0.01:
+            return
+        keep = []
+        if args.keep:
+            keep = ["--persistent"]
+            open("/run/mentor/scale-kept", "w").close()
+        if subprocess.run(["gdctl", "set", *keep, "--logical-monitor", "--primary",
+                           "--monitor", monitor.group(1), *mode, "--scale", f"{candidate:g}"],
+                          capture_output=True).returncode == 0:
+            return
+
+
+def cmd_doctor(args):
+    """Say which parts of Mentor's desktop work right now (they are described in /etc/mentor/DESKTOP.md)."""
+    import re
+    extension = "mentor@mentor.local"
+    lines, bad = [], 0
+
+    def out(*argv):
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=20).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    def say(ok, what, detail=""):
+        nonlocal bad
+        bad += not ok
+        lines.append(f"{'ok    ' if ok else 'BROKEN'} {what}" + (f": {detail}" if detail else ""))
+
+    shell = (re.search(r"[\d.]+", out("gnome-shell", "--version")) or [""])[0]
+    try:
+        with open(f"/usr/share/gnome-shell/extensions/{extension}/metadata.json") as f:
+            made_for = json.load(f).get("shell-version", [])
+    except (OSError, ValueError):
+        made_for = []
+    say(shell.split(".")[0] in made_for, "GNOME Shell version",
+        f"{shell or 'unknown'}; Mentor's extension is made for {', '.join(made_for) or 'none'}")
+    info = out("gnome-extensions", "info", extension)
+    state = (re.search(r"State: *(\S+)", info) or ["", "not found"])[1]
+    say(state in ("ACTIVE", "ENABLED"), "Mentor's extension", state)
+    status = out("gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/mentor/Shell",
+                 "--method", "org.mentor.Shell.Status")
+    try:
+        report = json.loads(re.search(r"\{.*\}", status.replace("\\\"", "\"").replace("\\'", "'")).group(0))
+    except (AttributeError, ValueError):
+        report = None
+    if report is None:
+        say(False, "the extension's own report", "it does not answer (an extension from before it could, or not loaded)")
+    else:
+        for part, how in report.get("parts", {}).items():
+            say(how == "ok", f"part: {part}", "" if how == "ok" else how)
+        say(bool(report.get("assistant_on_desktop")), "the assistant is the desktop")
+        taskbar = "dash-to-panel@jderose9.github.com" in out("gsettings", "get", "org.gnome.shell", "enabled-extensions")
+        if taskbar:
+            say(report.get("taskbar_panels", 0) > 0, "the taskbar (Dash to Panel)",
+                "" if report.get("taskbar_panels") else "enabled, but it has no panel")
+        else:
+            lines.append("-      the taskbar is switched off")
+    say(os.path.exists("/run/mentor/desktop-ok"), "this start was reported as working")
+    say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip()), "the assistant is running")
+    say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "lib/mentor/mentor-clipboard").strip()),
+        "the clipboard shared with the host")
+    errors = [line for line in out("journalctl", "-b", "--no-pager", "-o", "cat", "_COMM=gnome-shell").splitlines()
+              if "mentor" in line.lower() and ("error" in line.lower() or "could not" in line)]
+    say(not errors, "errors of Mentor's in the shell's log", errors[-1][:200] if errors else "")
+    chat = out("journalctl", "-b", "--no-pager", "-o", "cat", f"_UID={os.getuid()}")
+    trace = re.findall(r"Traceback \(most recent call last\):(?:\n.*){1,12}", chat)
+    trace = [t for t in trace if "mentor" in t]
+    say(not trace, "errors of the assistant's", trace[-1].strip().splitlines()[-1][:200] if trace else "")
+    print("\n".join(lines))
+    print(f"\n{bad} thing(s) need attention. What each is and how to make it again: /etc/mentor/DESKTOP.md"
+          if bad else "\nEverything of Mentor's desktop is in place.")
+    sys.exit(1 if bad else 0)
+
+
+def differing():
+    """Mentor's own files that are gone or no longer what was built: [(path, how)], where how
+    is "missing", "changed", "accepted" (changed, and said to be meant so: verify --accept) or
+    "cannot be read (why)"."""
+    import hashlib
+    found = []
+    try:
+        with open(os.path.join(SOURCE, "MANIFEST.sha256")) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        sys.exit(f"There is no list of Mentor's files at {SOURCE}: this system was built before there was one.")
+    try:
+        with open(ACCEPTED) as f:
+            accepted = json.load(f)
+    except (OSError, ValueError):
+        accepted = {}
+    for line in lines:
+        wanted, _, path = line.partition("  ")
+        try:
+            with open(path, "rb") as f:
+                now = hashlib.sha256(f.read()).hexdigest()
+            if now != wanted:
+                found.append((path, "accepted" if isinstance(accepted, dict) and accepted.get(path) == now else "changed", now))
+        except FileNotFoundError:
+            found.append((path, "missing", None))
+        except OSError as e:
+            found.append((path, f"cannot be read ({e.strerror})", None))
+    return found
+
+
+def cmd_verify(args):
+    """Compare every file Mentor added to the system with the copy kept from when it was built
+    (/etc/mentor/source; see /etc/mentor/REBUILD.md)."""
+    found = differing()
+    if args.accept:
+        # The changed files are as they are meant to be from now on (a part adapted to a new
+        # GNOME, say). A file that changes again after this is reported again.
+        os.makedirs(os.path.dirname(ACCEPTED), exist_ok=True)
+        with open(ACCEPTED, "w") as f:
+            json.dump({path: now for path, how, now in found if now}, f, indent=1)
+        found = [(path, "accepted" if now else how, now) for path, how, now in found]
+    for path, how, _now in found:
+        print(f"{how:<8} {path}")
+    wrong = [path for path, how, _now in found if how != "accepted"]
+    if not found:
+        print("Every file of Mentor's is as it was built.")
+    elif not wrong:
+        print(f"\n{len(found)} file(s) differ from what was built, and that was said to be meant so.")
+    if not wrong:
+        return
+    print(f"\n{len(wrong)} file(s). To put one back as it was built: sudo mentor restore PATH   (all of them: --all).\n"
+          f"When a file was changed on purpose and works, say so with: mentor verify --accept   (and write why in "
+          f"~/.local/share/mentor/notes.md).\nWhat each file is: /etc/mentor/REBUILD.md")
+    sys.exit(1)
+
+
+def cmd_notice(args):
+    """Tell the user something in the assistant's chat: a yellow card for a warning, a red one
+    for a problem. For what the agent builds to speak with (see /etc/mentor/ASSISTANT.md)."""
+    print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt))
+
+
+def cmd_restore(args):
+    """Put files of Mentor's back as they were built. For the user, as root: the agent may not
+    write most of them, and should not be the one to undo a change to its own rules."""
+    import shutil
+    if os.geteuid() != 0:
+        sys.exit("Run it as root: sudo mentor restore " + ("--all" if args.all else " ".join(args.paths) or "PATH"))
+    known = {path: how for path, how, _now in differing() if how != "accepted"}
+    paths = list(known) if args.all else [os.path.abspath(path) for path in args.paths]
+    if not paths:
+        sys.exit("Nothing to restore." if args.all else "Name the files, or --all. mentor verify lists what differs.")
+    for path in paths:
+        kept = os.path.join(SOURCE, "rootfs", path.lstrip("/"))
+        if not os.path.isfile(kept):
+            print(f"not one of Mentor's files: {path}")
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):  # what is there now is kept beside it, in case it was wanted
+            shutil.copy2(path, path + ".before-restore")
+        shutil.copy2(kept, path)  # with its mode
+        os.chown(path, 0, 0)
+        print(f"restored {path}")
+    print("The assistant and the desktop take the restored files at the next login.")
+
+
+def cmd_log(args):
+    try:
+        with open(mentor_core.AUDIT_PATH) as f:
+            lines = f.readlines()[-args.lines:]
+    except FileNotFoundError:
+        lines = []
+    for line in lines:
+        r = json.loads(line)
+        print(f"{r['time']}  {r['outcome']:<10} exit={r['exit_code']}  {r['action']} {json.dumps(r['args'])}")
+    if not lines:
+        print("No privileged actions recorded yet.")
+
+
+parser = argparse.ArgumentParser(prog="mentor", description=__doc__)
+sub = parser.add_subparsers(required=True)
+p = sub.add_parser("tools", help="list the tools an agent gets")
+p.set_defaults(func=cmd_tools)
+p = sub.add_parser("call", help="call one tool, e.g. mentor call package_search '{\"query\": \"gimp\"}'")
+p.add_argument("tool")
+p.add_argument("arguments", nargs="?", default="{}")
+p.set_defaults(func=cmd_call)
+p = sub.add_parser("connect", help="register the tools with an agent CLI")
+p.add_argument("agent", choices=sorted(CONNECT))
+p.set_defaults(func=cmd_connect)
+p = sub.add_parser("window", help="full screen or a normal window on the host")
+p.add_argument("mode", choices=sorted(mentor_tools.WINDOW_MODES))
+p.set_defaults(func=lambda args: run_tool("window_mode", {"mode": args.mode}))
+p = sub.add_parser("layout", help="desktop layout: a permanent taskbar, or stock GNOME")
+p.add_argument("layout", choices=sorted(mentor_tools.LAYOUTS))
+p.set_defaults(func=lambda args: run_tool("desktop_layout", {"layout": args.layout}))
+p = sub.add_parser("desktop", help="go to the assistant on the desktop, or back to the windows")
+p.set_defaults(func=lambda args: sys.exit(subprocess.run(
+    ["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/mentor/Shell",
+     "--method", "org.mentor.Shell.Toggle"], stdout=subprocess.DEVNULL).returncode))
+p = sub.add_parser("changes", help="list the changes applied through the sandbox")
+p.set_defaults(func=lambda args: run_tool("change_list", {}))
+p = sub.add_parser("undo", help="undo one applied change")
+p.add_argument("id")
+p.set_defaults(func=lambda args: run_tool("change_undo", {"id": args.id}))
+p = sub.add_parser("boot", help="how start-up stands: what works, what is on trial, what was restored")
+p.set_defaults(func=lambda args: run_tool("boot_status", {}))
+p = sub.add_parser("scale", help="scale the desktop as the host's screen is scaled")
+p.add_argument("--keep", action="store_true", help="for later sessions too (for the shell extension)")
+p.set_defaults(func=cmd_scale)
+p = sub.add_parser("doctor", help="say which parts of Mentor's desktop work right now")
+p.set_defaults(func=cmd_doctor)
+p = sub.add_parser("repair", help="talk to the agent on this console, to mend Mentor when its desktop does not come up")
+p.set_defaults(func=lambda args: sys.exit(__import__("mentor_repair").main()))
+p = sub.add_parser("verify", help="say which of Mentor's own files are missing or changed since it was built")
+p.add_argument("--accept", action="store_true", help="the files that are changed now are meant to be so")
+p.set_defaults(func=cmd_verify)
+p = sub.add_parser("notice", help="put a card into the assistant's chat: a warning (yellow) or a problem (red)")
+p.add_argument("level", choices=("warning", "problem"))
+p.add_argument("title")
+p.add_argument("text", nargs="?", default="")
+p.add_argument("--prompt", help="what goes to the agent when the user presses Let Mentor look")
+p.set_defaults(func=cmd_notice)
+p = sub.add_parser("restore", help="put files of Mentor's back as they were built (as root)")
+p.add_argument("paths", nargs="*")
+p.add_argument("--all", action="store_true", help="every file that verify lists")
+p.set_defaults(func=cmd_restore)
+p = sub.add_parser("log", help="show the audit log of privileged actions")
+p.add_argument("-n", "--lines", type=int, default=20)
+p.set_defaults(func=cmd_log)
+
+args = parser.parse_args()
+args.func(args)

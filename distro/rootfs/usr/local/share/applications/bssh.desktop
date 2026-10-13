@@ -1,0 +1,5 @@
+# Hides the launcher of a developer tool that came in as a dependency.
+[Desktop Entry]
+Type=Application
+Name=Avahi SSH Server Browser
+Hidden=true

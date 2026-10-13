@@ -1,0 +1,70 @@
+#!/usr/bin/python3
+"""MCP server (stdio) that exposes the Mentor tools to any agent: Claude Code, Codex, ..."""
+import base64
+import json
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_tools
+
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+INSTRUCTIONS_PATH = "/etc/mentor/AGENT.md"
+
+
+def instructions():
+    try:
+        with open(INSTRUCTIONS_PATH) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def handle(method, params):
+    if method == "initialize":
+        wanted = params.get("protocolVersion")
+        return {
+            "protocolVersion": wanted if wanted in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "mentor", "version": "0.1.0"},
+            "instructions": instructions(),
+        }
+    if method == "ping":
+        return {}
+    if method == "tools/list":
+        return {"tools": [
+            {"name": name, "description": description, "inputSchema": schema}
+            for name, (description, schema, _) in mentor_tools.TOOLS.items()
+        ]}
+    if method == "tools/call":
+        ok, text, image = mentor_tools.call_with_image(params.get("name"), params.get("arguments"))
+        content = [{"type": "text", "text": text}]
+        if image:
+            content.append({"type": "image", "mimeType": "image/jpeg", "data": base64.b64encode(image).decode()})
+        return {"content": content, "isError": not ok}
+    raise LookupError(method)
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        else:
+            if "id" not in message:
+                continue  # notification
+            reply = {"jsonrpc": "2.0", "id": message["id"]}
+            try:
+                reply["result"] = handle(message.get("method"), message.get("params") or {})
+            except LookupError:
+                reply["error"] = {"code": -32601, "message": f"method not found: {message.get('method')}"}
+            except Exception as e:
+                reply["error"] = {"code": -32603, "message": str(e)}
+        sys.stdout.write(json.dumps(reply) + "\n")
+        sys.stdout.flush()
+
+
+main()

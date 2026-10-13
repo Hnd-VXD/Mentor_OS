@@ -1,0 +1,48 @@
+#!/bin/sh
+# Signs the user in to the engine behind Claude, ChatGPT or Gemini, after putting the engine on
+# this user's account if it is not on the computer yet. Run in a terminal by the assistant.
+#
+#     mentor-engine claude|codex|gemini
+PATH="$HOME/.local/bin:$PATH"
+npm_install() { npm install -g --prefix "$HOME/.local" "$@"; }
+hint=
+signed_in=
+case $1 in
+    claude) name="Claude Code"
+            # Its install script fetches the native binary, which npm only runs when allowed by name.
+            install() { npm_install --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code; }
+            set -- claude auth login ;;
+    codex)  name="Codex"; install() { npm_install @openai/codex; }; set -- codex login ;;
+    gemini) name="Google's Antigravity CLI"
+            # Google's own installer puts it in ~/.local/bin. (The Gemini CLI, which npm has,
+            # stopped serving personal accounts in June 2026.)
+            install() { curl -fsSL https://antigravity.google/cli/install.sh | bash; }
+            # It has no command for signing in: started without an account, it asks, and then
+            # stays open for a conversation. It lists its models only to someone signed in.
+            hint="Sign in with your Google account when it asks. This window closes by itself after that."
+            signed_in="agy models"
+            set -- agy ;;
+    *)      echo "usage: mentor-engine claude|codex|gemini" >&2; exit 2 ;;
+esac
+if ! command -v "$1" >/dev/null; then
+    echo "Downloading $name. This takes a minute."
+    if ! install || ! command -v "$1" >/dev/null; then
+        echo
+        echo "$name could not be downloaded. Check the network and try again."
+        echo "Press Enter to close."
+        read -r _
+        exit 1
+    fi
+    echo
+fi
+if [ -n "$hint" ]; then
+    echo "$hint"
+    echo
+fi
+if [ -n "$signed_in" ]; then
+    # What is started below takes this script's place, and its number: it is closed from
+    # here once the sign-in has gone through, so that the user is back with the assistant.
+    ( while kill -0 $$ 2>/dev/null && ! $signed_in >/dev/null 2>&1 </dev/null; do sleep 4; done
+      sleep 2; kill $$ 2>/dev/null ) &
+fi
+exec "$@"

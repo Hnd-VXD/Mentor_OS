@@ -1,0 +1,60 @@
+# System-wide GNOME defaults. Users (and the agent) override these per user.
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+# The VM has no GPU acceleration; animations are drawn by the CPU and make it feel slow.
+enable-animations=false
+
+# Minimize and maximize buttons next to close, as on Ubuntu and Windows.
+[org/gnome/desktop/wm/preferences]
+button-layout='appmenu:minimize,maximize,close'
+
+# A permanent taskbar at the bottom (Dash to Panel) with tray icons, instead of
+# GNOME's top bar and a dock that only shows in the overview.
+[org/gnome/shell/extensions/dash-to-panel]
+hide-overview-on-startup=true
+
+[org/gnome/shell]
+enabled-extensions=['mentor@mentor.local', 'dash-to-panel@jderose9.github.com', 'appindicatorsupport@rgcjonas.gmail.com']
+favorite-apps=['chromium.desktop','org.gnome.Nautilus.desktop', 'org.gnome.Console.desktop', 'org.gnome.TextEditor.desktop']
+
+# Super+A goes to the assistant on the desktop, and back, instead of opening the
+# app grid (still on Super, then the grid button).
+[org/gnome/shell/keybindings]
+toggle-application-view=@as []
+# Windows keeps the Print Screen key for itself, so the VM never sees it.
+show-screenshot-ui=['Print', '<Shift><Super>s']
+
+[org/gnome/settings-daemon/plugins/media-keys]
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/']
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor]
+name='Mentor Assistant'
+command='/usr/local/bin/mentor desktop'
+binding='<Super>a'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window]
+name='Mentor full screen'
+command='/usr/local/bin/mentor window toggle'
+binding='<Super>F11'
+
+# No fundraising notification from GNOME on a system that is not GNOME's own.
+[org/gnome/settings-daemon/plugins/housekeeping]
+donation-reminder-enabled=false
+
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+
+[org/gnome/desktop/screensaver]
+lock-enabled=false
+picture-uri='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
+
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-type='nothing'
+
+# The default wallpaper; the others of ours are offered in Settings > Appearance.
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
+picture-uri-dark='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
+picture-options='zoom'
+primary-color='#16171b'

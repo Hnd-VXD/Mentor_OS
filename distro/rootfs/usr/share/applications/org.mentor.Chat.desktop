@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Mentor Assistant
+Comment=The system agent. It lives on the desktop: Super+A takes you to it
+Exec=/usr/local/bin/mentor-chat
+Icon=org.mentor.Chat
+Terminal=false
+NoDisplay=true

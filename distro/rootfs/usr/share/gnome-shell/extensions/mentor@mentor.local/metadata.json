@@ -1,0 +1,6 @@
+{
+  "uuid": "mentor@mentor.local",
+  "name": "Mentor",
+  "description": "Mentor switches in the system menu: full screen and the taskbar.",
+  "shell-version": ["50", "51", "52"]
+}

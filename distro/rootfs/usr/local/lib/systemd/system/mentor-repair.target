@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor repair: the bare minimum, and the agent on a text console
+Documentation=file:///etc/mentor/REPAIR.md
+# Everything but the desktop: the network, the services, a console. The launcher asks for it
+# with systemd.unit=mentor-repair.target on the kernel's command line (its "Repair" start);
+# from a running system: systemctl isolate mentor-repair.target
+Requires=multi-user.target
+Wants=mentor-repair-console.service
+Conflicts=rescue.service rescue.target
+After=multi-user.target rescue.service rescue.target
+AllowIsolate=yes

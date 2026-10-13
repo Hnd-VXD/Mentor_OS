@@ -1,0 +1,103 @@
+#!/usr/bin/python3
+"""How much of the account's allowance is used, for the assistant to show.
+
+    mentor-usage codex|gemini
+
+prints {"windows": [{"minutes": 300, "used": 51, "resets": 1791790000}, ...], "plan": "plus"}
+or {} when it cannot be told (not signed in, no network, a Codex that does not say).
+
+Codex has no command for this: its app-server, which its own desktop programs talk to,
+is asked instead (JSON lines on standard input and output; account/rateLimits/read).
+Google's Antigravity CLI, which Gemini runs through, has one for its own screen (/usage),
+and answers it without the screen too (agy -p /usage --output-format json).
+Claude Code needs no asking: it tells in the stream of every answer (see mentor-chat).
+"""
+import datetime
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+CODEX = os.environ.get("MENTOR_CODEX", "codex")
+AGY = os.environ.get("MENTOR_AGY", "agy")
+os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+
+
+def codex():
+    try:
+        server = subprocess.Popen([CODEX, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return {}
+
+    def send(message):
+        server.stdin.write(json.dumps(message) + "\n")
+        server.stdin.flush()
+
+    def answer(wanted, within):
+        end = time.time() + within
+        while time.time() < end:
+            if not select.select([server.stdout], [], [], max(0.0, end - time.time()))[0]:
+                break
+            line = server.stdout.readline()
+            if not line:
+                break
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if message.get("id") == wanted:
+                return message
+        return {}
+
+    try:
+        send({"method": "initialize", "id": 0,
+              "params": {"clientInfo": {"name": "mentor", "title": "Mentor", "version": "1"}}})
+        if not answer(0, 15):
+            return {}
+        send({"method": "initialized"})
+        send({"method": "account/rateLimits/read", "id": 1})
+        result = answer(1, 25).get("result") or {}
+    except (OSError, ValueError):
+        return {}
+    finally:
+        server.kill()
+    limits = result.get("rateLimits") or {}
+    windows = []
+    for name in ("primary", "secondary"):
+        window = limits.get(name)
+        if isinstance(window, dict) and isinstance(window.get("usedPercent"), (int, float)):
+            windows.append({"minutes": window.get("windowDurationMins"), "used": window["usedPercent"],
+                            "resets": window.get("resetsAt")})
+    return {"windows": windows, "plan": limits.get("planType")} if windows else {}
+
+
+def gemini():
+    try:
+        said = subprocess.run([AGY, "-p", "/usage", "--output-format", "json"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=60).stdout
+        groups = json.loads(said)["command"]["data"]["groups"]
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return {}
+    # The account's allowance comes in groups of models, each with a five-hour and a weekly
+    # window. Gemini's own is the one shown; the other is for other makers' models.
+    windows = []
+    for group in groups:
+        for bucket in group.get("buckets") or []:
+            left = bucket.get("remaining_fraction")
+            if not str(bucket.get("id", "")).startswith("gemini") or not isinstance(left, (int, float)):
+                continue
+            try:
+                resets = datetime.datetime.fromisoformat(bucket["reset_time"].replace("Z", "+00:00")).timestamp()
+            except (KeyError, ValueError, AttributeError):
+                resets = None
+            windows.append({"minutes": {"5h": 300, "weekly": 10080}.get(bucket.get("window")),
+                            "used": (1 - left) * 100, "resets": resets})
+    windows.sort(key=lambda window: window["minutes"] or 0)
+    return {"windows": windows} if windows else {}
+
+
+ACCOUNTS = {"codex": codex, "gemini": gemini}
+print(json.dumps(ACCOUNTS[sys.argv[1]]() if len(sys.argv) == 2 and sys.argv[1] in ACCOUNTS else {}))

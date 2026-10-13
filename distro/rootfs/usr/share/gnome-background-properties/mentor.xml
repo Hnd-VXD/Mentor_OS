@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE wallpapers SYSTEM "gnome-wp-list.dtd">
+<wallpapers>
+  <wallpaper deleted="false">
+    <name>Mentor in the mist</name>
+    <filename>/usr/share/backgrounds/mentor/mentor-mist.jpg</filename>
+    <filename-dark>/usr/share/backgrounds/mentor/mentor-mist.jpg</filename-dark>
+    <options>zoom</options>
+    <shade_type>solid</shade_type>
+    <pcolor>#16171b</pcolor>
+    <scolor>#000000</scolor>
+  </wallpaper>
+  <wallpaper deleted="false">
+    <name>Mentor</name>
+    <filename>/usr/share/backgrounds/mentor/mentor.jpg</filename>
+    <filename-dark>/usr/share/backgrounds/mentor/mentor.jpg</filename-dark>
+    <options>zoom</options>
+    <shade_type>solid</shade_type>
+    <pcolor>#16171b</pcolor>
+    <scolor>#000000</scolor>
+  </wallpaper>
+  <wallpaper deleted="false">
+    <name>Red sphere</name>
+    <filename>/usr/share/backgrounds/mentor/red-sphere.jpg</filename>
+    <filename-dark>/usr/share/backgrounds/mentor/red-sphere.jpg</filename-dark>
+    <options>zoom</options>
+    <shade_type>solid</shade_type>
+    <pcolor>#16171b</pcolor>
+    <scolor>#000000</scolor>
+  </wallpaper>
+</wallpapers>

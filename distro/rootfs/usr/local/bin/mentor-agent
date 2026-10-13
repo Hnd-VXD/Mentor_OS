@@ -1,0 +1,260 @@
+#!/usr/bin/python3
+"""The assistant's own engine: a model behind an OpenAI-compatible API, given the Mentor tools.
+
+For the models NVIDIA hosts (build.nvidia.com) and for OpenAI's. One run is one
+turn of a conversation: the message goes to the model, the tools it asks for are
+run here (mentor_tools, so approvals and the sandbox work as for any agent), and
+that repeats until it answers. The conversation so far is kept in a file, named
+by a session id, so the next turn can go on from it.
+
+What happens is printed as one JSON object per line, in the shape the Claude Code
+CLI uses for --output-format stream-json, so the assistant (mentor-chat) reads
+either engine the same way.
+
+    mentor-agent -p MESSAGE --provider nvidia --model z-ai/glm-5.3
+                 [--effort low|medium|high] [--resume SESSION] [--system TEXT] [--file PATH]...
+
+The API key comes in the environment (MENTOR_API_KEY), never on the command line.
+"""
+import argparse
+import base64
+import json
+import mimetypes
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_tools
+
+PROVIDERS = {
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
+}
+GUIDE = "/etc/mentor/AGENT.md"
+SESSIONS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "sessions")
+TOOL_PREFIX = "mcp__mentor__"  # how the assistant knows a Mentor tool, whichever engine called it
+MAX_STEPS = 60
+MAX_HISTORY_CHARS = 400_000    # older turns are dropped beyond this
+MAX_PICTURE_BYTES = 4 << 20
+BUSY_WAITS = (5, 15, 30)       # seconds, when the provider says to slow down
+ANSWER_WITHIN = 240            # seconds for one answer; free endpoints queue requests
+
+
+def emit(event):
+    print(json.dumps(event), flush=True)
+
+
+class Failed(Exception):
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = kind
+
+
+def picture(path=None, data=None):
+    """An image as the part of a message that shows it to the model."""
+    if data is None:
+        if os.path.getsize(path) > MAX_PICTURE_BYTES:
+            return None
+        with open(path, "rb") as f:
+            data = f.read()
+    kind = (mimetypes.guess_type(path)[0] if path else None) or "image/jpeg"
+    return {"type": "image_url", "image_url": {"url": f"data:{kind};base64,{base64.b64encode(data).decode()}"}}
+
+
+def without_pictures(messages):
+    """The same conversation for a model that turns out not to take images."""
+    plain = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            text = "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
+            message = {**message, "content": text or "(a picture, which this model cannot see)"}
+        plain.append(message)
+    return plain
+
+
+def waiting(text):
+    """Tell the assistant why nothing is happening, for it to show under the spinner."""
+    emit({"type": "system", "subtype": "status", "text": text})
+
+
+def ask(base, key, body):
+    """One request to the model. Returns its message."""
+    request = urllib.request.Request(
+        base.rstrip("/") + "/chat/completions", json.dumps(body).encode(),
+        {"Content-Type": "application/json", "Authorization": f"Bearer {key}", "Accept": "application/json"})
+    for wait in (*BUSY_WAITS, None):
+        try:
+            with urllib.request.urlopen(request, timeout=ANSWER_WITHIN) as response:
+                answer = json.load(response)
+            return answer["choices"][0]["message"]
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:600]
+            if e.code in (401, 403):
+                raise Failed("auth", "The provider did not accept the key.")
+            if e.code in (429, 502, 503, 529) and wait is not None:
+                try:
+                    wait = min(60.0, float(e.headers.get("Retry-After") or wait))
+                except ValueError:
+                    pass
+                waiting(("The provider's limit for this key is reached" if e.code == 429 else "The provider is busy")
+                        + f"; trying again in {round(wait)} s.")
+                time.sleep(wait)
+                waiting("Waiting for the model.")
+                continue
+            if e.code == 429:
+                raise Failed("busy", "The provider's limit for this key is used up for now. Try again in a little while.")
+            raise Failed("request" if e.code == 400 else "error", f"The provider answered {e.code}: {detail}")
+        except TimeoutError:
+            raise Failed("error", f"The model did not answer within {ANSWER_WITHIN // 60} minutes. "
+                                  "Free endpoints can be this slow when they are busy; try again, or another model.")
+        except (urllib.error.URLError, OSError) as e:
+            if isinstance(getattr(e, "reason", None), TimeoutError):
+                raise Failed("error", f"The model did not answer within {ANSWER_WITHIN // 60} minutes. "
+                                      "Free endpoints can be this slow when they are busy; try again, or another model.")
+            raise Failed("error", f"Could not reach the provider: {getattr(e, 'reason', e)}")
+        except (KeyError, IndexError, ValueError):
+            raise Failed("error", "The provider sent an answer that could not be understood.")
+
+
+def trimmed(history):
+    """Drop the oldest turns once the conversation is too long to send; a turn starts at a user message."""
+    while len(json.dumps(history)) > MAX_HISTORY_CHARS:
+        later = [i for i, m in enumerate(history) if m["role"] == "user" and i > 0]
+        if not later:
+            break
+        history = history[later[0]:]
+    return history
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-p", "--prompt", required=True)
+    parser.add_argument("--provider", choices=sorted(PROVIDERS), required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--effort")
+    parser.add_argument("--resume")
+    parser.add_argument("--system", default="")
+    parser.add_argument("--file", action="append", default=[])
+    args = parser.parse_args()
+
+    session = args.resume or uuid.uuid4().hex
+    path = os.path.join(SESSIONS, os.path.basename(session) + ".json")
+    emit({"type": "system", "subtype": "init", "session_id": session, "model": args.model})
+
+    def finish(text, failed=None):
+        emit({"type": "result", "subtype": failed or "success", "is_error": bool(failed), "result": text,
+              "session_id": session})
+        return 1 if failed else 0
+
+    key = os.environ.get("MENTOR_API_KEY", "").strip()
+    if not key:
+        return finish("There is no key for this provider yet.", "auth")
+    base = os.environ.get("MENTOR_API_BASE") or PROVIDERS[args.provider]
+
+    history = []
+    if args.resume:
+        try:
+            with open(path) as f:
+                history = json.load(f)
+        except (OSError, ValueError):
+            pass
+
+    def save():
+        os.makedirs(SESSIONS, mode=0o700, exist_ok=True)
+        with open(os.open(path + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump(history, f)  # what was said is the user's own
+        os.replace(path + ".new", path)
+
+    try:
+        with open(GUIDE) as f:
+            guide = f.read()
+    except OSError:
+        guide = ""
+    system = {"role": "system", "content": f"{guide}\n\n{args.system}".strip()}
+
+    parts = [{"type": "text", "text": args.prompt}]
+    for attached in args.file:
+        if (mimetypes.guess_type(attached)[0] or "").startswith("image/"):
+            try:
+                shown = picture(attached)
+            except OSError:
+                shown = None
+            if shown:
+                parts.append(shown)
+    history.append({"role": "user", "content": parts if len(parts) > 1 else args.prompt})
+
+    tools = [{"type": "function", "function": {"name": name, "description": description, "parameters": schema}}
+             for name, (description, schema, _) in mentor_tools.TOOLS.items()]
+    extras = {"reasoning_effort": args.effort} if args.effort else {}
+    sees_pictures = True
+    said = ""
+
+    waiting("Waiting for the model.")
+    for step in range(MAX_STEPS):
+        history = trimmed(history)
+        while True:
+            sent = [system, *(history if sees_pictures else without_pictures(history))]
+            try:
+                message = ask(base, key, {"model": args.model, "messages": sent, "tools": tools, **extras})
+                break
+            except Failed as e:
+                # A request the provider calls malformed is usually one of the two things
+                # not every model has: a level of effort, or eyes.
+                if e.kind == "request" and extras:
+                    extras = {}
+                elif e.kind == "request" and sees_pictures and any(isinstance(m.get("content"), list) for m in history):
+                    sees_pictures = False
+                else:
+                    save()
+                    return finish(str(e), e.kind)
+
+        calls = message.get("tool_calls") or []
+        text = (message.get("content") or "").strip() if isinstance(message.get("content"), str) else ""
+        kept = {"role": "assistant", "content": message.get("content") or ""}
+        if calls:
+            kept["tool_calls"] = calls
+        history.append(kept)
+        if text:
+            said = text
+            emit({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+        if not calls:
+            save()
+            return finish(said)
+
+        seen = []
+        for call in calls:
+            name = call.get("function", {}).get("name", "")
+            try:
+                arguments = json.loads(call["function"].get("arguments") or "{}")
+                if not isinstance(arguments, dict):
+                    raise ValueError
+            except (KeyError, ValueError):
+                arguments, bad = {}, True
+            else:
+                bad = False
+            emit({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": call.get("id"), "name": TOOL_PREFIX + name, "input": arguments}]}})
+            if bad:
+                ok, output, image = False, "the arguments were not a JSON object", None
+            else:
+                ok, output, image = mentor_tools.call_with_image(name, arguments)
+            history.append({"role": "tool", "tool_call_id": call.get("id"), "content": output})
+            if image:
+                seen.append(picture(data=image))
+            emit({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": call.get("id"), "content": output, "is_error": not ok}]}})
+        if seen:  # a tool's answer is text; what it showed follows as a message of its own
+            history.append({"role": "user", "content": [{"type": "text", "text": "What the tool showed:"}, *seen]})
+        save()
+
+    save()
+    return finish(said or "Stopped: this took more steps than one request is allowed.", "error")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

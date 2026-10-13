@@ -1,0 +1,295 @@
+"""Privileged side of the Mentor agent layer.
+
+Runs as root, only through pkexec, so every call has been approved by the user
+in the polkit dialog. Validates the request against /etc/mentor/policy.toml,
+executes it and appends a record to the audit log.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+
+import mentor_boot
+import mentor_sandbox
+
+POLICY_PATH = "/etc/mentor/policy.toml"
+AUDIT_PATH = "/var/log/mentor/audit.log"
+BACKUP_ROOT = "/var/lib/mentor/backups"
+MAX_FILE_BYTES = 1 << 20
+# Never writable through the agent, whatever policy.toml says: the layer that
+# keeps the agent in check, and the files that decide who is root.
+ALWAYS_PROTECTED = (
+    "/etc/mentor", "/usr/local/lib/mentor", "/usr/local/bin/mentor", "/usr/local/bin/mentor-mcp",
+    "/usr/share/polkit-1", "/etc/polkit-1", "/etc/sudoers", "/etc/sudoers.d",
+    "/etc/shadow", "/etc/gshadow", "/etc/passwd", "/etc/group", "/var/log/mentor", "/var/lib/mentor",
+    # What a failed start falls back on (mentor_boot): the working kernel and the units that check.
+    "/boot/mentor", "/boot/loader/entries/mentor.conf", "/boot/loader/entries/mentor-trial.conf",
+    *(f"/usr/local/lib/systemd/system/mentor-boot-{unit}" for unit in
+      ("check.service", "deadline.service", "confirm.path", "confirm.service", "arm.service")),
+    *(f"/etc/systemd/system/{target}.wants/mentor-boot-{unit}" for target, unit in
+      (("sysinit.target", "check.service"), ("sysinit.target", "deadline.service"),
+       ("multi-user.target", "confirm.path"), ("multi-user.target", "arm.service"))),
+    "/etc/pacman.d/hooks/zz-mentor-boot.hook", "/etc/tmpfiles.d/mentor.conf",
+    # The way back in when the desktop is gone (mentor repair).
+    "/usr/local/lib/systemd/system/mentor-repair.target", "/usr/local/lib/systemd/system/mentor-repair-console.service",
+    "/etc/profile.d/mentor-repair.sh",
+)
+
+# Changes under these (relative to /) only show at the next restart.
+STARTUP_PATHS = ("boot/", "etc/kernel/", "etc/mkinitcpio", "etc/modprobe.d/", "etc/modules-load.d/",
+                 "usr/lib/modules/", "etc/fstab")
+
+PKG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9@._+-]*$")
+UNIT_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9@._:\\-]*$")
+SERVICE_OPS = {"start", "stop", "restart", "reload", "enable", "disable", "mask", "unmask"}
+DISRUPTIVE_OPS = {"stop", "disable", "mask"}
+
+
+class Denied(Exception):
+    pass
+
+
+def load_policy():
+    try:
+        with open(POLICY_PATH, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def audit(action, args, outcome, exit_code=None, seconds=None):
+    record = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "uid": os.environ.get("PKEXEC_UID"),
+        "action": action,
+        "args": args,
+        "outcome": outcome,
+        "exit_code": exit_code,
+        "seconds": seconds,
+    }
+    os.makedirs(os.path.dirname(AUDIT_PATH), exist_ok=True)
+    with open(AUDIT_PATH, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+
+def packages(args):
+    names = args.get("packages")
+    if not isinstance(names, list) or not names:
+        raise Denied("'packages' must be a non-empty list")
+    for name in names:
+        if not isinstance(name, str) or not PKG_RE.match(name):
+            raise Denied(f"invalid package name: {name!r}")
+    return names
+
+
+def pkg_install(args, policy):
+    return ["pacman", "-S", "--noconfirm", "--needed", "--", *packages(args)]
+
+
+def pkg_remove(args, policy):
+    names = packages(args)
+    protected = set(policy.get("packages", {}).get("protected", []))
+    blocked = sorted(protected.intersection(names))
+    if blocked:
+        raise Denied(f"protected packages cannot be removed: {', '.join(blocked)}")
+    return ["pacman", "-Rns", "--noconfirm", "--", *names]
+
+
+def system_upgrade(args, policy):
+    return ["pacman", "-Syu", "--noconfirm"]
+
+
+def service(args, policy):
+    unit, op = args.get("unit"), args.get("operation")
+    if not isinstance(unit, str) or not UNIT_RE.match(unit):
+        raise Denied(f"invalid unit name: {unit!r}")
+    if op not in SERVICE_OPS:
+        raise Denied(f"operation must be one of: {', '.join(sorted(SERVICE_OPS))}")
+    if "." not in unit:
+        unit += ".service"
+    protected = policy.get("services", {}).get("protected", [])
+    if op in DISRUPTIVE_OPS and unit in protected:
+        raise Denied(f"{unit} is protected against '{op}'")
+    return ["systemctl", op, "--", unit]
+
+
+def run_root(args, policy):
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise Denied("'command' must be a non-empty string")
+    shell = policy.get("root_shell", {})
+    if not shell.get("enabled", True):
+        raise Denied("root shell is disabled in /etc/mentor/policy.toml")
+    for pattern in shell.get("deny_patterns", []):
+        if re.search(pattern, command):
+            raise Denied(f"command matches deny pattern {pattern!r}")
+    return ["bash", "-c", command]
+
+
+def system_path(args, policy):
+    """The validated absolute path a file action may touch."""
+    path = args.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise Denied("'path' must be an absolute path")
+    path = os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+    if os.path.islink(path):
+        path = os.path.realpath(path)
+    for prefix in protected_paths(policy):
+        if path == prefix or path.startswith(prefix.rstrip("/") + "/"):
+            raise Denied(f"{path} is protected and cannot be changed by the agent")
+    if os.path.isdir(path):
+        raise Denied(f"{path} is a directory")
+    return path
+
+
+def backups_of(path):
+    """Backup copies of a file, oldest first."""
+    if not os.path.isdir(BACKUP_ROOT):
+        return []
+    copies = [os.path.join(BACKUP_ROOT, stamp, path.lstrip("/")) for stamp in sorted(os.listdir(BACKUP_ROOT))]
+    return [c for c in copies if os.path.isfile(c)]
+
+
+def replace_file(path, data, like=None):
+    """Write atomically, keeping the owner and mode of the file being replaced."""
+    like = like or (path if os.path.exists(path) else None)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.mentor-new"
+    with open(temporary, "wb") as f:
+        f.write(data)
+    if like:
+        st = os.stat(like)
+        os.chown(temporary, st.st_uid, st.st_gid)
+        os.chmod(temporary, st.st_mode & 0o7777)
+    else:
+        os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+def write_file(args, policy):
+    path = system_path(args, policy)
+    data = sys.stdin.buffer.read(MAX_FILE_BYTES + 1)
+    if len(data) > MAX_FILE_BYTES:
+        raise Denied(f"content is larger than {MAX_FILE_BYTES} bytes")
+    if os.path.exists(path):
+        backup = os.path.join(BACKUP_ROOT, time.strftime("%Y%m%d-%H%M%S"), path.lstrip("/"))
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        shutil.copy2(path, backup)
+        print(f"previous version saved; file_restore brings it back")
+    replace_file(path, data)
+    print(f"wrote {len(data)} bytes to {path}")
+    return 0
+
+
+def restore_file(args, policy):
+    path = system_path(args, policy)
+    copies = backups_of(path)
+    if not copies:
+        raise Denied(f"there is no backup of {path}")
+    with open(copies[-1], "rb") as f:
+        replace_file(path, f.read(), like=copies[-1])
+    os.remove(copies[-1])  # so that a second restore goes one step further back
+    print(f"restored {path} from the backup of {copies[-1].split('/')[5]}")
+    return 0
+
+
+def protected_paths(policy):
+    return (*ALWAYS_PROTECTED, *policy.get("files", {}).get("protected", []))
+
+
+def sandbox_run(args, policy):
+    mentor_sandbox.use(args.get("sandbox", "default"))
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise Denied("'command' must be a non-empty string")
+    timeout = min(max(int(args.get("timeout", 600)), 10), 7200)
+    return mentor_sandbox.command(command, timeout)
+
+
+def sandbox_changes(args, policy):
+    mentor_sandbox.use(args.get("sandbox", "default"))
+    print(json.dumps(mentor_sandbox.report()))
+    return 0
+
+
+def sandbox_discard(args, policy):
+    mentor_sandbox.use(args.get("sandbox", "default"))
+    mentor_sandbox.discard()
+    print("sandbox discarded")
+    return 0
+
+
+def sandbox_apply(args, policy):
+    mentor_sandbox.use(args.get("sandbox", "default"))
+    manifest = mentor_sandbox.apply(str(args.get("summary", "")), protected_paths(policy))
+    print(f"applied change {manifest['id']}: {len(manifest['entries'])} paths")
+    if manifest["skipped"]:
+        print("not applied, protected: " + ", ".join("/" + s for s in manifest["skipped"][:20]))
+    mentor_boot.record_change(manifest["id"])
+    if any(rel.startswith(STARTUP_PATHS) for rel, _ in manifest["entries"]):
+        print("This change is part of how the system starts, so it takes effect at the next restart "
+              "(system_restart). That start is a trial: if the desktop is not up within three minutes, "
+              "the change is undone by itself and the system starts as before.")
+    return 0
+
+
+def change_undo(args, policy):
+    manifest = mentor_sandbox.undo(str(args.get("id", "")))
+    mentor_boot.forget_change(manifest["id"])
+    print(f"undid change {manifest['id']}: {len(manifest['entries'])} paths put back")
+    return 0
+
+
+ACTIONS = {
+    "manage": {
+        "pkg_install": pkg_install,
+        "pkg_remove": pkg_remove,
+        "system_upgrade": system_upgrade,
+        "service": service,
+    },
+    # Editing a system file is as powerful as a root shell, so it asks every time too.
+    "shell": {"run_root": run_root, "write_file": write_file, "restore_file": restore_file,
+              "sandbox_apply": sandbox_apply, "change_undo": change_undo},
+    # Work inside the sandbox cannot reach the real system.
+    "sandbox": {"sandbox_run": sandbox_run, "sandbox_changes": sandbox_changes, "sandbox_discard": sandbox_discard},
+}
+
+
+def main(mode):
+    if os.geteuid() != 0 or "PKEXEC_UID" not in os.environ:
+        print("mentor: this helper only runs through pkexec", file=sys.stderr)
+        return 2
+    if len(sys.argv) != 3:
+        print("usage: <action> <json-args>", file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+    try:
+        args = json.loads(sys.argv[2])
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be a JSON object")
+    except ValueError as e:
+        print(f"mentor: bad arguments: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        build = ACTIONS[mode].get(action)
+        if build is None:
+            raise Denied(f"unknown action {action!r}")
+        started = time.monotonic()
+        todo = build(args, load_policy())  # a command to run, or the exit code of work already done
+    except Denied as e:
+        audit(action, args, f"denied: {e}")
+        print(f"mentor: denied by policy: {e}", file=sys.stderr)
+        return 3
+    except (OSError, subprocess.CalledProcessError, mentor_sandbox.SandboxError, shutil.Error) as e:
+        audit(action, args, f"failed: {e}")
+        print(f"mentor: {e}", file=sys.stderr)
+        return 1
+
+    code = todo if isinstance(todo, int) else subprocess.run(todo, stdin=subprocess.DEVNULL, cwd="/").returncode
+    audit(action, args, "executed", code, round(time.monotonic() - started, 1))
+    return code

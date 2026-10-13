@@ -1,0 +1,13 @@
+[Unit]
+Description=Mentor: look the system over for things worth suggesting
+Documentation=file:///usr/local/lib/mentor/mentor-advisor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-advisor
+# It is never in a hurry.
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=10min

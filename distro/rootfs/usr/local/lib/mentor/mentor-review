@@ -1,0 +1,118 @@
+#!/usr/bin/python3
+"""Preview of a change the agent wants to apply to the system.
+
+    mentor-review report.json
+
+Shows the summary, the affected files and their diffs. Exits 0 when the user
+chooses to apply, 1 otherwise. Applying itself is done by the caller, behind
+the usual password prompt.
+"""
+import json
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, Gtk, Pango
+
+ICONS = {"added": "list-add-symbolic", "modified": "document-edit-symbolic",
+         "deleted": "list-remove-symbolic", "replaced": "view-refresh-symbolic"}
+
+
+class ReviewWindow(Adw.ApplicationWindow):
+    def __init__(self, app, report):
+        super().__init__(application=app, title="Review changes", default_width=980, default_height=680)
+        self.entries = report["entries"]
+
+        counts = ", ".join(f"{n} {kind}" for kind, n in report["counts"].items())
+        if report.get("omitted"):
+            counts += f" ({report['omitted']} more not listed)"
+        summary = Gtk.Label(label=report.get("summary") or "The agent proposes these changes.",
+                            wrap=True, xalign=0, selectable=True)
+        summary.add_css_class("title-4")
+        detail = Gtk.Label(label=f"{counts}. Nothing has been changed on your system yet.", wrap=True, xalign=0)
+        detail.add_css_class("dim-label")
+        top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4,
+                      margin_top=12, margin_bottom=12, margin_start=16, margin_end=16)
+        top.append(summary)
+        top.append(detail)
+
+        files = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
+        files.add_css_class("navigation-sidebar")
+        for entry in self.entries:
+            row = Gtk.Box(spacing=8, margin_top=4, margin_bottom=4)
+            row.append(Gtk.Image(icon_name=ICONS.get(entry["kind"], "document-edit-symbolic"),
+                                 tooltip_text=entry["kind"]))
+            row.append(Gtk.Label(label=entry["path"], xalign=0, ellipsize=Pango.EllipsizeMode.START))
+            files.append(row)
+        files.connect("row-selected", self.on_selected)
+
+        self.diff = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                 left_margin=12, right_margin=12, top_margin=8, bottom_margin=8)
+        buffer = self.diff.get_buffer()
+        buffer.create_tag("add", foreground="#57e389")
+        buffer.create_tag("remove", foreground="#ff7b63")
+        buffer.create_tag("meta", foreground="#9a9996")
+
+        paned = Gtk.Paned(position=340, vexpand=True)
+        paned.set_start_child(Gtk.ScrolledWindow(child=files, hscrollbar_policy=Gtk.PolicyType.NEVER))
+        paned.set_end_child(Gtk.ScrolledWindow(child=self.diff))
+
+        later = Gtk.Button(label="Not now")
+        later.connect("clicked", lambda *_: self.close())
+        accept = Gtk.Button(label="Apply to my system")
+        accept.add_css_class("suggested-action")
+        accept.connect("clicked", self.on_apply)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END, margin_top=10, margin_bottom=10, margin_end=16)
+        buttons.append(later)
+        buttons.append(accept)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(top)
+        content.append(Gtk.Separator())
+        content.append(paned)
+        content.append(Gtk.Separator())
+        content.append(buttons)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(content)
+        self.set_content(view)
+        if self.entries:
+            files.select_row(files.get_row_at_index(0))
+
+    def on_selected(self, _box, row):
+        buffer = self.diff.get_buffer()
+        buffer.set_text("")
+        if row is None:
+            return
+        entry = self.entries[row.get_index()]
+        text = entry.get("diff") or f"{entry['kind']}: {entry['path']}\n(no text preview: a directory, a binary or a large file)"
+        for line in text.split("\n"):
+            tag = "meta" if line.startswith(("+++", "---", "@@")) else \
+                  "add" if line.startswith("+") else "remove" if line.startswith("-") else None
+            end = buffer.get_end_iter()
+            if tag:
+                buffer.insert_with_tags_by_name(end, line + "\n", tag)
+            else:
+                buffer.insert(end, line + "\n")
+
+    def on_apply(self, _button):
+        self.get_application().accepted = True
+        self.close()
+
+
+class ReviewApp(Adw.Application):
+    def __init__(self, report):
+        super().__init__(application_id="org.mentor.Review", flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.report = report
+        self.accepted = False
+
+    def do_activate(self):
+        ReviewWindow(self, self.report).present()
+
+
+with open(sys.argv[1]) as f:
+    app = ReviewApp(json.load(f))
+app.run(None)
+sys.exit(0 if app.accepted else 1)

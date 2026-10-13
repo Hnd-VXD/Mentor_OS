@@ -1,0 +1,9 @@
+# The opencode package ships only the command; this puts it in the app grid.
+[Desktop Entry]
+Type=Application
+Name=OpenCode
+Comment=The open source coding agent
+Exec=opencode
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;

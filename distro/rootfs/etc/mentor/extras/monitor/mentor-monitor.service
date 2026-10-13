@@ -1,0 +1,16 @@
+[Unit]
+Description=Mentor: a quiet watch on memory, processor and network
+Documentation=file:///etc/mentor/MONITOR.md
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.local/lib/mentor-monitor/monitor.py
+Restart=on-failure
+RestartSec=30
+# It must never be what slows the system down.
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=64M
+CPUQuota=3%
+
+[Install]
+WantedBy=default.target

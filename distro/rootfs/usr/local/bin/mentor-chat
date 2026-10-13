@@ -1,0 +1,2558 @@
+#!/usr/bin/python3
+"""Mentor Assistant: the system agent, living on the desktop.
+
+There is no window to open. The assistant is drawn straight onto the wallpaper,
+under every application: click the desktop and type (the windows step aside;
+Escape brings them back). Conversations are tabs at the top left, and each runs
+on its own, so several requests can be in progress
+at once. Files and pictures can be attached to a message: with the paperclip,
+by dropping them on the desktop, or by pasting.
+
+The agent itself is the Claude Code CLI, run headless once per message
+(`claude -p ... --output-format stream-json`) and given the Mentor tools over
+MCP. This program sends what the user types and renders the event stream: the
+agent's text, each tool it calls and whether the call worked.
+
+Started at login. Later invocations hand their request to the running one:
+
+    mentor-chat "a request"                ask it
+    mentor-chat --app chromium.desktop     ask about one application (from its right-click menu)
+    mentor-chat --file PATH...             attach files or folders (from Files' right-click menu)
+"""
+import json
+import math
+import signal
+import os
+import re
+import shutil
+import sys
+import time
+import uuid
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+
+APP_ID = "org.mentor.Chat"
+# Claude Code, Codex and the Antigravity CLI are not part of the system: each user's copy is
+# put under ~/.local the first time they sign in (mentor-engine).
+os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
+ENGINE = "/usr/local/lib/mentor/mentor-engine"
+CLAUDE = os.environ.get("MENTOR_CLAUDE", "claude")
+AGENT = os.environ.get("MENTOR_AGENT", "/usr/local/bin/mentor-agent")
+CODEX = os.environ.get("MENTOR_CODEX", "codex")
+AGY = os.environ.get("MENTOR_AGY", "agy")
+MCP_SERVER = "/usr/local/bin/mentor-mcp"
+GUIDE = "/etc/mentor/AGENT.md"
+MCP_CONFIG = "/etc/mentor/mcp.json"
+# The Antigravity CLI takes its instructions and its tool servers from the folder it is run
+# in, so each conversation gets a folder of its own here, holding ours. Its settings are the
+# user's; the one thing added to them is that the Mentor tools need no asking.
+AGY_FOLDERS = os.path.join(GLib.get_user_state_dir(), "mentor", "agy")
+AGY_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
+AGY_ALLOWED = "mcp(mentor/*)"
+AGY_KEYRING_NOTE = os.path.expanduser("~/.gemini/antigravity-cli/cache/antigravity-keyring-unavailable")
+AGY_TOOL_NOTES = os.path.expanduser("~/.gemini/antigravity-cli/mcp/")  # where it reads how a tool is called
+TOOL_PREFIX = "mcp__mentor__"
+# Changes to the system go through the Mentor tools (and their approval
+# dialog), so the CLI's own shell and file-writing tools stay off.
+ALLOWED_TOOLS = "mcp__mentor,Read,Glob,Grep,WebSearch,WebFetch"
+DISALLOWED_TOOLS = "Bash,Edit,Write,NotebookEdit"
+SYSTEM_PROMPT = (
+    "You are the Mentor Assistant. You live on the user's desktop itself: what you say is written "
+    "on their wallpaper, under their windows, so keep it short. "
+    "Carry out what they ask with the mentor tools; the desktop already shows each tool call, so "
+    "do not narrate them. Reply in the user's language, in a few plain sentences. Light Markdown "
+    "only (bold, inline code, short lists); no tables or headings.\n\n"
+    "Two things are specific to Mentor, and users name them loosely:\n"
+    "- Desktop layout (desktop_layout tool): 'taskbar' is the permanent bar at the bottom, which "
+    "people also call the dock or the panel; 'normal' is stock GNOME. Requests like 'normal GNOME', "
+    "'remove the dock', 'bring the taskbar back' mean this tool.\n"
+    "- Full screen for the whole Mentor window (window_mode tool); the user can also press "
+    "Ctrl+Alt+F or Super+F11, or use the Full Screen button in the system menu.\n"
+    "When a request plausibly means one of these, do it rather than asking which the user meant.\n\n"
+    "Changes to the system itself (configuration, building or replacing parts of the OS, anything "
+    "touching several system files) go through the sandbox: sandbox_run to do and test the work on a "
+    "private copy, sandbox_changes to check it, then sandbox_apply, which shows the user a preview and "
+    "applies only if they accept. Applied changes can be undone with change_undo.\n\n"
+    "For a change to the desktop itself (a new switch, menu item, button), write a GNOME Shell extension "
+    "rather than patching GNOME; it takes effect at the next login. screen_capture lets you see the screen.\n\n"
+    "A message may start by naming an application and its desktop file: the user opened you from the "
+    "right-click menu of that icon. To update or remove an application, "
+    "first work out what owns it (pacman -Qo on the desktop file, or a Flatpak). For anything else "
+    "they want the work done in that application, where they can see it, not quietly in the background: "
+    "for the Console or another terminal, run the command with terminal_run; for other applications open "
+    "them with app_open, passing the file or URL concerned, and say what you could not do inside the app.\n\n"
+    "Attached files arrive as paths at the end of the message. "
+)
+# How each kind of engine gets at an attached file.
+ATTACHED = {
+    "claude": "Open them with the Read tool, which also shows you pictures and PDFs.",
+    "agent": "Pictures among them are shown to you directly; read the others with file_read. "
+             "To read a web page, fetch it with run_command (curl).",
+    "codex": "Read them yourself; pictures you can view directly.",
+    "gemini": "Files among them have been put into the folder you work in, under attached/: open them with "
+              "your own file tool (view_file), which also shows you pictures. An attached folder is where it "
+              "was; you may read in it.",
+}
+# What the Antigravity CLI is told besides: a tool of its own that would have to ask ends its turn.
+AGY_PROMPT = (
+    "\n\nYou are run without a terminal, in a folder that is only your scratch space. Everything you do on "
+    "this computer goes through the tools of the mentor server (call_mcp_tool with ServerName mentor). "
+    "Never use your own run_command or file-writing tools: nobody can approve them here, and the attempt "
+    "ends your turn with nothing said. Name files by their path; links are not shown as links."
+)
+# The picker, a menu in two levels: label on the button, engine, model, name in its provider's submenu.
+# The engines:
+#   nvidia   our own (mentor-agent) against NVIDIA's API, with the user's key
+#   claude   the Claude Code CLI, with the user's Claude account; models are its aliases
+#   codex    the Codex CLI, with the user's ChatGPT account; its models are added from its own catalog
+#   gemini   Google's Antigravity CLI (agy), with the user's Google account; its models are added
+#            from its own list. (The Gemini CLI stopped serving personal accounts in June 2026.)
+MODELS = [
+    ("GLM 5.3", "nvidia", "z-ai/glm-5.3", "GLM 5.3"),
+    ("Kimi K3", "nvidia", "moonshotai/kimi-k3", "Kimi K3"),
+    ("DeepSeek V4.1 Flash", "nvidia", "deepseek-ai/deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    # The rest of what NVIDIA hosts that can call tools, newest first.
+    ("GLM 5.3 Flash", "nvidia", "z-ai/glm-5.3-flash", "GLM 5.3 Flash"),
+    ("Gemma 4 31B", "nvidia", "google/gemma-4-31b-it", "Gemma 4 31B"),
+    ("Nemotron 3 Ultra", "nvidia", "nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra"),
+    ("Muse Glimmer 30B", "nvidia", "meta/muse-glimmer-30b", "Muse Glimmer 30B"),
+    ("Kimi K2.6", "nvidia", "moonshotai/kimi-k2.6", "Kimi K2.6"),
+    ("GPT OSS 20B", "nvidia", "openai/gpt-oss-20b", "GPT OSS 20B"),
+    ("Claude", "claude", None, "Automatic"),
+    ("Claude Fable", "claude", "fable", "Fable"),
+    ("Claude Opus", "claude", "opus", "Opus"),
+    ("Claude Sonnet", "claude", "sonnet", "Sonnet"),
+    ("Claude Haiku", "claude", "haiku", "Haiku"),
+    ("ChatGPT", "codex", None, "Automatic"),
+    ("Gemini", "gemini", None, "Automatic"),
+]
+MENUS = (("NVIDIA (free)", "nvidia"), ("Claude", "claude"), ("ChatGPT", "codex"), ("Gemini", "gemini"))
+# What Codex and the Antigravity CLI said their models are, kept from one start of the assistant to the next.
+MODELS_PATHS = {provider: os.path.join(GLib.get_user_cache_dir(), "mentor", f"{provider}-models.json")
+                for provider in ("codex", "gemini")}
+
+
+def add_models(provider, models):
+    """Add an account's models to the picker: (id, name) pairs. True if any were new."""
+    known = {model for _, engine, model, _ in MODELS if engine == provider}
+    new = [(str(model), str(name)) for model, name in models if model not in known]
+    MODELS.extend((name, provider, model, name) for model, name in new)
+    return bool(new)
+
+
+for provider, path in MODELS_PATHS.items():
+    try:
+        with open(path) as f:
+            add_models(provider, json.load(f))
+    except (OSError, ValueError, TypeError):
+        pass
+
+# The engines one signs in to with an account: name, what it runs through, its program, how to
+# check, how to sign in.
+# All sign in through the browser. Codex could also do it with a code typed into any browser
+# (--device-auth), but ChatGPT accounts have that switched off until their owner allows it.
+# The Antigravity CLI has no command that says whether one is signed in: it lists its models
+# only to someone who is, which is also how its models get here (on_sign_in_status).
+ACCOUNTS = {
+    "claude": ("Claude", "Claude Code", CLAUDE, [CLAUDE, "auth", "status"], f"{ENGINE} claude"),
+    "codex": ("ChatGPT", "Codex", CODEX, [CODEX, "login", "status"], f"{ENGINE} codex"),
+    "gemini": ("Gemini", "Google’s Antigravity CLI", AGY, [AGY, "models"], f"{ENGINE} gemini"),
+}
+# How hard the model thinks, where the engine has such a setting.
+EFFORTS = (("Effort", None), ("Low", "low"), ("Medium", "medium"), ("High", "high"))
+# For the engines that work with a key: what to call them and where a key comes from.
+PROVIDERS = {
+    "nvidia": ("NVIDIA", "https://build.nvidia.com/models",
+               "Mentor's assistant can run on models that NVIDIA hosts free of charge. Sign in on NVIDIA's "
+               "page, open a model, choose \u201cGet API Key\u201d, and paste the key here. It stays on this computer."),
+}
+KEYS_DIR = os.path.join(GLib.get_user_config_dir(), "mentor", "keys")
+SETTINGS_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "chat.json")
+PASTED_DIR = os.path.join(GLib.get_user_cache_dir(), "mentor", "attachments")
+WELCOMED_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "welcomed")
+# Written by root when a start failed and the system put itself back (mentor_boot.py).
+RESTORED_PATH = "/var/lib/mentor/boot/restored.json"
+RESTORE_SEEN_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "restore-seen")
+# The conversations, so that logging out or restarting does not lose them.
+CONVERSATIONS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "conversations.json")
+HISTORY_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "history.jsonl")
+MAX_SAVED_ITEMS = 300  # per conversation
+# What the accounts last said of their allowance: {"claude": {"at": time, "windows": [...]}, "codex": ...},
+# a window being {"minutes": length, "used": percent or None, "resets": time or None}.
+USAGE_PATH = os.path.join(GLib.get_user_cache_dir(), "mentor", "usage.json")
+USAGE = "/usr/local/lib/mentor/mentor-usage"
+USAGE_ASKED = ("codex", "gemini")  # the accounts that have to be asked; Claude Code tells unasked
+# What the system has to tell the user by itself goes into the chat as a card: yellow for a
+# warning, red for a problem. Whoever has something to tell leaves a file here (mentor-watch,
+# the monitor, `mentor notice`, anything the agent builds):
+#     NAME.json  {"level": "warning" | "problem", "title", "text", "prompt"?}
+# written under another name and renamed, so that it is whole when seen. It is shown once and
+# removed. `prompt` is what goes to the agent when the user asks it to look.
+NOTICES_DIR = os.path.join(GLib.get_user_state_dir(), "mentor", "notices")
+# What mentor-advisor found worth bringing up, and what this user has said about hearing of it.
+ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
+ADVICE_STATE_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "advice.json")
+ADVICE_KINDS = {"updates": "Waiting updates", "disk": "A disk that is filling", "failed": "Services that failed",
+                "news": "Arch Linux news", "gnome": "GNOME news", "apps": "New applications",
+                "github": "New projects on GitHub"}
+ADVICE_ICONS = {"updates": "software-update-available-symbolic", "disk": "drive-harddisk-symbolic",
+                "failed": "dialog-warning-symbolic", "news": "web-browser-symbolic", "gnome": "start-here-symbolic",
+                "apps": "view-app-grid-symbolic", "github": "applications-engineering-symbolic"}
+WELCOME_PROMPT = (
+    "This is the first start of Mentor for this user. Greet them in one sentence, then set the system up "
+    "with them one topic at a time, asking before you change anything: language and keyboard layout; time "
+    "zone; the taskbar or the stock GNOME layout, and light or dark style; which apps they want installed. "
+    "The account still has its default password: say so and offer to open the Users settings "
+    "(gnome-control-center system users) so they change it themselves. Never ask for a password in the chat."
+)
+
+CSS = """
+window.agent { background: none; border: none; outline: none; box-shadow: none; border-radius: 0; }
+.agent-card { background: rgba(20, 22, 27, 0.86); color: #ffffff; border-radius: 16px; padding: 12px 16px; }
+.agent-card.said { border-radius: 14px; padding: 10px 14px; }
+.bubble { padding: 9px 14px; border-radius: 14px; }
+.bubble.user { background: var(--accent-bg-color); color: var(--accent-fg-color); }
+.tool-row { font-size: 0.9em; padding: 4px 10px; border-radius: 10px;
+            background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
+.chat-error { color: #ff8a75; }
+.notice { border-radius: 14px; padding: 12px 16px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55); }
+.notice.warning { background: rgba(255, 214, 64, 0.30); color: #fff6cf; border: 1px solid rgba(255, 221, 87, 0.65); }
+.notice.problem { background: rgba(214, 40, 30, 0.34); color: #ffffff; border: 1px solid rgba(255, 99, 88, 0.75); }
+.notice button { color: inherit; text-shadow: none; }
+.notice.warning button.look { background: rgba(255, 221, 87, 0.26); }
+.notice.problem button.look { background: rgba(255, 99, 88, 0.34); }
+.advice-open { background: none; border: none; box-shadow: none; padding: 0; font-weight: inherit; }
+dialog.advice-details sheet { background-color: rgba(24, 26, 31, 0.9); }
+dialog.advice-details headerbar, dialog.advice-details toolbarview { background: none; }
+.tick-button { min-height: 0; min-width: 0; padding: 4px 8px 4px 0; background: none; border: none;
+               box-shadow: none; outline: none; }
+.tick { min-height: 2px; border-radius: 1px; background: #ffffff; }
+entry.ask { min-height: 50px; padding: 0 20px; border-radius: 26px; font-size: 1.05em;
+            background: rgba(20, 22, 27, 0.86); color: #ffffff; caret-color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.14); outline: none;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
+entry.ask:focus-within { border-color: #1793d1; }
+entry.ask > text > placeholder { color: rgba(255, 255, 255, 0.6); }
+.subject { padding: 4px 4px 4px 12px; border-radius: 12px; background: rgba(20, 22, 27, 0.86); color: #ffffff; }
+.attachment { padding: 2px 2px 2px 12px; border-radius: 99px; background: rgba(20, 22, 27, 0.86); color: #ffffff; }
+.attachment-note { font-size: 0.85em; padding: 2px 10px; border-radius: 99px;
+                   background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.85); }
+dropdown.model > button, menubutton.model > button { min-height: 34px; padding: 0 12px; border-radius: 99px; font-size: 0.9em;
+                           background: rgba(20, 22, 27, 0.86); color: #ffffff;
+                           border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: none; }
+tabbar.agent-tabs, tabbar.agent-tabs .box { background: none; box-shadow: none; border: none; }
+tabbar.agent-tabs tab { min-height: 34px; border-radius: 12px; background: rgba(20, 22, 27, 0.7); color: #ffffff; }
+tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
+"""
+
+
+def to_markup(text):
+    """The little Markdown the agent is asked to use, as Pango markup."""
+    out = GLib.markup_escape_text(text, -1)
+    out = re.sub(r"```\w*\n(.*?)```", r"<tt>\1</tt>", out, flags=re.S)
+    out = re.sub(r"`([^`\n]+)`", r"<tt>\1</tt>", out)
+    out = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", out)
+    out = re.sub(r"(?m)^#{1,6} +(.+)$", r"<b>\1</b>", out)
+    out = re.sub(r"(?m)^(\s*)[-*] +", "\\1\u2022 ", out)
+    try:
+        Pango.parse_markup(out, -1, "\0")
+    except GLib.Error:
+        return GLib.markup_escape_text(text, -1)
+    return out
+
+
+def told_when(moment):
+    """A moment of a conversation, as one says it: the day only when it is not today."""
+    then, now = time.localtime(moment), time.localtime()
+    clock = time.strftime("%H:%M", then)
+    if then[:3] == now[:3]:
+        return f"Today, {clock}"
+    year = "" if then.tm_year == now.tm_year else f" {then.tm_year}"
+    return f"{then.tm_mday} {time.strftime('%B', then)}{year}, {clock}"
+
+
+def window_name(minutes):
+    """What a usage window is called: by its length, as the accounts' own pages do."""
+    if not minutes:
+        return "Usage limit"
+    if minutes <= 6 * 60:
+        return "Session limit"
+    if 6 * 24 * 60 <= minutes <= 8 * 24 * 60:
+        return "Weekly limit"
+    return f"{round(minutes / 60)}-hour limit" if minutes < 48 * 60 else f"{round(minutes / 1440)}-day limit"
+
+
+def resets_when(moment):
+    """'Resets in 2 hr 40 min' when that is soon, the day and hour when it is not."""
+    left = moment - time.time()
+    if left <= 0:
+        return "Resets now"
+    if left < 24 * 3600:
+        hours, minutes = int(left // 3600), int(left % 3600 // 60)
+        return "Resets in " + (f"{hours} hr {minutes} min" if hours else f"{minutes} min")
+    return "Resets " + time.strftime("%a %H:%M", time.localtime(moment))
+
+
+def linked(text, link=None):
+    """Pango markup for a title that leads to its page when it has one."""
+    text = GLib.markup_escape_text(text, -1)
+    return f'<a href="{GLib.markup_escape_text(link, -1)}">{text}</a>' if link else text
+
+
+def details_markup(details):
+    """What a suggestion is about, as markup: an entry that ends in the address of its page
+    (an application, a project) gets its first line as the link instead, and any other
+    address in the text can be clicked."""
+    blocks = []
+    for block in details.split("\n\n"):
+        lines = block.split("\n")
+        if len(lines) > 1 and re.fullmatch(r"https?://\S+", lines[-1].strip()):
+            name, _, rest = lines[0].partition("  ")  # the name, then what is said of it on the same line
+            head = f"<b>{linked(name, lines[-1].strip())}</b>" + (f"  {GLib.markup_escape_text(rest, -1)}" if rest else "")
+            blocks.append("\n".join([head] + [GLib.markup_escape_text(line, -1) for line in lines[1:-1]]))
+        else:
+            escaped = GLib.markup_escape_text(block, -1)
+            blocks.append(re.sub(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)]", lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', escaped))
+    return "\n\n".join(blocks)
+
+
+def agy_folder(sandbox, instructions):
+    """The folder the Antigravity CLI is run in for one conversation: what it is told (AGENTS.md)
+    and the Mentor tools, working in that conversation's sandbox (.agents/mcp_config.json)."""
+    folder = os.path.join(AGY_FOLDERS, sandbox)
+    try:
+        os.makedirs(os.path.join(folder, ".agents"), exist_ok=True)
+        with open(os.path.join(folder, "AGENTS.md"), "w") as f:
+            f.write(instructions)
+        with open(os.path.join(folder, ".agents", "mcp_config.json"), "w") as f:
+            json.dump({"mcpServers": {"mentor": {"command": MCP_SERVER, "env": {"MENTOR_SANDBOX": sandbox}}}}, f)
+    except OSError:
+        pass
+    return folder
+
+
+def agy_attach(folder, path):
+    """Put an attached file into the Antigravity CLI's folder, as attached/NAME: a second name
+    for the same file where that can be had, a copy otherwise. Returns its place there, or
+    None for what is not a file, or is too large to copy."""
+    if not os.path.isfile(path):
+        return None
+    place = os.path.join(folder, "attached")
+    name, number = os.path.basename(path), 1
+    try:
+        os.makedirs(place, exist_ok=True)
+        inside = os.path.join(place, name)
+        while os.path.lexists(inside):
+            if os.path.samefile(inside, path):
+                return inside
+            number += 1
+            stem, extension = os.path.splitext(name)
+            inside = os.path.join(place, f"{stem}-{number}{extension}")
+        try:
+            os.link(path, inside)
+        except OSError:  # another file system, or a file that is not the user's
+            if os.path.getsize(path) > 256 << 20:
+                return None
+            shutil.copyfile(path, inside)
+        return inside
+    except OSError:
+        return None
+
+
+def agy_keyring():
+    """Take away the Antigravity CLI's note that the keyring could not be had. It writes one
+    when the keyring is slow to answer (right after a login, say) and then keeps away from the
+    keyring, and so from the account's sign-in, for an hour: the user looks signed out."""
+    try:
+        os.remove(AGY_KEYRING_NOTE)
+    except OSError:
+        pass
+
+
+def agy_allow():
+    """Have the Antigravity CLI's settings let the Mentor tools through without asking."""
+    agy_keyring()
+    try:
+        with open(AGY_SETTINGS) as f:
+            settings = json.load(f)
+    except (OSError, ValueError):
+        settings = {}
+    try:
+        allowed = settings.setdefault("permissions", {}).setdefault("allow", [])
+        if AGY_ALLOWED in allowed:
+            return
+        allowed.append(AGY_ALLOWED)
+        os.makedirs(os.path.dirname(AGY_SETTINGS), exist_ok=True)
+        with open(AGY_SETTINGS + ".new", "w") as f:
+            json.dump(settings, f, indent=2)
+        os.replace(AGY_SETTINGS + ".new", AGY_SETTINGS)
+    except (OSError, AttributeError, TypeError):
+        pass
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH) as f:
+            settings = json.load(f)
+        return settings if isinstance(settings, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f)
+
+
+def key_path(provider, model=None):
+    """A provider's key for all its models, or the one kept for a single model."""
+    return os.path.join(KEYS_DIR, provider if model is None else
+                        f"{provider}--{re.sub(r'[^A-Za-z0-9._-]', '_', model)}")
+
+
+def read_key(provider, model=None):
+    """The key to use for a model: its own if it has one, otherwise the provider's."""
+    for path in ([key_path(provider, model)] if model else []) + [key_path(provider)]:
+        try:
+            with open(path) as f:
+                if key := f.read().strip():
+                    return key
+        except OSError:
+            pass
+    return ""
+
+
+def write_key(provider, key, model=None, keep_others=False):
+    os.makedirs(KEYS_DIR, mode=0o700, exist_ok=True)
+    with open(os.open(key_path(provider, model), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(key.strip())
+    if model is None and not keep_others:  # one key for all: none of them keeps a different one
+        for name in os.listdir(KEYS_DIR):
+            if name.startswith(provider + "--"):
+                os.remove(os.path.join(KEYS_DIR, name))
+
+
+def describe_tool(name, arguments):
+    name = name.removeprefix(TOOL_PREFIX)
+    values = []
+    for value in (arguments or {}).values():
+        values.append(" ".join(map(str, value)) if isinstance(value, list) else str(value))
+    detail = "  ".join(values)
+    return name, detail if len(detail) <= 90 else detail[:89] + "\u2026"
+
+
+class Conversation(Gtk.Box):
+    """One tab: a conversation with the agent, with its own history and its own running turn."""
+
+    def __init__(self, window, first_run=False):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.window = window
+        self.first_run = first_run
+        self.sessions = {}  # what each kind of engine calls this conversation, to go on with it
+        self.engine = None  # the kind of engine the running turn uses
+        self.process = None
+        self.spinner = None
+        self.busy = False
+        self.tool_icons = {}   # tool_use id -> the icon of its row
+        self.stray_output = []  # non-JSON lines from the CLI, shown if it never reports a result
+        self.got_result = False
+        self.subject = None  # what the next message is about: (label, description for the agent)
+        self.attachments = []  # paths of the files that go with the next message
+        self.quote = None  # words of the agent's that the next message is about
+        self.workspace = window.workspace  # the workspace this conversation is the desktop of
+        self.last_said = ""  # the agent's latest words, for the notification when it finishes unseen
+        self.history = []  # what is shown, in a form that can be saved and shown again
+        self.tool_items = {}  # tool_use id -> its item in the history
+        # Trial changes made here stay apart from those of the other tabs.
+        self.sandbox = "tab-" + uuid.uuid4().hex[:8]
+
+        self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                                margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        self.column = Adw.Clamp(maximum_size=720, child=self.messages)
+        self.scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                           child=self.column)
+        # Down the left side, a tick for each thing asked: where one is in the conversation,
+        # what was asked there and when, and the way back to it.
+        self.ticks = []  # (the tick, its popover, the message it leads to)
+        self.timeline = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.timeline_scroller = Gtk.ScrolledWindow(
+            child=self.timeline, halign=Gtk.Align.START, valign=Gtk.Align.CENTER, margin_start=12,
+            hscrollbar_policy=Gtk.PolicyType.NEVER, vscrollbar_policy=Gtk.PolicyType.EXTERNAL,
+            propagate_natural_height=True, propagate_natural_width=True, max_content_height=420,
+            visible=False)
+        self.scroller.get_vadjustment().connect("value-changed", lambda *_: self.mark_tick())
+        self.current_tick = None  # the tick of the message the view is at
+        wave = Gtk.EventControllerMotion()
+        wave.connect("motion", lambda _c, _x, y: self.swell(y))
+        wave.connect("leave", lambda *_: self.swell(None))
+        self.timeline.add_controller(wave)
+
+        self.entry = Gtk.Entry(hexpand=True, placeholder_text="Ask Mentor to do something\u2026")
+        self.entry.add_css_class("ask")
+        self.entry.connect("activate", lambda *_: self.send(self.entry.get_text()))
+        self.action = Gtk.Button(valign=Gtk.Align.CENTER)
+        self.action.add_css_class("circular")
+        self.action.connect("clicked", self.on_action)
+        attach = Gtk.Button(icon_name="mail-attachment-symbolic", tooltip_text="Attach files or pictures",
+                            valign=Gtk.Align.CENTER)
+        attach.add_css_class("osd")
+        attach.add_css_class("circular")
+        attach.connect("clicked", self.on_attach_clicked)
+        self.model = Gtk.MenuButton(label=window.shown_name(window.model_index), menu_model=window.model_menu,
+                                    direction=Gtk.ArrowType.UP)
+        self.model.add_css_class("model")
+        self.model.set_valign(Gtk.Align.CENTER)
+        self.usage_box = None  # at the top of the model's menu: the model chosen and its limits (the window fills it)
+        self.trouble = None  # what the Codex or the Antigravity CLI last complained of
+        self.pending = ""  # what the Antigravity CLI has said so far of a text it sends in pieces
+        bar =Gtk.Box(spacing=8, margin_bottom=28)
+        bar.append(attach)
+        bar.append(self.entry)
+        bar.append(self.model)
+        bar.append(self.action)
+
+        # Files for the next message, one removable chip each.
+        self.attachment_bar = Adw.WrapBox(child_spacing=6, line_spacing=6, visible=False)
+        drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        drop.connect("drop", lambda _target, files, _x, _y: self.attach_files(files.get_files()) or True)
+        self.add_controller(drop)
+        paste = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        paste.connect("key-pressed", self.on_entry_key)
+        self.entry.add_controller(paste)
+
+        # Shown while the next message is about one application.
+        self.subject_icon = Gtk.Image(pixel_size=20)
+        self.subject_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        forget = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Not about this")
+        forget.add_css_class("flat")
+        forget.connect("clicked", lambda *_: self.set_subject())
+        self.subject_bar = Gtk.Box(spacing=8, visible=False)
+        self.subject_bar.add_css_class("subject")
+        for widget in (self.subject_icon, self.subject_label, forget):
+            self.subject_bar.append(widget)
+
+        # Shown while the next message is about something the agent said (right-click, Quote).
+        self.quote_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
+        unquote = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Not about this")
+        unquote.add_css_class("flat")
+        unquote.connect("clicked", lambda *_: self.set_quote())
+        self.quote_bar = Gtk.Box(spacing=8, visible=False)
+        self.quote_bar.add_css_class("subject")
+        for widget in (Gtk.Image(icon_name="mail-reply-sender-symbolic", pixel_size=16), self.quote_label, unquote):
+            self.quote_bar.append(widget)
+
+        bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                         margin_top=6, margin_start=12, margin_end=12)
+        bottom.append(self.subject_bar)
+        bottom.append(self.quote_bar)
+        bottom.append(self.attachment_bar)
+        bottom.append(bar)
+        body = Gtk.Overlay(child=self.scroller, vexpand=True)
+        body.add_overlay(self.timeline_scroller)
+        self.append(body)
+        self.append(Adw.Clamp(maximum_size=680, child=bottom))
+
+        # Until something is asked the wallpaper stays bare, except on the very first start.
+        self.welcome = Gtk.Box(vexpand=True)
+        if first_run:
+            title = Gtk.Label(label="Welcome to Mentor")
+            title.add_css_class("title-2")
+            text = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, label=(
+                "The assistant that runs this system lives here, on your desktop. Click anywhere and "
+                "type what you want. Super+A brings you back to it from any app."))
+            setup = Gtk.Button(label="Set up my system", halign=Gtk.Align.CENTER)
+            setup.add_css_class("pill")
+            setup.add_css_class("suggested-action")
+            setup.connect("clicked", lambda *_: self.send(WELCOME_PROMPT, shown="Set up my system"))
+            self.welcome = card(Gtk.Image(icon_name=APP_ID, pixel_size=72), title, text, setup,
+                                halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, vexpand=True)
+        self.messages.append(self.welcome)
+        self.set_busy(False)
+
+    @property
+    def untouched(self):
+        """True while nothing has been asked here yet."""
+        return self.welcome is not None and not self.busy
+
+    def set_quote(self, text=None):
+        """Make the next message be about these words of the agent's, or about none."""
+        self.quote = text
+        self.quote_bar.set_visible(bool(text))
+        if text:
+            self.quote_label.set_text("\u201c" + " ".join(text.split()) + "\u201d")
+            self.entry.grab_focus()
+
+    def quote_from(self, label):
+        """Quote what is selected in one of the agent's messages, or all of it."""
+        text = label.get_text()
+        bounds = label.get_selection_bounds()
+        if len(bounds) == 3 and bounds[0] and bounds[1] != bounds[2]:
+            text = text[min(bounds[1:]):max(bounds[1:])]
+        if text.strip():
+            self.set_quote(text.strip())
+
+    def set_subject(self, app_id=None):
+        """Make the next message be about an application, or about nothing in particular."""
+        self.subject = None
+        self.subject_bar.set_visible(False)
+        self.entry.set_placeholder_text("Ask Mentor to do something…")
+        icon = None
+        if app_id:
+            try:
+                info = Gio.DesktopAppInfo.new(app_id)
+            except TypeError:
+                return
+            name, icon = info.get_display_name(), info.get_icon()
+            self.subject = (name, f'the application "{name}" (desktop file {info.get_filename()}, '
+                                  f'command: {info.get_commandline()})')
+            self.entry.set_placeholder_text("Update it, remove it, change a setting, open it and…")
+        else:
+            return
+        self.subject_icon.set_from_gicon(icon or Gio.ThemedIcon.new("application-x-executable"))
+        self.subject_label.set_markup(f"About <b>{GLib.markup_escape_text(name, -1)}</b>")
+        self.subject_bar.set_visible(True)
+        self.entry.grab_focus()
+
+    # --- attachments ------------------------------------------------------------
+
+    def attach(self, path):
+        path = os.path.abspath(path)
+        if path in self.attachments:
+            return
+        self.attachments.append(path)
+        chip = Gtk.Box(spacing=2)
+        chip.add_css_class("attachment")
+        chip.append(Gtk.Label(label=os.path.basename(path) or path, max_width_chars=28,
+                              ellipsize=Pango.EllipsizeMode.MIDDLE, tooltip_text=path))
+        remove = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Remove")
+        remove.add_css_class("flat")
+        remove.add_css_class("circular")
+        remove.connect("clicked", lambda *_: self.detach(path, chip))
+        chip.append(remove)
+        self.attachment_bar.append(chip)
+        self.attachment_bar.set_visible(True)
+        self.entry.set_placeholder_text("Explain it, convert it, rename, fix what it shows\u2026")
+        self.entry.grab_focus()
+
+    def attach_files(self, files):
+        for file in files:
+            if file.get_path():
+                self.attach(file.get_path())
+
+    def detach(self, path, chip):
+        self.attachments.remove(path)
+        self.attachment_bar.remove(chip)
+        self.attachment_bar.set_visible(bool(self.attachments))
+
+    def on_attach_clicked(self, _button):
+        dialog = Gtk.FileDialog(title="Attach files or pictures")
+
+        def chosen(_dialog, result):
+            try:
+                self.attach_files(dialog.open_multiple_finish(result))
+            except GLib.Error:
+                pass  # cancelled
+        dialog.open_multiple(self.window, None, chosen)
+
+    def on_entry_key(self, _controller, keyval, _keycode, state):
+        """Ctrl+V with a picture or copied files in the clipboard attaches them; text pastes as usual."""
+        if keyval not in (Gdk.KEY_v, Gdk.KEY_V) or not state & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        clipboard = self.entry.get_clipboard()
+        formats = clipboard.get_formats()
+        if formats.contain_gtype(Gdk.FileList):
+            clipboard.read_value_async(Gdk.FileList, GLib.PRIORITY_DEFAULT, None, self.on_files_pasted)
+        elif formats.contain_gtype(Gdk.Texture):
+            clipboard.read_texture_async(None, self.on_picture_pasted)
+        else:
+            return False
+        return True
+
+    def on_files_pasted(self, clipboard, result):
+        try:
+            self.attach_files(clipboard.read_value_finish(result).get_files())
+        except GLib.Error:
+            pass
+
+    def on_picture_pasted(self, clipboard, result):
+        try:
+            texture = clipboard.read_texture_finish(result)
+        except GLib.Error:
+            return
+        os.makedirs(PASTED_DIR, exist_ok=True)
+        path = os.path.join(PASTED_DIR, time.strftime("pasted-%Y%m%d-%H%M%S.png"))
+        if texture and texture.save_to_png(path):
+            self.attach(path)
+
+    def clear(self):
+        """Forget the conversation: the tab starts again as if nothing had been asked in it."""
+        self.stop()
+        if self.busy:  # the CLI's exit is no longer waited for
+            self.process = None
+            self.set_busy(False)
+        while child := self.messages.get_first_child():
+            self.messages.remove(child)
+        for tick, popover, _ in self.ticks:
+            popover.unparent()
+            self.timeline.remove(tick)
+        self.ticks = []
+        self.current_tick = None
+        self.timeline_scroller.set_visible(False)
+        self.welcome = Gtk.Box(vexpand=True)
+        self.messages.append(self.welcome)
+        self.spinner = None
+        self.sessions = {}
+        self.tool_icons.clear()
+        self.tool_items.clear()
+        self.history = []
+        self.stray_output = []
+        self.got_result = False
+        self.last_said = ""
+        self.attachments = []
+        while chip := self.attachment_bar.get_first_child():
+            self.attachment_bar.remove(chip)
+        self.attachment_bar.set_visible(False)
+        self.set_subject()
+        self.set_quote()
+        self.entry.set_text("")
+        self.window.tabs.get_page(self).set_title("New conversation")
+        self.window.save_conversations()
+        self.entry.grab_focus()
+
+    def saved(self, title):
+        return {"title": title, "sessions": self.sessions, "sandbox": self.sandbox,
+                "workspace": self.workspace, "history": self.history[-MAX_SAVED_ITEMS:]}
+
+    def restore(self, saved):
+        """Show a conversation from before the assistant was last started, ready to go on."""
+        self.sessions = dict(saved.get("sessions") or {})
+        if saved.get("session_id"):  # saved before there was more than one engine
+            self.sessions.setdefault("claude", saved["session_id"])
+        self.sandbox = saved.get("sandbox") or self.sandbox
+        self.workspace = saved.get("workspace") or 0
+        for item in saved.get("history", []):
+            if "tool" in item:
+                self.add_tool(None, item["tool"], item.get("detail", ""), described=True, failed=item.get("failed"))
+            elif "note" in item:
+                self.add_note(item["note"])
+            else:
+                self.add_text(item.get("text", ""), user=item.get("user", False), error=item.get("error", False),
+                              when=item.get("time") or 0)
+
+    def stop(self):
+        """Stop the engine at work, with whatever it started: Codex and Claude Code are
+        launchers that run the real program as a child, which would otherwise go on."""
+        if self.process:
+            try:
+                os.killpg(int(self.process.get_identifier()), signal.SIGKILL)  # its own group: see spawn
+            except (OSError, TypeError, ValueError):
+                pass
+            self.process.force_exit()
+
+    def set_busy(self, busy):
+        self.busy = busy
+        self.entry.set_sensitive(not busy)
+        self.action.set_icon_name("media-playback-stop-symbolic" if busy else "go-up-symbolic")
+        self.action.set_tooltip_text("Stop" if busy else "Send")
+        for css_class, on in (("destructive-action", busy), ("suggested-action", not busy)):
+            (self.action.add_css_class if on else self.action.remove_css_class)(css_class)
+        self.window.on_busy_changed(self)
+        if not busy:
+            self.entry.grab_focus()
+
+    def add(self, widget):
+        if self.welcome:
+            self.messages.remove(self.welcome)
+            self.welcome = None
+        self.messages.append(widget)
+        GLib.idle_add(self.scroll_to_end)
+        return widget
+
+    def scroll_to_end(self):
+        adjustment = self.scroller.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper())
+        return GLib.SOURCE_REMOVE
+
+    def add_tick(self, message, item):
+        """The mark on the timeline for something the user asked."""
+        mark = Gtk.Box()
+        mark.add_css_class("tick")
+        tick = Gtk.Button(child=mark, halign=Gtk.Align.START)
+        tick.add_css_class("tick-button")
+        title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, max_width_chars=40)
+        title.add_css_class("heading")
+        answer = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, lines=3,
+                           ellipsize=Pango.EllipsizeMode.END, width_chars=40, max_width_chars=40)
+        answer.add_css_class("dim-label")
+        when = Gtk.Label(xalign=0)
+        when.add_css_class("caption")
+        when.add_css_class("dim-label")
+        about = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        for label in (title, answer, when):
+            about.append(label)
+        popover = Gtk.Popover(child=about, position=Gtk.PositionType.RIGHT, autohide=False, can_target=False)
+        popover.set_parent(tick)
+
+        def show(*_):  # filled in when looked at: the answer may not have been there before
+            title.set_text(" ".join(item["text"].split()))
+            said = self.answer_to(item)
+            answer.set_text(said)
+            answer.set_visible(bool(said))
+            when.set_text(told_when(item["time"]) if item.get("time") else "")
+            when.set_visible(bool(item.get("time")))
+            popover.popup()
+
+        hover = Gtk.EventControllerMotion()
+        hover.connect("enter", show)
+        hover.connect("leave", lambda *_: popover.popdown())
+        tick.add_controller(hover)
+        tick.connect("clicked", lambda *_: self.scroll_to(message))
+        self.timeline.append(tick)
+        self.ticks.append((tick, popover, message))
+        self.timeline_scroller.set_visible(len(self.ticks) > 1)
+        self.swell(None)
+
+    def swell(self, pointer):
+        """Draw the ticks: a wave of longer, brighter ones around the pointer (its height on
+        the timeline, None when it is elsewhere), and the one of the message in view marked."""
+        for tick, _, _ in self.ticks:
+            near = 0.0
+            found, bounds = tick.compute_bounds(self.timeline)
+            if pointer is not None and found:
+                away = (bounds.get_y() + bounds.get_height() / 2 - pointer) / 15
+                near = math.exp(-away * away)
+            rest = 16 if tick is self.current_tick else 12
+            mark = tick.get_child()
+            mark.set_size_request(round(rest + (32 - rest) * near), 2)
+            mark.set_opacity(1 if tick is self.current_tick else 0.4 + 0.6 * near)
+
+    def answer_to(self, item):
+        """The start of what the agent said to one of the user's messages."""
+        mine = False
+        for other in self.history:
+            if other is item:
+                mine = True
+            elif mine and other.get("user"):
+                break
+            elif mine and other.get("text") and not other.get("error"):
+                said = " ".join(re.sub(r"[*`#]", "", other["text"]).split())
+                return said if len(said) <= 220 else said[:219] + "\u2026"
+        return ""
+
+    def place_of(self, message):
+        """How far down the conversation a message is, or None before it has been laid out."""
+        found, bounds = message.compute_bounds(self.column)
+        return bounds.get_y() if found else None
+
+    def scroll_to(self, message):
+        place = self.place_of(message)
+        if place is not None:
+            self.scroller.get_vadjustment().set_value(max(0, place - 12))
+
+    def mark_tick(self):
+        """Show on the timeline which of the user's messages the view is at."""
+        adjustment = self.scroller.get_vadjustment()
+        line = adjustment.get_value() + adjustment.get_page_size() / 3
+        at = None
+        for tick, _, message in self.ticks:
+            place = self.place_of(message)
+            if place is not None and (at is None or place <= line):
+                at = tick
+        if at is not self.current_tick:
+            self.current_tick = at
+            self.swell(None)
+
+    def add_text(self, text, user=False, error=False, when=None):
+        """`when` is for a message shown again from the history: the time it was sent, 0 if unknown."""
+        label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
+                          halign=Gtk.Align.END if user else Gtk.Align.START)
+        if user:
+            label.set_text(text)
+            label.add_css_class("bubble")
+            label.add_css_class("user")
+        else:
+            label.set_markup(to_markup(text))
+            label.add_css_class("agent-card")
+            label.add_css_class("said")
+            if not error:  # in its right-click menu, under Copy
+                menu = Gio.Menu()
+                menu.append("Quote", "message.quote")
+                label.set_extra_menu(menu)
+                quote = Gio.SimpleAction.new("quote", None)
+                quote.connect("activate", lambda *_: self.quote_from(label))
+                actions = Gio.SimpleActionGroup()
+                actions.add_action(quote)
+                label.insert_action_group("message", actions)
+        if error:
+            label.add_css_class("chat-error")
+        item = {"text": text, "user": user, "error": error}
+        if when is None and not error:
+            self.window.note(self, text, user)
+        if user:
+            if moment := time.time() if when is None else when:
+                item["time"] = moment
+            self.add_tick(label, item)
+        self.history.append(item)
+        return self.add(label)
+
+    def add_notice(self, level, title, text, prompt=None):
+        """Something the system tells of by itself: a card, yellow for a warning, red for a
+        problem, with a way to hand it to the agent. Not part of what was said to the agent."""
+        heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
+        heading.add_css_class("heading")
+        body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64,
+                         selectable=True, visible=bool(text))
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.START)
+        card.add_css_class("notice")
+        card.add_css_class("problem" if level == "problem" else "warning")
+        card.append(heading)
+        card.append(body)
+        buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
+        dismiss = Gtk.Button(label="Dismiss")
+        dismiss.add_css_class("flat")
+        dismiss.connect("clicked", lambda *_: self.messages.remove(card))
+        buttons.append(dismiss)
+        if prompt:
+            look = Gtk.Button(label="Let Mentor look")
+            look.add_css_class("pill")
+            look.add_css_class("look")
+
+            def hand_over(*_):
+                look.set_sensitive(False)
+                self.window.for_request().send(prompt, shown=title)
+            look.connect("clicked", hand_over)
+            buttons.append(look)
+        card.append(buttons)
+        self.window.note(self, f"{title}. {text}".strip(), False)
+        if self.first_run and self.welcome:  # the card of a first start stays where it is
+            self.messages.append(card)
+            return card
+        return self.add(card)
+
+    def add_note(self, text):
+        note = Gtk.Label(label=text, xalign=1, halign=Gtk.Align.END, wrap=True)
+        note.add_css_class("attachment-note")
+        self.history.append({"note": text})
+        return self.add(note)
+
+    def add_tool(self, tool_id, name, arguments, described=False, failed=None):
+        """One row per tool call. `described` and `failed` are for a call shown again from the history."""
+        detail = arguments
+        if not described:
+            name, detail = describe_tool(name, arguments)
+        item = {"tool": name, "detail": detail, "failed": failed}
+        self.history.append(item)
+        icon = Gtk.Image(icon_name="content-loading-symbolic")
+        if described:  # over long ago: done, failed, or never answered
+            icon.set_from_icon_name({True: "dialog-warning-symbolic", False: "object-select-symbolic"}
+                                    .get(failed, "process-stop-symbolic"))
+        else:
+            self.tool_items[tool_id] = item
+        text = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+        text.set_markup(f"<b>{GLib.markup_escape_text(name, -1)}</b>  <tt>{GLib.markup_escape_text(detail, -1)}</tt>")
+        row = Gtk.Box(spacing=8, halign=Gtk.Align.START)
+        row.add_css_class("tool-row")
+        row.append(icon)
+        row.append(text)
+        if not described:
+            self.tool_icons[tool_id] = icon
+        self.add(row)
+
+    def on_action(self, _button):
+        if self.busy:
+            self.stop()
+        else:
+            self.send(self.entry.get_text())
+
+    def send(self, text, shown=None):
+        """Give the agent a message. `shown` replaces it in the conversation when it is not the user's words."""
+        text = text.strip()
+        if self.busy or not (text or self.attachments):
+            return
+        text = text or "Look at this."
+        self.entry.set_text("")
+        prompt = text
+        if self.subject:
+            name, description = self.subject
+            prompt = f"This is about {description}.\n\n{text}"
+            text = f"{name}: {text}"
+            self.set_subject()  # the conversation remembers it from here on
+        if self.welcome:
+            self.window.name_tab(self, shown or text)
+            if self.first_run:  # from here on this is no longer a new system
+                os.makedirs(os.path.dirname(WELCOMED_PATH), exist_ok=True)
+                open(WELCOMED_PATH, "w").close()
+        self.add_text(shown or text, user=True)
+        if self.quote:
+            quoted = "\n".join("> " + line for line in self.quote.splitlines())
+            prompt = f"About this, which you said earlier in this conversation:\n\n{quoted}\n\n{prompt}"
+            short = " ".join(self.quote.split())
+            self.add_note("\u201c" + (short if len(short) <= 90 else short[:89] + "\u2026") + "\u201d")
+            self.set_quote()
+        attached = list(self.attachments)
+        if self.attachments:
+            prompt += "\n\nAttached files:\n" + "\n".join(self.attachments)
+            names = ", ".join(os.path.basename(path) or path for path in self.attachments)
+            self.add_note(f"\U0001F4CE {names}")
+            self.attachments = []
+            while chip := self.attachment_bar.get_first_child():
+                self.attachment_bar.remove(chip)
+            self.attachment_bar.set_visible(False)
+            self.entry.set_placeholder_text("Ask Mentor to do something\u2026")
+        _, provider, model, _ = MODELS[self.window.model_index]
+        effort = EFFORTS[self.window.effort_index][1]
+        key = folder = None
+        if provider == "claude":
+            self.engine = "claude"
+            argv = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
+                    "--mcp-config", MCP_CONFIG, "--strict-mcp-config",
+                    "--allowedTools", ALLOWED_TOOLS, "--disallowedTools", DISALLOWED_TOOLS,
+                    "--append-system-prompt", SYSTEM_PROMPT + ATTACHED["claude"]]
+            if model:
+                argv += ["--model", model]
+        elif provider == "codex":
+            self.engine = "codex"
+            try:
+                with open(GUIDE) as f:
+                    guide = f.read()
+            except OSError:
+                guide = ""
+            # Its own shell stays read-only, so that changes go through the Mentor tools, and it
+            # never stops to ask: those tools ask the user themselves. Values are TOML, which a
+            # JSON string also is.
+            settings = {
+                "sandbox_mode": "read-only", "approval_policy": "never",
+                "mcp_servers.mentor.command": MCP_SERVER,
+                "mcp_servers.mentor.default_tools_approval_mode": "approve",
+                "developer_instructions": f"{guide}\n\n{SYSTEM_PROMPT}{ATTACHED['codex']}",
+            }
+            if effort:
+                settings["model_reasoning_effort"] = effort
+            options = ["--json", "--skip-git-repo-check"]
+            for name, value in settings.items():
+                options += ["-c", f"{name}={json.dumps(value)}"]
+            options += ["-c", f"mcp_servers.mentor.env={{MENTOR_SANDBOX={json.dumps(self.sandbox)}}}"]
+            if model:
+                options += ["-m", model]
+            argv = [CODEX, "exec", *(["resume"] if self.sessions.get("codex") else []), *options]
+            if self.sessions.get("codex"):
+                argv.append(self.sessions["codex"])
+            argv.append(prompt)
+        elif provider == "gemini":
+            self.engine = "gemini"
+            try:
+                with open(GUIDE) as f:
+                    guide = f.read()
+            except OSError:
+                guide = ""
+            # Run like this it cannot stop to ask: what it would have asked about is refused, and
+            # that ends its turn. The Mentor tools are let through; they ask the user themselves.
+            folder = agy_folder(self.sandbox, f"{guide}\n\n{SYSTEM_PROMPT}{ATTACHED['gemini']}{AGY_PROMPT}")
+            agy_allow()
+            # Its own file tool, the one that can look at a picture, only opens what is in the
+            # folder it works in: what was attached is put there, and named by its place there.
+            folders = [option for path in attached if os.path.isdir(path) for option in ("--add-dir", path)]
+            if attached:
+                said, listed, _paths = prompt.rpartition("\n\nAttached files:\n")
+                prompt = said + listed + "\n".join(agy_attach(folder, path) or path for path in attached)
+            # A message that begins with a slash is still a message, not one of its commands.
+            argv = [AGY, "-p", prompt, "--output-format", "stream-json", "--disable-slash-commands", *folders]
+            if model:
+                argv += ["--model", model]
+            if self.sessions.get("gemini"):
+                argv += ["--conversation", self.sessions["gemini"]]
+        else:
+            self.engine = "agent"  # one conversation format, whichever provider answers
+            key = read_key(provider, model)
+            argv = [AGENT, "-p", prompt, "--provider", provider, "--model", model,
+                    "--system", SYSTEM_PROMPT + ATTACHED["agent"]]
+            if effort:
+                argv += ["--effort", effort]
+            for path in attached:
+                argv += ["--file", path]
+        if self.engine in ("claude", "agent") and self.sessions.get(self.engine):
+            argv += ["--resume", self.sessions[self.engine]]
+        self.trouble = None
+        self.pending = ""
+        self.stray_output = []
+        self.got_result = False
+        self.process = self.window.spawn(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
+                                         sandbox=self.sandbox, key=key, own_group=True, folder=folder)
+        if not self.process:
+            self.add_text(f"Could not start {argv[0]}.", error=True)
+            return
+        self.window.show_chat()
+        self.window.save_conversations()
+        self.set_busy(True)
+        self.status = Gtk.Label(xalign=0)
+        self.status.add_css_class("attachment-note")
+        self.status.set_visible(False)
+        waiting = Gtk.Box(spacing=8, halign=Gtk.Align.START)
+        waiting.append(Gtk.Spinner(spinning=True))
+        waiting.append(self.status)
+        self.spinner = self.add(waiting)
+        stream = Gio.DataInputStream.new(self.process.get_stdout_pipe())
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, self.process)
+
+    def on_line(self, stream, result, process):
+        try:
+            line, _ = stream.read_line_finish_utf8(result)
+        except GLib.Error:
+            line = None
+        if process is not self.process:
+            return  # the tab was closed meanwhile
+        if line is None:
+            self.finish()
+            return
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if isinstance(event, dict):
+            {"codex": self.on_codex_event, "gemini": self.on_agy_event}.get(self.engine, self.on_event)(event)
+        elif line.strip() and self.engine != "codex":  # Codex logs to the same place; its events say enough
+            self.stray_output.append(line)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, process)
+
+    def on_event(self, event):
+        kind = event.get("type")
+        if event.get("session_id"):
+            self.sessions[self.engine] = event["session_id"]
+        if kind == "system" and event.get("subtype") == "init" and event.get("model"):
+            self.window.show_model(event["model"])
+        elif kind == "system" and event.get("subtype") == "status" and self.spinner:
+            self.status.set_text(str(event.get("text", "")))
+            self.status.set_visible(True)
+        elif kind in ("assistant", "user"):
+            content = event.get("message", {}).get("content")
+            for block in content if isinstance(content, list) else []:
+                self.on_block(block)
+        elif kind == "rate_limit_event":
+            self.window.claude_usage(event.get("rate_limit_info"))
+        elif kind == "result":
+            self.got_result = True
+            if not event.get("is_error"):
+                return
+            # The CLI already said why as an assistant message, unless it failed before that.
+            if event.get("subtype") != "success":
+                self.add_text(str(event.get("result") or event.get("subtype")), error=True)
+            self.window.check_sign_in(rejected=event.get("subtype") == "auth")
+
+    def on_codex_event(self, event):
+        """The Codex CLI tells the same story in its own words (codex exec --json)."""
+        kind, item = event.get("type"), event.get("item") or {}
+        if kind == "thread.started" and event.get("thread_id"):
+            self.sessions["codex"] = event["thread_id"]
+        elif kind == "item.started" and item.get("type") == "mcp_tool_call":
+            self.on_block({"type": "tool_use", "id": item.get("id"), "name": item.get("tool", "?"),
+                           "input": item.get("arguments")})
+        elif kind == "item.completed" and item.get("type") == "mcp_tool_call":
+            self.on_block({"type": "tool_result", "tool_use_id": item.get("id"),
+                           "is_error": item.get("status") == "failed" or bool(item.get("error"))})
+        elif kind == "item.completed" and item.get("type") == "command_execution":
+            self.add_tool(None, "shell", str(item.get("command", "")), described=True,
+                          failed=item.get("exit_code") not in (0, None))
+        elif kind == "item.completed" and item.get("type") == "agent_message":
+            self.on_block({"type": "text", "text": item.get("text", "")})
+        elif kind == "turn.completed":
+            self.got_result = True
+            self.window.ask_usage("codex")
+        elif kind in ("error", "turn.failed"):
+            message = event.get("message") or (event.get("error") or {}).get("message") or "Codex stopped."
+            self.trouble = str(message)
+
+    def on_agy_event(self, event):
+        """And the Antigravity CLI in its own (agy --output-format stream-json): the turn is a
+        row of steps, each told of as it starts, as its text grows and as it ends."""
+        kind = event.get("event")
+        if event.get("conversation_id"):
+            self.sessions["gemini"] = event["conversation_id"]
+        if kind == "step_update":
+            step = event.get("step_update") or {}
+            state, info = step.get("state"), step.get("tool_info") or {}
+            if step.get("step_type") == "agent_response":
+                self.pending += str(step.get("text_delta") or "")
+                if state != "ACTIVE":
+                    self.say_pending()
+            elif step.get("step_type") == "tool":
+                self.say_pending()
+                name, given = str(info.get("name") or step.get("tool_name") or "?"), info.get("parameters") or {}
+                # Before it calls a tool of ours it reads how; that is not worth a row.
+                if str(given.get("AbsolutePath", "")).startswith(AGY_TOOL_NOTES):
+                    return
+                # Its one tool for calling any server's: shown as the Mentor tool that was meant.
+                if name == "call_mcp_tool" and given.get("ServerName") == "mentor":
+                    name, given = TOOL_PREFIX + str(given.get("ToolName") or "?"), given.get("Arguments")
+                call = f"{step.get('conversation_id')}:{step.get('step_index')}"
+                if state == "ACTIVE":
+                    self.on_block({"type": "tool_use", "id": call, "name": name, "input": given})
+                else:
+                    if call not in self.tool_icons:  # one that was over before it was told of
+                        self.on_block({"type": "tool_use", "id": call, "name": name, "input": given})
+                    self.on_block({"type": "tool_result", "tool_use_id": call,
+                                   "is_error": state == "ERROR" or bool(info.get("error"))})
+        elif kind == "result":
+            result = event.get("result") or {}
+            self.say_pending()
+            if result.get("status") != "SUCCESS":
+                self.trouble = str(result.get("error") or result.get("status") or "Gemini stopped.")
+                return
+            self.got_result = True
+            refused = ", ".join(str(action.get("display_name") or action.get("action"))
+                                for action in result.get("denied_actions") or [] if isinstance(action, dict))
+            if refused and not str(result.get("response") or "").strip():
+                self.add_text(f"Gemini reached for a tool of its own ({refused}) in place of Mentor’s, which "
+                              "is not allowed here, and stopped. Ask again.", error=True)
+            self.window.ask_usage("gemini")
+
+    def say_pending(self):
+        if self.pending.strip():
+            self.on_block({"type": "text", "text": self.pending})
+        self.pending = ""
+
+    def on_block(self, block):
+        kind = block.get("type")
+        if kind == "text" and block.get("text", "").strip():
+            self.last_said = block["text"].strip()
+            self.add_text(block["text"])
+        elif kind == "tool_use":
+            self.add_tool(block.get("id"), block.get("name", "?"), block.get("input"))
+        elif kind == "tool_result":
+            icon = self.tool_icons.pop(block.get("tool_use_id"), None)
+            item = self.tool_items.pop(block.get("tool_use_id"), None)
+            if item:
+                item["failed"] = bool(block.get("is_error"))
+            if icon:
+                failed = block.get("is_error")
+                icon.set_from_icon_name("dialog-warning-symbolic" if failed else "object-select-symbolic")
+        if self.spinner:  # keep it last
+            self.messages.reorder_child_after(self.spinner, self.messages.get_last_child())
+
+    def finish(self):
+        """The CLI exited: the turn is over."""
+        self.say_pending()
+        if self.spinner:
+            self.messages.remove(self.spinner)
+            self.spinner = None
+        for icon in self.tool_icons.values():  # calls that never got a result
+            icon.set_from_icon_name("process-stop-symbolic")
+        self.tool_icons.clear()
+        self.tool_items.clear()
+        # The Antigravity CLI logs to the same place; when it has said what went wrong, that is enough.
+        if self.stray_output and not self.got_result and not self.trouble:
+            self.add_text("\n".join(self.stray_output[-8:]), error=True)
+        if self.trouble and not self.got_result:
+            signed_out = self.engine == "codex" and ("401" in self.trouble or "nauthorized" in self.trouble)
+            self.add_text("ChatGPT is not signed in." if signed_out else self.trouble, error=True)
+            self.window.check_sign_in()
+        self.process = None
+        self.set_busy(False)
+        self.window.save_conversations()
+        self.window.on_finished(self)
+
+
+def card(*children, **properties):
+    """A dark translucent panel: how anything of ours stays readable on any wallpaper."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, **properties)
+    box.add_css_class("agent-card")
+    for child in children:
+        box.append(child)
+    return box
+
+
+class DesktopWindow(Adw.ApplicationWindow):
+    """The assistant's surface. It has no frame and no background of its own: the shell
+    (the mentor extension) spreads it over the work area as a desktop-type window, under
+    every application, so what is drawn here appears to be part of the wallpaper."""
+
+    def __init__(self, app):
+        super().__init__(application=app, title="Mentor", decorated=False,
+                         default_width=1280, default_height=760)
+        self.remove_css_class("background")
+        self.add_css_class("agent")
+        self.settings = load_settings()
+        # The surface is on every workspace, and each has its own conversation on it: the
+        # shell says which one is in front (go_to_workspace).
+        self.workspace = 0
+        self.last_on = {}  # workspace -> the conversation last looked at there
+
+        # Top left: the conversations. Top right: the model.
+        new_tab = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="New conversation",
+                             valign=Gtk.Align.CENTER)
+        new_tab.add_css_class("osd")
+        new_tab.add_css_class("circular")
+        new_tab.connect("clicked", lambda *_: self.new_or_empty())
+        # All of them by name: the bar only has room for some.
+        self.tab_list = Gtk.MenuButton(icon_name="view-list-symbolic", tooltip_text="All conversations",
+                                       valign=Gtk.Align.CENTER)
+        self.tab_list.add_css_class("osd")
+        self.tab_list.add_css_class("circular")
+        self.tab_list.set_create_popup_func(self.fill_tab_list)
+        go = Gio.SimpleAction.new("go-tab", GLib.VariantType.new("i"))
+        go.connect("activate", lambda _action, index: self.go_to_tab(index.get_int32()))
+        self.add_action(go)
+        self.tabs = Adw.TabView()
+        self.tabs.connect("close-page", self.on_close_page)
+        self.tabs.connect("notify::selected-page", self.on_selected)
+        tab_bar = Adw.TabBar(view=self.tabs, autohide=True, expand_tabs=False, hexpand=True)
+        tab_bar.add_css_class("agent-tabs")
+
+        labels = [label for label, _, _, _ in MODELS]
+        if self.settings.get("choice") in labels:
+            self.model_index = labels.index(self.settings["choice"])
+        elif "model" in self.settings or {"default", "opus", "sonnet", "haiku", "fable"} & set(self.settings.get("resolved", {})):
+            # Someone who used the assistant when it only knew Claude stays on Claude.
+            aliases = [model for _, provider, model, _ in MODELS if provider == "claude"]
+            first = [provider for _, provider, _, _ in MODELS].index("claude")
+            saved = self.settings.get("model")
+            self.model_index = first + (aliases.index(saved) if saved in aliases else 0)
+        else:
+            self.model_index = 0
+        # Someone who has not picked yet is asked which engine they want (show_choice),
+        # not walked into connecting the first of the list.
+        self.unchosen = "choice" not in self.settings and self.model_index == 0
+        if not self.unchosen:
+            self.settings["choice"] = labels[self.model_index]
+        # What Claude's names stood for used to be kept under the CLI's own words for them.
+        known = self.settings.setdefault("resolved", {})
+        for alias, label in (("default", "Claude"), ("fable", "Claude Fable"), ("opus", "Claude Opus"),
+                             ("sonnet", "Claude Sonnet"), ("haiku", "Claude Haiku")):
+            if alias in known:
+                known.setdefault(label, known.pop(alias))
+        # The picker's menu, shared by the buttons of all conversations: one submenu a provider.
+        self.model_menu = Gio.Menu()
+        picked = Gio.SimpleAction.new_stateful("model", GLib.VariantType.new("s"),
+                                               GLib.Variant.new_string(labels[self.model_index]))
+        picked.connect("activate", lambda _action, label: self.choose_model(
+            [name for name, _, _, _ in MODELS].index(label.get_string())))
+        self.add_action(picked)
+        change = Gio.SimpleAction.new("change-key", GLib.VariantType.new("s"))
+        change.connect("activate", lambda _action, provider: self.show_connect(change=provider.get_string()))
+        self.add_action(change)
+        again = Gio.SimpleAction.new("sign-in", GLib.VariantType.new("s"))
+        again.connect("activate", lambda _action, provider: self.sign_in(provider.get_string()))
+        self.add_action(again)
+        # How hard the model thinks, in the same menu, for the engines that have such a setting.
+        efforts = [value for _, value in EFFORTS]
+        self.effort_index = efforts.index(self.settings.get("effort")) if self.settings.get("effort") in efforts else 0
+        effort = Gio.SimpleAction.new_stateful("effort", GLib.VariantType.new("s"),
+                                               GLib.Variant.new_string(efforts[self.effort_index] or ""))
+        effort.connect("activate", lambda _action, value: self.choose_effort(efforts.index(value.get_string() or None)))
+        self.add_action(effort)
+        self.fill_model_menu()
+        self.refresh_codex_models()
+        self.usage = self.load_usage()
+
+        # Top right: a bell, there only while the system has something to suggest. It does
+        # not speak up by itself: what it holds is read when the user opens it.
+        self.advice_count = Gtk.Label()
+        bell = Gtk.Box(spacing=6)
+        bell.append(Gtk.Image(icon_name="preferences-system-notifications-symbolic"))
+        bell.append(self.advice_count)
+        self.advice_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                                   margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        self.advice_popover = Gtk.Popover(child=self.advice_list)
+        self.advice_button = Gtk.MenuButton(child=bell, popover=self.advice_popover, valign=Gtk.Align.CENTER,
+                                            tooltip_text="Suggestions for this system", visible=False)
+        self.advice_button.add_css_class("model")
+
+        top = Gtk.Box(spacing=8, margin_top=14, margin_start=16, margin_end=16)
+        top.append(new_tab)
+        top.append(self.tab_list)
+        top.append(tab_bar)
+        top.append(self.advice_button)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
+        self.stack.add_named(self.tabs, "chat")
+        self.connect_page = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        self.stack.add_named(self.connect_page, "sign-in")
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(top)
+        content.append(self.stack)
+        self.set_content(content)
+
+        # Right-click on the desktop opens the assistant's own menu.
+        self.chat_hidden = False
+        for name, handler in (("clear-chat", lambda *_: self.ask_to_clear()),
+                              ("new-chat", lambda *_: self.new_or_empty()),
+                              ("history", lambda *_: self.show_history()),
+                              ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
+                              ("advice", lambda *_: self.show_advice_settings()),
+                              # What the desktop's menu has on stock GNOME.
+                              ("background", lambda *_: self.spawn(["gnome-control-center", "background"])),
+                              ("displays", lambda *_: self.spawn(["gnome-control-center", "display"])),
+                              ("settings", lambda *_: self.spawn(["gnome-control-center"]))):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", handler)
+            self.add_action(action)
+        self.context_menu = Gtk.PopoverMenu.new_from_model(Gio.Menu())
+        self.context_menu.set_has_arrow(False)
+        self.context_menu.set_parent(content)
+        right = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        right.connect("pressed", self.on_right_click)
+        content.add_controller(right)
+
+        # A click anywhere on the desktop is a click on the assistant: the windows step
+        # aside and the text box takes the keyboard. Escape puts the windows back.
+        click = Gtk.GestureClick(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        click.connect("pressed", lambda *_: app.shell("Show"))
+        self.add_controller(click)
+        background = Gtk.GestureClick()
+        background.connect("released", lambda *_: self.focus_entry())
+        self.add_controller(background)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", lambda _c, keyval, *_: keyval == Gdk.KEY_Escape and app.shell("Restore") is None)
+        self.add_controller(keys)
+        # Signing in happens in a terminal; look again when the user comes back.
+        self.connect("notify::is-active", self.on_focus)
+        self.connect("close-request", lambda *_: True)  # the desktop is not something one closes
+        self.restoring = True  # nothing is saved while the saved conversations are being shown
+        for saved in self.load_conversations():
+            conversation = self.new_conversation()
+            conversation.restore(saved)
+            self.tabs.get_page(conversation).set_title(saved.get("title") or "Conversation")
+        self.restoring = False
+        if not os.path.exists(HISTORY_PATH):
+            try:
+                os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+                with open(HISTORY_PATH, "w") as f:
+                    for conversation in self.conversations():
+                        moment = 0
+                        for item in conversation.history:
+                            moment = item.get("time") or moment
+                            if item.get("text") and not item.get("error"):
+                                f.write(json.dumps({"t": int(moment), "c": conversation.sandbox,
+                                                    "title": self.tabs.get_page(conversation).get_title(),
+                                                    "user": bool(item.get("user")), "text": item["text"]}) + "\n")
+            except OSError:
+                pass
+        if not self.tabs.get_n_pages():
+            self.new_conversation(first_run=not os.path.exists(WELCOMED_PATH))
+        self.go_to_workspace(0)
+        self.tell_restore()
+        os.makedirs(NOTICES_DIR, exist_ok=True)
+        self.notices_monitor = Gio.File.new_for_path(NOTICES_DIR).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+        self.notices_monitor.connect("changed", lambda *_: GLib.timeout_add(500, self.show_notices))
+        self.show_notices()
+        self.show_usage()
+        if MODELS[self.model_index][1] in USAGE_ASKED:
+            self.ask_usage(MODELS[self.model_index][1])
+        self.advice_monitor = Gio.File.new_for_path(ADVICE_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.advice_monitor.connect("changed", lambda *_: GLib.timeout_add(800, self.refresh_advice))
+        # The agent can bring back what was turned away (suggestions_restore): the bell follows.
+        self.advice_state_monitor = Gio.File.new_for_path(ADVICE_STATE_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.advice_state_monitor.connect("changed", lambda *_: GLib.timeout_add(800, self.refresh_advice))
+        self.refresh_advice()
+        # What was put off comes back when its time is up, without anything else having to happen.
+        GLib.timeout_add_seconds(3600, lambda: self.refresh_advice() or True)
+        self.check_sign_in()
+
+    # --- conversations ------------------------------------------------------
+
+    @property
+    def current(self):
+        page = self.tabs.get_selected_page()
+        return page.get_child() if page else None
+
+    def on_right_click(self, _gesture, _n_press, x, y):
+        menu = Gio.Menu()
+        menu.append("Show chat" if self.chat_hidden else "Hide chat", "win.toggle-chat")
+        menu.append("Clear chat\u2026", "win.clear-chat")
+        menu.append("New conversation", "win.new-chat")
+        menu.append("History\u2026", "win.history")
+        menu.append("Suggestions\u2026", "win.advice")
+        system = Gio.Menu()
+        system.append("Change Background\u2026", "win.background")
+        system.append("Display Settings", "win.displays")
+        system.append("Settings", "win.settings")
+        menu.append_section(None, system)
+        self.context_menu.set_menu_model(menu)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+        self.context_menu.set_pointing_to(rect)
+        self.context_menu.popup()
+
+    def ask_to_clear(self):
+        """Clearing cannot be taken back, so it is asked about; nothing to ask when nothing was said."""
+        conversation = self.current
+        if not conversation or conversation.untouched:
+            return
+        dialog = Adw.AlertDialog(heading="Clear this conversation?",
+                                 body="What was said here is forgotten, by the assistant too. "
+                                      "Changes already made to the system stay.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("clear", "Clear")
+        dialog.set_response_appearance("clear", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _dialog, response: response == "clear" and conversation.clear())
+        dialog.present(self)
+
+    def show_chat(self, shown=True):
+        """Hide what was said, leaving the bare wallpaper and the text box, or show it again."""
+        self.chat_hidden = not shown
+        for conversation in self.conversations():
+            conversation.scroller.set_opacity(1 if shown else 0)
+            conversation.scroller.set_can_target(shown)
+
+    def load_conversations(self):
+        try:
+            with open(CONVERSATIONS_PATH) as f:
+                saved = json.load(f)
+            return [c for c in saved if isinstance(c, dict) and c.get("history")]
+        except (OSError, ValueError):
+            return []
+
+    def save_conversations(self):
+        if self.restoring:
+            return
+        saved = [c.saved(self.tabs.get_page(c).get_title()) for c in self.conversations() if c.history]
+        try:
+            os.makedirs(os.path.dirname(CONVERSATIONS_PATH), exist_ok=True)
+            with open(CONVERSATIONS_PATH + ".new", "w") as f:
+                json.dump(saved, f)
+            os.replace(CONVERSATIONS_PATH + ".new", CONVERSATIONS_PATH)
+        except OSError:
+            pass
+
+    def focus_entry(self):
+        if self.current and self.stack.get_visible_child_name() == "chat":
+            self.current.entry.grab_focus()
+
+    def new_conversation(self, first_run=False):
+        conversation = Conversation(self, first_run)
+        page = self.tabs.append(conversation)
+        page.set_title("New conversation")
+        self.show_model()
+        if hasattr(self, "usage"):
+            self.show_usage()
+        self.tabs.set_selected_page(page)
+        conversation.entry.grab_focus()
+        return conversation
+
+    def new_or_empty(self):
+        """A conversation to start in: one nothing was asked in yet, if this workspace has one."""
+        for conversation in self.conversations():
+            if conversation.workspace == self.workspace and conversation.untouched:
+                self.tabs.set_selected_page(self.tabs.get_page(conversation))
+                conversation.entry.grab_focus()
+                return conversation
+        return self.new_conversation()
+
+    def fill_tab_list(self, button):
+        menu = Gio.Menu()
+        for index, conversation in enumerate(self.conversations()):
+            title = self.tabs.get_page(conversation).get_title()
+            if conversation.workspace != self.workspace:
+                title += f"  (workspace {conversation.workspace + 1})"
+            item = Gio.MenuItem.new(title, None)
+            item.set_action_and_target_value("win.go-tab", GLib.Variant.new_int32(index))
+            menu.append_item(item)
+        more = Gio.Menu()
+        more.append("History\u2026", "win.history")
+        menu.append_section(None, more)
+        button.set_menu_model(menu)
+
+    def go_to_tab(self, index):
+        if 0 <= index < self.tabs.get_n_pages():
+            self.tabs.set_selected_page(self.tabs.get_nth_page(index))
+            self.focus_entry()
+
+    # --- history ----------------------------------------------------------------
+    # Everything said, in every conversation, is also written to one file, a line each, and
+    # stays there when a conversation is cleared or closed. It is read from the end, a part
+    # at a time, so years of it cost nothing until they are scrolled to.
+
+    def note(self, conversation, text, user):
+        try:
+            os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+            with open(HISTORY_PATH, "a") as f:
+                f.write(json.dumps({"t": int(time.time()), "c": conversation.sandbox,
+                                    "title": self.tabs.get_page(conversation).get_title() if conversation.get_parent() else "",
+                                    "user": bool(user), "text": text}) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def read_history(end, count, wanted=""):
+        """Up to `count` entries that end before byte `end` of the file (None: its end), newest
+        first, and where the part read begins: (entries, start). `wanted` keeps only entries
+        with those words."""
+        entries, wanted = [], wanted.lower()
+        try:
+            with open(HISTORY_PATH, "rb") as f:
+                if end is None:
+                    end = f.seek(0, os.SEEK_END)
+                while end > 0 and len(entries) < count:
+                    start = max(0, end - 65536)
+                    f.seek(start)
+                    block = f.read(end - start)
+                    if start > 0:  # begin at the first whole line
+                        cut = block.find(b"\n") + 1
+                        if cut == 0:
+                            break
+                        start, block = start + cut, block[cut:]
+                    for line in reversed(block.splitlines()):
+                        try:
+                            entry = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(entry, dict) and wanted in str(entry.get("text", "")).lower():
+                            entries.append(entry)
+                    end = start
+        except OSError:
+            return [], 0
+        return entries, end
+
+    def show_history(self):
+        dialog = Adw.Dialog(title="History", content_width=760, content_height=680)
+        dialog.add_css_class("advice-details")
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=6, margin_bottom=18,
+                       margin_start=24, margin_end=24)
+        scroller = Gtk.ScrolledWindow(child=rows, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        search = Gtk.SearchEntry(placeholder_text="Search everything that was said", margin_start=24, margin_end=24,
+                                 margin_bottom=8)
+        state = {"end": None, "day": None, "done": False}
+
+        def more(*_):
+            if state["done"]:
+                return
+            entries, state["end"] = self.read_history(state["end"], 40, search.get_text().strip())
+            state["done"] = state["end"] == 0
+            for entry in entries:
+                when = time.localtime(entry.get("t", 0))
+                day = time.strftime("%A, %d %B %Y", when)
+                if day != state["day"]:
+                    state["day"] = day
+                    heading = Gtk.Label(label=day, xalign=0, margin_top=10)
+                    heading.add_css_class("heading")
+                    rows.append(heading)
+                who = Gtk.Label(xalign=0, use_markup=True, label=(
+                    f"<b>{'You' if entry.get('user') else 'Mentor'}</b>  {time.strftime('%H:%M', when)}"
+                    + (f"  \u00b7  {GLib.markup_escape_text(str(entry.get('title')), -1)}" if entry.get("title") else "")))
+                who.add_css_class("caption")
+                who.add_css_class("dim-label")
+                text = str(entry.get("text", ""))
+                text = text if len(text) <= 1500 else text[:1499] + "\u2026"
+                said = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True)
+                if entry.get("user"):
+                    said.set_text(text)
+                else:
+                    said.set_markup(to_markup(text))
+                one = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                one.append(who)
+                one.append(said)
+                rows.append(one)
+            if state["done"] and rows.get_first_child() is None:
+                rows.append(Gtk.Label(label="Nothing yet." if not search.get_text().strip() else "Nothing found.",
+                                      margin_top=30))
+
+        def again(*_):
+            while child := rows.get_first_child():
+                rows.remove(child)
+            state.update(end=None, day=None, done=False)
+            more()
+
+        scroller.connect("edge-reached", lambda _s, edge: edge == Gtk.PositionType.BOTTOM and more())
+        search.connect("search-changed", again)
+        view = Adw.ToolbarView(content=scroller)
+        view.add_top_bar(Adw.HeaderBar())
+        view.add_top_bar(search)
+        dialog.set_child(view)
+        dialog.set_focus(search)
+        dialog.present(self)
+        more()
+
+    def on_selected(self, *_):
+        current = self.current
+        if current and current.workspace == self.workspace:
+            self.last_on[self.workspace] = current
+
+    # --- suggestions ----------------------------------------------------------
+
+    def advice_state(self):
+        try:
+            with open(ADVICE_STATE_PATH) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        state.setdefault("off", False)
+        state.setdefault("never", [])   # kinds of suggestion not to make again
+        state.setdefault("until", {})   # a suggestion -> when it may be made again
+        return state
+
+    def save_advice_state(self, state):
+        os.makedirs(os.path.dirname(ADVICE_STATE_PATH), exist_ok=True)
+        with open(ADVICE_STATE_PATH, "w") as f:
+            json.dump(state, f)
+
+    def suggestions(self):
+        """What there is to suggest now, less what the user has put off or does not want to hear of."""
+        state = self.advice_state()
+        if state["off"]:
+            return []
+        try:
+            with open(ADVICE_PATH) as f:
+                found = [s for s in json.load(f) if isinstance(s, dict) and s.get("id") and s.get("prompt")]
+        except (OSError, ValueError):
+            return []
+        return [s for s in found
+                if s.get("kind") not in state["never"] and state["until"].get(s["id"], 0) <= time.time()]
+
+    def refresh_advice(self):
+        """Fill the bell with the suggestions there are; no suggestions, no bell."""
+        while child := self.advice_list.get_first_child():
+            self.advice_list.remove(child)
+        suggestions = self.suggestions()
+        self.advice_button.set_visible(bool(suggestions))
+        self.advice_count.set_text(str(len(suggestions)))
+        if not suggestions:
+            self.advice_popover.popdown()
+        for suggestion in suggestions:
+            title = Gtk.Label(xalign=0, wrap=True, max_width_chars=46, use_markup=True,
+                              label=linked(suggestion.get("title", ""), suggestion.get("link")))
+            title.add_css_class("heading")
+            body = Gtk.Label(label=suggestion.get("body", ""), xalign=0, wrap=True, max_width_chars=46,
+                             wrap_mode=Pango.WrapMode.WORD_CHAR, visible=bool(suggestion.get("body")))
+            body.add_css_class("dim-label")
+            words = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+            words.append(title)
+            top = Gtk.Box(spacing=12)
+            top.append(Gtk.Image(icon_name=ADVICE_ICONS.get(suggestion.get("kind"), "dialog-information-symbolic"),
+                                 pixel_size=24, valign=Gtk.Align.START, margin_top=2))
+            if suggestion.get("details"):  # a click on the words under the title opens the whole of it
+                opener = Gtk.Button(child=body, tooltip_text="Read all of it", visible=body.get_visible())
+                opener.add_css_class("advice-open")
+                opener.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+                opener.connect("clicked", lambda _b, suggestion=suggestion: self.show_advice_details(suggestion))
+                words.append(opener)
+            else:
+                words.append(body)
+            top.append(words)
+            # To the chat: the agent takes it up, in a conversation of its own.
+            look = Gtk.Button(label="Send to the chat")
+            look.add_css_class("suggested-action")
+            look.add_css_class("pill")
+            look.connect("clicked", lambda _b, suggestion=suggestion: self.take_advice(suggestion))
+            later = Gtk.Button(label="Not now")
+            later.add_css_class("flat")
+            later.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, days=3))
+            never = Gtk.Button(label="Don\u2019t suggest this again")
+            never.add_css_class("flat")
+            never.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, never=True))
+            buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END)
+            for button in (never, later, look):
+                buttons.append(button)
+            one = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            one.append(top)
+            one.append(buttons)
+            if self.advice_list.get_first_child():
+                self.advice_list.append(Gtk.Separator())
+            self.advice_list.append(one)
+        return GLib.SOURCE_REMOVE
+
+    def show_advice_details(self, suggestion):
+        """The whole of a suggestion, over the desktop: to read, and to copy from."""
+        self.advice_popover.popdown()
+        dialog = Adw.Dialog(title=suggestion.get("title", "Suggestion"), content_width=720, content_height=620)
+        dialog.add_css_class("advice-details")
+        text = Gtk.Label(label=details_markup(suggestion["details"]), use_markup=True, xalign=0, yalign=0,
+                         wrap=True, selectable=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=6, margin_bottom=18,
+                       margin_start=24, margin_end=24)
+        if suggestion.get("link"):  # the title again, as the way to the page itself
+            heading = Gtk.Label(label=linked(suggestion.get("title", ""), suggestion["link"]), use_markup=True,
+                                xalign=0, wrap=True)
+            heading.add_css_class("title-3")
+            page.append(heading)
+        page.append(text)
+        scroller = Gtk.ScrolledWindow(child=page, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        buttons = Gtk.Box(spacing=8, margin_top=10, margin_bottom=14, margin_start=24, margin_end=24)
+        if suggestion.get("link"):
+            visit = Gtk.Button(label="Open the page")
+            visit.add_css_class("pill")
+            visit.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(suggestion["link"], None))
+            buttons.append(visit)
+        copy = Gtk.Button(label="Copy all")
+        copy.add_css_class("pill")
+        copy.connect("clicked", lambda *_: self.get_clipboard().set(suggestion["details"]))
+        buttons.append(copy)
+        buttons.append(Gtk.Box(hexpand=True))
+        send = Gtk.Button(label="Send to the chat")
+        send.add_css_class("suggested-action")
+        send.add_css_class("pill")
+        send.connect("clicked", lambda *_: (dialog.close(), self.take_advice(suggestion)))
+        buttons.append(send)
+        view = Adw.ToolbarView(content=scroller)
+        view.add_top_bar(Adw.HeaderBar())
+        view.add_bottom_bar(buttons)
+        dialog.set_child(view)
+        dialog.set_focus(send)  # not the text: a label that takes the focus selects all of itself
+        dialog.present(self)
+
+        def from_the_top():
+            text.select_region(0, 0)
+            scroller.get_vadjustment().set_value(0)
+            return GLib.SOURCE_REMOVE
+        GLib.idle_add(from_the_top)
+        GLib.timeout_add(250, from_the_top)
+
+    def put_off(self, suggestion, days=0, never=False):
+        state = self.advice_state()
+        if never and suggestion.get("kind") not in state["never"]:
+            state["never"].append(suggestion.get("kind"))
+        if days:
+            state["until"][suggestion["id"]] = time.time() + days * 86400
+        self.save_advice_state(state)
+        self.refresh_advice()
+
+    def take_advice(self, suggestion):
+        """The user wants it looked into: now it goes to the agent, in a conversation of its own."""
+        self.advice_popover.popdown()
+        self.put_off(suggestion, days=7)
+        prompt, shown = suggestion["prompt"], suggestion.get("title") or "Look into it"
+        if suggestion.get("kind") in ("news", "gnome", "apps", "github"):
+            prompt = ("Review this, and tell me what we can make of it: what in it is of use to me and to this "
+                      "system, and what we could do with it, most worthwhile first.\n\n" + prompt)
+            shown = "Review this, what can we make of it: " + shown
+        self.for_request().send(prompt, shown=shown)
+
+    def show_advice_settings(self):
+        """Suggestions on or off, and everything the user turned away, each with the way back."""
+        dialog = Adw.Dialog(title="Suggestions", content_width=480)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        dialog.set_child(view)
+
+        def change(act):
+            state = self.advice_state()
+            act(state)
+            self.save_advice_state(state)
+            self.refresh_advice()
+            fill()
+
+        def row(title, subtitle, back):
+            button = Gtk.Button(label="Bring back", valign=Gtk.Align.CENTER)
+            button.connect("clicked", lambda *_: change(back))
+            one = Adw.ActionRow(title=title, subtitle=subtitle)
+            one.add_suffix(button)
+            return one
+
+        def fill():
+            state = self.advice_state()
+            page = Adw.PreferencesPage()
+            main = Adw.PreferencesGroup(description=(
+                "The system looks itself over now and then and notes what may be worth your attention. "
+                "It waits behind the bell on the desktop. Nothing goes to the agent until you send it to the chat."))
+            switch = Adw.SwitchRow(title="Suggest things for this system", active=not state["off"])
+            switch.connect("notify::active", lambda *_: change(lambda s: s.update(off=not switch.get_active())))
+            main.add(switch)
+            page.add(main)
+            hidden = Adw.PreferencesGroup(title="Not suggested any more")
+            for kind in state["never"]:
+                hidden.add(row(ADVICE_KINDS.get(kind, kind), "You chose not to be told about these again",
+                               lambda s, kind=kind: s["never"].remove(kind)))
+            try:
+                with open(ADVICE_PATH) as f:
+                    titles = {s["id"]: s.get("title") for s in json.load(f) if isinstance(s, dict) and s.get("id")}
+            except (OSError, ValueError):
+                titles = {}
+            for key, when in sorted(state["until"].items(), key=lambda item: item[1]):
+                if when > time.time():
+                    hidden.add(row(titles.get(key) or key, f"Put off until {told_when(when)}",
+                                   lambda s, key=key: s["until"].pop(key, None)))
+            if not state["never"] and not any(when > time.time() for when in state["until"].values()):
+                hidden.add(Adw.ActionRow(title="Nothing is hidden", subtitle="What you turn away is listed here"))
+            page.add(hidden)
+            view.set_content(page)
+
+        fill()
+        dialog.present(self)
+
+    def go_to_workspace(self, index):
+        """Show the conversation of a workspace: the one last looked at there, or a new one."""
+        self.workspace = index
+        here = [c for c in self.conversations() if c.workspace == index]
+        last = self.last_on.get(index)
+        if here:
+            self.tabs.set_selected_page(self.tabs.get_page(last if last in here else here[-1]))
+        else:
+            self.new_conversation()
+        # A workspace only passed through leaves no empty conversation behind.
+        for conversation in self.conversations():
+            if conversation.workspace != index and conversation.untouched and not conversation.first_run:
+                self.tabs.close_page(self.tabs.get_page(conversation))
+        self.focus_entry()
+
+    def for_request(self):
+        """The conversation a request from outside goes to: the open tab if nothing was
+        asked in it yet, otherwise a new one, so running work is left alone."""
+        current = self.current
+        return current if current and current.untouched else self.new_conversation()
+
+    def name_tab(self, conversation, text):
+        title = " ".join(text.split())
+        self.tabs.get_page(conversation).set_title(title if len(title) <= 28 else title[:27] + "…")
+
+    def on_busy_changed(self, conversation):
+        page = self.tabs.get_page(conversation) if conversation.get_parent() else None
+        if page:
+            page.set_loading(conversation.busy)
+
+    def on_close_page(self, tabs, page):
+        closed = page.get_child()
+        closed.stop()
+        closed.process = None  # what it may still say is no longer listened to
+        tabs.close_page_finish(page, True)
+        # There is always a place to type. Checked once the page is really gone.
+        GLib.idle_add(lambda: tabs.get_n_pages() == 0 and bool(self.new_conversation()) and False)
+        GLib.idle_add(lambda: self.save_conversations() and False)
+        return Gdk.EVENT_STOP
+
+    # --- model and sign-in --------------------------------------------------
+
+    def conversations(self):
+        return [self.tabs.get_nth_page(i).get_child() for i in range(self.tabs.get_n_pages())]
+
+    def choose_model(self, index):
+        """One model for all conversations, picked from the button next to any text box."""
+        if index == self.model_index and not self.unchosen:
+            return
+        self.unchosen = False
+        self.model_index = index
+        self.settings["choice"] = MODELS[index][0]
+        # Also by engine and model, for `mentor repair`, which talks to the same one on a console.
+        self.settings["engine"], self.settings["engine_model"] = MODELS[index][1], MODELS[index][2]
+        save_settings(self.settings)
+        self.lookup_action("model").set_state(GLib.Variant.new_string(MODELS[index][0]))
+        for conversation in self.conversations():
+            conversation.model.set_label(self.shown_name(index))
+            conversation.model.popdown()
+        self.show_model()
+        # The menu itself stays as it is: this is called from it, and taking it apart under the
+        # click that is still being handled brought the assistant down. Only its top changes.
+        GLib.idle_add(lambda: self.show_usage() and False)
+        if MODELS[index][1] in USAGE_ASKED:
+            self.ask_usage(MODELS[index][1])
+        self.check_sign_in()
+
+    def shown_name(self, index, short=False):
+        """A model's name for the button, or (short) for its provider's submenu. Claude's names
+        are families ("the latest Haiku"); once one has answered, its version is known and shown."""
+        label, provider, model, name = MODELS[index]
+        text = name if short else label
+        exact = self.settings.get("resolved", {}).get(label, "")
+        found = re.search(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{6,})?$", exact) if provider == "claude" else None
+        if found:
+            version = found.group(2) + (f".{found.group(3)}" if found.group(3) else "")
+            text = f"{text} {version}" if model else f"{text} ({found.group(1).capitalize()} {version})"
+        return text
+
+    def fill_model_menu(self):
+        # The place at the top goes with the old menu: what was put there is taken out first.
+        for conversation in self.conversations():
+            menu = conversation.model.get_popover()
+            if conversation.usage_box is not None and menu is not None and conversation.usage_box.get_parent():
+                menu.remove_child(conversation.usage_box)
+            conversation.usage_box = None
+        self.model_menu.remove_all()
+        # First in the menu, a place for the chosen model and what its account says of its limits (show_usage).
+        top = Gio.Menu()
+        place = Gio.MenuItem.new(None, None)
+        place.set_attribute_value("custom", GLib.Variant.new_string("usage"))
+        top.append_item(place)
+        self.model_menu.append_section(None, top)
+        for title, provider in MENUS:
+            submenu = Gio.Menu()
+            for label, engine, _, name in MODELS:
+                if engine == provider:
+                    item = Gio.MenuItem.new(self.shown_name([m[0] for m in MODELS].index(label), short=True), None)
+                    item.set_action_and_target_value("win.model", GLib.Variant.new_string(label))
+                    submenu.append_item(item)
+            if provider in ACCOUNTS:  # for when the account's sign-in has gone stale
+                extra = Gio.Menu()
+                item = Gio.MenuItem.new("Sign in again\u2026", None)
+                item.set_action_and_target_value("win.sign-in", GLib.Variant.new_string(provider))
+                extra.append_item(item)
+                submenu.append_section(None, extra)
+            if provider in PROVIDERS:  # its key can be replaced at any time
+                extra = Gio.Menu()
+                item = Gio.MenuItem.new("Change key\u2026", None)
+                item.set_action_and_target_value("win.change-key", GLib.Variant.new_string(provider))
+                extra.append_item(item)
+                submenu.append_section(None, extra)
+            self.model_menu.append_submenu(title, submenu)
+        # Always there, though Claude Code has no such setting and Gemini's models carry theirs in their names: a menu that changed with the
+        # model would have to be rebuilt while it is open.
+        choices = Gio.Menu()
+        for label, value in EFFORTS:
+            item = Gio.MenuItem.new("Default" if value is None else label, None)
+            item.set_action_and_target_value("win.effort", GLib.Variant.new_string(value or ""))
+            choices.append_item(item)
+        section = Gio.Menu()
+        section.append_submenu("Effort", choices)
+        self.model_menu.append_section(None, section)
+        if hasattr(self, "usage"):
+            self.show_usage()
+
+    # --- usage ----------------------------------------------------------------
+
+    def load_usage(self):
+        try:
+            with open(USAGE_PATH) as f:
+                usage = json.load(f)
+            return usage if isinstance(usage, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def set_usage(self, provider, windows):
+        """Keep what an account said of its allowance, and show it."""
+        if not windows:
+            return
+        self.usage[provider] = {"at": time.time(), "windows": windows}
+        try:
+            os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
+            with open(USAGE_PATH, "w") as f:
+                json.dump(self.usage, f)
+        except OSError:
+            pass
+        self.show_usage()
+
+    def claude_usage(self, info):
+        """Claude Code tells of the allowance in the stream of every answer."""
+        if not isinstance(info, dict):
+            return
+        windows = []
+        named = info.get("unifiedWindows")
+        for key, minutes in (("five_hour", 300), ("seven_day", 10080)):
+            window = (named or {}).get(key)
+            if isinstance(window, dict):
+                windows.append({"minutes": minutes, "resets": window.get("resetsAt"),
+                                "used": self.share(window.get("utilization"))})
+        if not windows:  # only the window that is nearest its limit was told
+            minutes = {"five_hour": 300}.get(info.get("rateLimitType"), 10080 if info.get("rateLimitType") else None)
+            if info.get("resetsAt") or info.get("utilization") is not None:
+                known = [w for w in self.usage.get("claude", {}).get("windows", []) if w.get("minutes") != minutes]
+                windows = sorted(known + [{"minutes": minutes, "resets": info.get("resetsAt"),
+                                           "used": self.share(info.get("utilization")),
+                                           "status": info.get("status")}], key=lambda w: w.get("minutes") or 0)
+        self.set_usage("claude", windows)
+
+    @staticmethod
+    def share(utilization):
+        """Claude gives a share of one; shown as a percentage."""
+        return round(utilization * 100) if isinstance(utilization, (int, float)) else None
+
+    def ask_usage(self, provider):
+        """Codex and Gemini have to be asked (mentor-usage)."""
+        process = self.spawn([USAGE, provider], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        if process:
+            process.communicate_utf8_async(None, None, self.on_usage, provider)
+
+    def on_usage(self, process, result, provider):
+        try:
+            _, out, _ = process.communicate_utf8_finish(result)
+            windows = json.loads(out).get("windows") or []
+        except (GLib.Error, ValueError, AttributeError):
+            return
+        self.set_usage(provider, [{"minutes": w.get("minutes"), "resets": w.get("resets"),
+                                   "used": round(w["used"]) if isinstance(w.get("used"), (int, float)) else None}
+                                  for w in windows if isinstance(w, dict)])  # both give percentages
+
+    def show_usage(self):
+        """Fill the top of the model's menu, in every conversation: the model chosen, and under it
+        the limits of its account where the engine tells them."""
+        provider = MODELS[self.model_index][1]
+        known = self.usage.get(provider) or {}
+        # A window whose reset has passed says nothing about now.
+        windows = [w for w in known.get("windows", []) if not w.get("resets") or w["resets"] > time.time()]
+        for conversation in self.conversations():
+            menu = conversation.model.get_popover()
+            if menu is None:
+                continue
+            if conversation.usage_box is not None and conversation.usage_box.get_parent():
+                menu.remove_child(conversation.usage_box)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, width_request=320,
+                          margin_top=6, margin_bottom=8, margin_start=10, margin_end=10)
+            chosen = Gtk.Label(label=MODELS[self.model_index][0], xalign=0, hexpand=True)
+            chosen.add_css_class("title-4")
+            head = Gtk.Box(spacing=12)
+            head.append(chosen)
+            if provider not in ("claude", "gemini") and EFFORTS[self.effort_index][1]:
+                effort = Gtk.Label(label=f"{EFFORTS[self.effort_index][0]} effort", xalign=1)
+                effort.add_css_class("dim-label")
+                head.append(effort)
+            box.append(head)
+            for window in windows:
+                name = Gtk.Label(label=window_name(window.get("minutes")), xalign=0, hexpand=True)
+                when = Gtk.Label(label=resets_when(window["resets"]) if window.get("resets") else "", xalign=1)
+                when.add_css_class("dim-label")
+                share = Gtk.Label(label=f"{window['used']}%" if window.get("used") is not None else
+                                  {"allowed_warning": "nearly used", "rejected": "used up"}.get(window.get("status"), ""),
+                                  xalign=1, width_chars=5)
+                top = Gtk.Box(spacing=12)
+                for label in (name, when, share):
+                    top.append(label)
+                one = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                one.append(top)
+                if window.get("used") is not None:
+                    one.append(Gtk.ProgressBar(fraction=min(1.0, window["used"] / 100)))
+                box.append(one)
+            if windows:
+                told = Gtk.Label(label=f"As {ACCOUNTS[provider][0]} last said, {told_when(known['at']).lower()}.", xalign=0)
+            elif provider in ACCOUNTS:
+                told = Gtk.Label(label="Its limits show here after the first answer.", xalign=0)
+            else:
+                # A model that runs on a key: which key that is, and the way to give it one.
+                label, _, model, _ = MODELS[self.model_index]
+                name = PROVIDERS[provider][0]
+                own = os.path.exists(key_path(provider, model)) if model else False
+                told = Gtk.Label(xalign=0, wrap=True, max_width_chars=40, label=(
+                    f"Runs on a key of its own." if own else
+                    f"Runs on the key the {name} models share." if read_key(provider) else "Has no key yet."))
+            told.add_css_class("caption")
+            told.add_css_class("dim-label")
+            box.append(told)
+            if provider in PROVIDERS:
+                key = Gtk.Button(label=f"Set a key for {MODELS[self.model_index][0]}…", halign=Gtk.Align.START)
+                key.add_css_class("pill")
+
+                def set_key(_button, conversation=conversation, provider=provider):
+                    conversation.model.popdown()
+                    GLib.idle_add(lambda: self.show_connect(change=provider) and False)
+                key.connect("clicked", set_key)
+                box.append(key)
+            conversation.usage_box = box if menu.add_child(box, "usage") else None
+
+    def refresh_codex_models(self):
+        """Ask Codex what its models are now; they change more often than this program does."""
+        process = self.spawn([CODEX, "debug", "models"], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        if process:
+            process.communicate_utf8_async(None, None, self.on_codex_models)
+
+    def on_codex_models(self, process, result):
+        try:
+            _, out, _ = process.communicate_utf8_finish(result)
+            catalog = json.loads(out)["models"]
+            models = [(m["slug"], m.get("display_name") or m["slug"]) for m in catalog if m.get("visibility") == "list"]
+        except (GLib.Error, ValueError, KeyError, TypeError):
+            return
+        self.keep_models("codex", models)
+
+    def keep_models(self, provider, models):
+        """What an account said its models are: into the picker, and kept for the next start."""
+        if not models:
+            return
+        try:
+            os.makedirs(os.path.dirname(MODELS_PATHS[provider]), exist_ok=True)
+            with open(MODELS_PATHS[provider], "w") as f:
+                json.dump(models, f)
+        except OSError:
+            pass
+        if add_models(provider, models):
+            self.fill_model_menu()
+
+    def choose_effort(self, index):
+        if index == self.effort_index:
+            return
+        self.effort_index = index
+        self.settings["effort"] = EFFORTS[index][1]
+        save_settings(self.settings)
+        self.lookup_action("effort").set_state(GLib.Variant.new_string(EFFORTS[index][1] or ""))
+        self.show_usage()  # it says the effort beside the model
+
+    def show_model(self, resolved=None):
+        """Keep the exact model id as the pickers' tooltip. `resolved` is what the CLI just
+        reported: a picker holds aliases ("the latest Opus"), this is what one stands for."""
+        known = self.settings.setdefault("resolved", {})
+        label = MODELS[self.model_index][0]
+        if resolved and known.get(label) != resolved:
+            known[label] = resolved
+            save_settings(self.settings)
+            self.fill_model_menu()  # the version is part of the name
+            for conversation in self.conversations():
+                conversation.model.set_label(self.shown_name(self.model_index))
+        for conversation in self.conversations():
+            conversation.model.set_tooltip_text(known.get(label, "Model the agent runs on"))
+
+    def tell_restore(self):
+        """After a start that failed and was put right automatically, say so, once."""
+        try:
+            with open(RESTORED_PATH) as f:
+                report = json.load(f)
+        except (OSError, ValueError):
+            return
+        try:
+            with open(RESTORE_SEEN_PATH) as f:
+                if f.read() == report["time"]:
+                    return
+        except OSError:
+            pass
+        lines = [f"The start after the last change failed: {report['why']}."]
+        if report["undone"]:
+            lines.append("Undone:")
+            lines += [f"• {change['summary'] or change['id']}" for change in report["undone"]]
+        if report["not_undone"]:
+            lines.append("Could not be undone: " + ", ".join(change["id"] for change in report["not_undone"]))
+        if report["kernel_held"]:
+            lines.append("The kernel that failed is still installed, but the one that works is the one that starts.")
+        self.current.add_notice(
+            "problem", "Mentor went back to the way it last worked", "\n".join(lines),
+            "The last start failed and Mentor went back to the way it last worked by itself. What it noted:\n\n"
+            + "\n".join(lines) + "\n\nFind out why that start failed (boot_status, and the log of the start before "
+            "this one), tell me in plain words, and say how the change could be tried again another way. Do not "
+            "change anything before I agree.")
+        # Also as a notification: the desktop may be covered, or showing the sign-in card.
+        notification = Gio.Notification.new("Mentor went back to the way it last worked")
+        notification.set_body("The start after the last change failed, so the change was undone.")
+        notification.set_default_action("app.show")
+        self.get_application().send_notification("restore", notification)
+        os.makedirs(os.path.dirname(RESTORE_SEEN_PATH), exist_ok=True)
+        with open(RESTORE_SEEN_PATH, "w") as f:
+            f.write(report["time"])
+
+    def show_notices(self):
+        """Put what was left in NOTICES_DIR into the chat, oldest first, and take it from there."""
+        try:
+            names = [name for name in os.listdir(NOTICES_DIR) if name.endswith(".json")]
+            names.sort(key=lambda name: os.path.getmtime(os.path.join(NOTICES_DIR, name)))
+        except OSError:
+            return GLib.SOURCE_REMOVE
+        shown = []
+        for name in names:
+            path = os.path.join(NOTICES_DIR, name)
+            try:
+                with open(path) as f:
+                    notice = json.load(f)
+                os.remove(path)
+                title, text = str(notice["title"]).strip(), str(notice.get("text") or "").strip()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if not title or not self.current:
+                continue
+            prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
+            self.current.add_notice("problem" if notice.get("level") == "problem" else "warning", title, text, prompt)
+            shown.append((title, text))
+        if shown:
+            self.show_chat()
+            if not self.is_active():  # the desktop is covered: say that there is something on it
+                notification = Gio.Notification.new(shown[-1][0])
+                notification.set_body(shown[-1][1] if len(shown[-1][1]) <= 160 else shown[-1][1][:159] + "…")
+                notification.set_default_action("app.show")
+                self.get_application().send_notification("notice", notification)
+        return GLib.SOURCE_REMOVE
+
+    def on_finished(self, conversation):
+        """An answer nobody is looking at (the desktop is covered) is announced."""
+        if self.is_active() or not conversation.last_said:
+            return
+        text = " ".join(re.sub(r"[*`#]", "", conversation.last_said).split())  # no Markdown in a notification
+        notification = Gio.Notification.new("Mentor has finished")
+        notification.set_body(text if len(text) <= 160 else text[:159] + "\u2026")
+        notification.set_default_action("app.show")
+        self.get_application().send_notification(conversation.sandbox, notification)
+
+    def on_focus(self, *_):
+        if not self.is_active():
+            return
+        if self.stack.get_visible_child_name() == "sign-in":
+            self.check_sign_in()
+        self.focus_entry()
+
+    def sign_in(self, provider):
+        """Open a terminal on the account's own sign-in."""
+        if provider == "claude":
+            # Claude Code marks a token refresh in progress with a directory. One left behind
+            # by a refresh that was cut off (the computer went down) blocks every later one.
+            lock = os.path.expanduser("~/.claude/.oauth_refresh.lock")
+            try:
+                if time.time() - os.path.getmtime(lock) > 120:
+                    os.rmdir(lock)
+            except OSError:
+                pass
+        self.spawn(["kgx", "-e", ACCOUNTS[provider][4]])
+
+    def show_choice(self):
+        """The card of a first start: the engines there are, none of them picked yet."""
+        if getattr(self, "connect_showing", None) == "choice" and self.stack.get_visible_child_name() == "sign-in":
+            return
+        self.connect_showing = "choice"
+        title = Gtk.Label(label="Connect the agent")
+        title.add_css_class("title-2")
+        text = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, label=(
+            "Mentor’s assistant runs on the model you choose. Pick one to start with; the button "
+            "beside the text box changes it at any time."))
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER, margin_top=6)
+        needs = {"nvidia": "Models NVIDIA hosts free of charge, with a key from its page",
+                 "claude": "With your Claude account", "codex": "With your ChatGPT account",
+                 "gemini": "With your Google account"}
+        for label, provider in MENUS:
+            name = Gtk.Label(label=label, xalign=0)
+            name.add_css_class("heading")
+            what = Gtk.Label(label=needs[provider], xalign=0)
+            what.add_css_class("caption")
+            what.add_css_class("dim-label")
+            inside = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=4, margin_bottom=4,
+                             margin_start=8, margin_end=8)
+            inside.append(name)
+            inside.append(what)
+            option = Gtk.Button(child=inside, width_request=380)
+            index = [p for _, p, _, _ in MODELS].index(provider)
+            option.connect("clicked", lambda _button, index=index: self.choose_model(index))
+            options.append(option)
+        while child := self.connect_page.get_first_child():
+            self.connect_page.remove(child)
+        self.connect_page.append(card(Gtk.Image(icon_name=APP_ID, pixel_size=72), title, text, options))
+        self.stack.set_visible_child_name("sign-in")
+
+    def show_connect(self, rejected=False, change=None):
+        """The card that connects the engine of the chosen model: a key for the hosted models,
+        an account for Claude or ChatGPT. From it one can also turn to another engine.
+        `change` names a provider whose key is to be replaced, whatever model is chosen."""
+        provider = change or MODELS[self.model_index][1]
+        # Asked for again while it is already showing (the window got the focus back, which
+        # happens when a menu on the card opens): left as it is, or the menu would be torn down.
+        showing = (provider, MODELS[self.model_index][0], rejected, change)
+        if showing == getattr(self, "connect_showing", None) and self.stack.get_visible_child_name() == "sign-in":
+            return
+        self.connect_showing = showing
+        # The model the card is about, when it is one of this provider's.
+        label, chosen, model, _ = MODELS[self.model_index]
+        if chosen != provider:
+            label = model = None
+        title = Gtk.Label(label="Connect the agent")
+        title.add_css_class("title-2")
+        widgets = [Gtk.Image(icon_name=APP_ID, pixel_size=72), title]
+        if provider in ACCOUNTS:
+            name, through, program, _, _ = ACCOUNTS[provider]
+            account = "Google" if provider == "gemini" else name
+            widgets.append(Gtk.Label(
+                label=f"{name} runs through {through}. Sign in once with your {account} account."
+                      + ("" if GLib.find_program_in_path(program) else
+                         f" {through} is downloaded first, which takes a minute."),
+                wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44))
+            button = Gtk.Button(label=f"Sign in to {name}", halign=Gtk.Align.CENTER)
+            button.add_css_class("suggested-action")
+            button.add_css_class("pill")
+            button.connect("clicked", lambda *_: self.sign_in(provider))
+            widgets.append(button)
+        else:
+            name, page, text = PROVIDERS[provider]
+            if label:  # which model the key is asked for
+                title.set_label(f"Connect {label}")
+                chosen = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=48, use_markup=True,
+                                   label=f"You chose <b>{GLib.markup_escape_text(label, -1)}</b>, one of {name}’s "
+                                         f"models. The key you paste here is the one it runs on" + (
+                                             f". {name}’s other models keep the key they have." if read_key(provider) else
+                                             f"; {name}’s other models use it too, until one of them is given "
+                                             f"a key of its own."))
+                widgets.append(chosen)
+            widgets.append(Gtk.Label(label=text, wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=48))
+            if rejected:
+                refused = Gtk.Label(label=f"{name} did not accept the saved key for {label}. Paste one that works "
+                                          "for this model.", wrap=True,
+                                    justify=Gtk.Justification.CENTER, max_width_chars=48)
+                refused.add_css_class("chat-error")
+                widgets.append(refused)
+            get = Gtk.Button(label=f"Open {name}\u2019s page", halign=Gtk.Align.CENTER)
+            get.add_css_class("suggested-action")
+            get.add_css_class("pill")
+            get.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(page, None))
+            entry = Gtk.PasswordEntry(show_peek_icon=True, hexpand=True, placeholder_text="Paste the key here")
+            save = Gtk.Button(label="Save")
+            save.add_css_class("pill")
+
+            # A key is kept for the model it was pasted for. The first one is also the one the
+            # provider's other models fall back on, so that one key is enough where one key serves
+            # them all; a model that the provider refuses it for asks for its own (rejected).
+            def on_save(*_):
+                if entry.get_text().strip():
+                    if model:
+                        write_key(provider, entry.get_text(), model)
+                        if not read_key(provider):
+                            write_key(provider, entry.get_text(), keep_others=True)
+                    else:
+                        write_key(provider, entry.get_text())
+                    self.check_sign_in()
+
+            save.connect("clicked", on_save)
+            entry.connect("activate", on_save)
+            row = Gtk.Box(spacing=8)
+            row.append(entry)
+            row.append(save)
+            widgets += [get, row]
+            if change:
+                widgets.remove(title)
+                title = Gtk.Label(label=f"A key for {label}" if label else f"Change the {name} key")
+                title.add_css_class("title-2")
+                widgets.insert(1, title)
+                back = Gtk.Button(label="Keep the key I have", halign=Gtk.Align.CENTER)
+                back.add_css_class("flat")
+                back.connect("clicked", lambda *_: self.check_sign_in())
+                widgets.append(back)
+        # The other ways to run the assistant.
+        others = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER, margin_top=6, visible=not change)
+        others.append(Gtk.Label(label="Or use"))
+        if provider in PROVIDERS:  # another model of the same provider, without leaving the card
+            same = Gio.Menu()
+            for name, engine, _, _ in MODELS:
+                if engine == provider:
+                    item = Gio.MenuItem.new(name, None)
+                    item.set_action_and_target_value("win.model", GLib.Variant.new_string(name))
+                    same.append_item(item)
+            another = Gtk.MenuButton(label=f"another {PROVIDERS[provider][0]} model", menu_model=same,
+                                     direction=Gtk.ArrowType.UP)
+            another.add_css_class("flat")
+            others.append(another)
+        for label, first in MENUS:
+            if first == provider:
+                continue
+            other = Gtk.Button(label=label)
+            other.add_css_class("flat")
+            index = [p for _, p, _, _ in MODELS].index(first)
+            other.connect("clicked", lambda _button, index=index: self.choose_model(index))
+            others.append(other)
+        widgets.append(others)
+        while child := self.connect_page.get_first_child():
+            self.connect_page.remove(child)
+        self.connect_page.append(card(*widgets))
+        self.stack.set_visible_child_name("sign-in")
+
+    def spawn(self, argv, flags=Gio.SubprocessFlags.NONE, sandbox=None, key=None, own_group=False, folder=None):
+        if own_group:  # setsid becomes the program itself, at the head of a group that can be stopped as one
+            argv = ["setsid"] + list(argv)
+        launcher = Gio.SubprocessLauncher.new(flags)
+        launcher.set_cwd(folder or GLib.get_home_dir())
+        if sandbox:
+            launcher.setenv("MENTOR_SANDBOX", sandbox, True)  # read by the mentor tools
+        if key:
+            launcher.setenv("MENTOR_API_KEY", key, True)  # in the environment: not for other users to read
+        # With only our handful of tools, give the model their descriptions up front
+        # instead of making it search for them by name.
+        launcher.setenv("ENABLE_TOOL_SEARCH", "false", True)
+        try:
+            return launcher.spawnv(argv)
+        except GLib.Error:
+            return None
+
+    def check_sign_in(self, rejected=False):
+        """Show the conversations if the chosen model's engine is ready to answer, otherwise how to connect it."""
+        if self.unchosen:
+            self.show_choice()
+            return
+        _, provider, _, _ = MODELS[self.model_index]
+        if provider not in ACCOUNTS:
+            if read_key(provider, MODELS[self.model_index][2]) and not rejected:
+                self.stack.set_visible_child_name("chat")
+                self.focus_entry()
+            else:
+                self.show_connect(rejected)
+            return
+        if provider == "gemini":
+            agy_keyring()
+        process = self.spawn(ACCOUNTS[provider][3], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        if process:
+            process.communicate_utf8_async(None, None, self.on_sign_in_status, provider)
+        else:  # the CLI itself is missing
+            self.show_connect()
+
+    def on_sign_in_status(self, process, result, provider):
+        try:
+            _, out, _ = process.communicate_utf8_finish(result)
+            if provider == "claude":
+                signed_in = json.loads(out).get("loggedIn", False)
+            else:  # Codex answers with its exit status, as does the Antigravity CLI asked for its models
+                signed_in = process.get_exit_status() == 0
+            if signed_in and provider == "gemini":
+                # One to a line, "id<tab>name". It also offers other makers' models, which have
+                # their own entries in the picker and their own accounts.
+                listed = [line.split("\t", 1) for line in out.splitlines() if "\t" in line]
+                self.keep_models("gemini", [(model.strip(), name.strip()) for model, name in listed
+                                            if model.startswith("gemini")])
+        except (GLib.Error, ValueError, AttributeError):
+            signed_in = True  # cannot tell; let a real message report the problem
+        # Codex is only there, and only says what its models are, once the user has signed in:
+        # the list asked for when the assistant started came back empty then.
+        if signed_in and provider == "codex" and sum(engine == "codex" for _, engine, _, _ in MODELS) < 2:
+            self.refresh_codex_models()
+        if MODELS[self.model_index][1] != provider:
+            return  # another engine was chosen while this was being asked
+        # An account that was signed in before is not called signed out on one failed asking:
+        # right after a login the keyring or the network may not be there yet, and the asking
+        # fails the same way. It is asked a few times more before the card comes up.
+        known = self.settings.setdefault("signed_in", [])
+        tries = getattr(self, "sign_in_tries", 0)
+        if signed_in:
+            self.sign_in_tries = 0
+            if provider not in known:
+                known.append(provider)
+                save_settings(self.settings)
+            self.stack.set_visible_child_name("chat")
+        elif provider in known and tries < 5:
+            self.sign_in_tries = tries + 1
+            GLib.timeout_add_seconds(6, lambda: self.check_sign_in() and False)
+        else:
+            self.sign_in_tries = 0
+            if provider in known:
+                known.remove(provider)
+                save_settings(self.settings)
+            self.show_connect()
+
+
+class AssistantApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        show = Gio.SimpleAction.new("show", None)  # a click on one of our notifications
+        show.connect("activate", lambda *_: self.shell("Show"))
+        self.add_action(show)
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def shell(self, method):
+        """Ask the shell (the mentor extension) for Show, which clears the windows away so
+        the desktop can be seen, or Restore, which puts them back."""
+        self.get_dbus_connection().call(
+            "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", method,
+            None, None, Gio.DBusCallFlags.NONE, -1, None, None)
+
+    def do_command_line(self, command_line):
+        arguments = command_line.get_arguments()[1:]
+        window = self.get_active_window()
+        if window is None:  # first start: at login, or summoned after a crash
+            window = DesktopWindow(self)
+            window.present()
+            if not arguments:
+                return 0
+        if not arguments:  # started again by hand, e.g. from a pinned icon: go to the desktop
+            self.shell("Show")
+            return 0
+        if arguments[:1] == ["--workspace"] and len(arguments) == 2 and arguments[1].isdigit():
+            if int(arguments[1]) != window.workspace:
+                window.go_to_workspace(int(arguments[1]))
+            return 0
+        if arguments[:1] == ["--app"] and len(arguments) == 2:
+            window.for_request().set_subject(app_id=arguments[1])
+        elif arguments[:1] == ["--file"] and len(arguments) > 1:
+            conversation = window.for_request()
+            for path in arguments[1:]:
+                conversation.attach(path)
+        else:
+            window.for_request().send(" ".join(arguments))
+        self.shell("Show")
+        return 0
+
+
+AssistantApp().run(sys.argv)

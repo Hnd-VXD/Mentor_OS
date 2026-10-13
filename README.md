@@ -61,6 +61,28 @@ vm\                   your own disk, created on the first start
 - `Mentor.exe --restore` returns to a restore point; the launcher window has the same choice.
 - `Mentor.exe --reset` starts again from the clean system. Everything in `vm\` is lost.
 
+## Source
+
+Everything Mentor is made of is in this repository.
+
+| Folder | What it holds |
+|---|---|
+| `distro/` | the system: the package list, `customize.sh` (what is set up when the image is built), and `rootfs/`, every file Mentor adds to Arch Linux |
+| `distro/rootfs/usr/local/bin/mentor-chat` | the assistant on the desktop |
+| `distro/rootfs/usr/local/lib/mentor/` | the agent's tools, the sandbox, safe start-up, repair mode, suggestions |
+| `distro/rootfs/etc/mentor/` | what the agent is told, and the instructions it rebuilds Mentor from (`REBUILD.md` is the place to start) |
+| `launcher/` | `Mentor.exe` and `MentorSetup.exe` (C#, compiled with the compiler that ships with Windows) |
+| `build/` | builds the image inside an Arch Linux WSL2 distro |
+
+To build it yourself, on Windows with `wsl --install archlinux` done once:
+
+```powershell
+.\build\build.ps1               # -> out\mentor.qcow2
+.\launcher\build-launcher.ps1   # -> Mentor.exe
+```
+
+Mentor's own QEMU goes into a `qemu` folder beside `Mentor.exe` (unpack `winq-emu-alpha10-portable.zip` from a release there). `README.el.md` describes the inside of it in more detail, in Greek.
+
 ## Licences
 
 - The system is built from Arch Linux packages, each under its own licence; their sources are at archlinux.org.

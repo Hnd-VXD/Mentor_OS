@@ -1,0 +1,16 @@
+[Unit]
+Description=Mentor: go back to the last working state if the previous start failed
+Documentation=file:///usr/local/lib/mentor/mentor_boot.py
+# Before anything loads modules or mounts file systems: it may have to put files back.
+DefaultDependencies=no
+After=systemd-remount-fs.service systemd-journald.socket
+Before=systemd-udev-trigger.service systemd-modules-load.service local-fs-pre.target sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mentor/mentor-boot check
+
+[Install]
+WantedBy=sysinit.target

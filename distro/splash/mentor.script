@@ -1,0 +1,77 @@
+# Boot splash of Mentor: the emblem, with a spinner under it and the full-screen hint
+# at the bottom. A second emblem takes its place when the system is going back to the
+# way it last worked after a start that failed (it is told so with the message
+# "mentor-fallback", see rootfs/usr/local/lib/mentor/mentor_boot.py).
+# @FRAMES@ is filled in when the image is built (distro/customize.sh).
+#
+# The screen changes size while this is showing: the launcher gives its window the size
+# it is to have when the system says it has started. So everything is put in its place
+# again whenever the size is found to have changed (place, called from refresh).
+
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+# An emblem, as large on a screen of any size: about two thirds of its width. On a screen
+# of many more pixels that means drawing it larger than it is, which stays presentable up
+# to a point.
+fun emblem(name) {
+    image = Image(name);
+    scale = Math.Min(1.6, Window.GetWidth() * 0.66 / image.GetWidth());
+    scale = Math.Min(scale, Window.GetHeight() * 0.62 / image.GetHeight());
+    return image.Scale(image.GetWidth() * scale, image.GetHeight() * scale);
+}
+
+# The small things grow with the screen too, in whole steps so that they stay crisp.
+fun grown(image) {
+    times = Math.Max(1, Math.Min(3, Math.Int(Window.GetWidth() / 1000)));
+    return image.Scale(image.GetWidth() * times, image.GetHeight() * times);
+}
+
+fun centre(sprite, image, y) {
+    sprite.SetX(Window.GetX() + (Window.GetWidth() - image.GetWidth()) / 2);
+    sprite.SetY(Window.GetY() + y);
+}
+
+logo_name = "logo-1.png";
+hint_image = Image("hint.png");
+for (i = 0; i < @FRAMES@; i++)
+    frame_images[i] = Image("throbber-" + i + ".png");
+
+logo_sprite = Sprite();
+hint_sprite = Sprite();
+spinner = Sprite();
+
+# Everything where it belongs on a screen of the size it has now.
+fun place() {
+    global.width = Window.GetWidth();
+    global.height = Window.GetHeight();
+    logo = emblem(global.logo_name);
+    logo_top = global.height * 0.42 - logo.GetHeight() / 2;
+    logo_sprite.SetImage(logo);
+    centre(logo_sprite, logo, logo_top);
+    hint = grown(hint_image);
+    hint_sprite.SetImage(hint);
+    centre(hint_sprite, hint, global.height * 0.93 - hint.GetHeight() / 2);
+    for (i = 0; i < @FRAMES@; i++)
+        global.frames[i] = grown(frame_images[i]);
+    spinner.SetImage(global.frames[0]);
+    centre(spinner, global.frames[0], logo_top + logo.GetHeight() + global.height * 0.02);
+}
+place();
+
+tick = 0;
+fun refresh() {
+    tick++;
+    if (Window.GetWidth() != global.width || Window.GetHeight() != global.height)
+        place();
+    spinner.SetImage(global.frames[Math.Int(tick / 2) % @FRAMES@]);
+}
+Plymouth.SetRefreshFunction(refresh);
+
+fun message(text) {
+    if (text == "mentor-fallback") {
+        global.logo_name = "logo-2.png";
+        place();
+    }
+}
+Plymouth.SetMessageFunction(message);

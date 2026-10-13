@@ -1,0 +1,88 @@
+# Repair mode: the agent on a text screen, when the desktop does not come up
+
+This is for the agent, written so that a small model can follow it. Repair mode is the way back in when Mentor's desktop is gone: after a GNOME upgrade the assistant is no longer on the wallpaper, the shell does not start, or something of Mentor's own is broken so badly that there is no chat to ask in. The system is started with the bare minimum, without GNOME at all, and the user talks to you on a text screen. **If you are reading this because you were started in repair mode, go to "What to do when you are started in repair mode".**
+
+## What the user has
+
+- **A "Repair" button in the launcher on Windows** (and `Mentor.exe --repair`). It starts Mentor without its desktop: a black screen with text, logged in, with you already on it.
+- **`mentor repair`**, the same conversation in any terminal, for when GNOME still runs and only the assistant is gone.
+- **A conversation**: they type, you answer in plain text; each tool you call shows as a line `> name detail`.
+- **Approval on the same screen**: when a tool needs root, the password is asked there. The preview of a sandbox change is shown as text, with `y` to apply and `d` to see the differences.
+- **A few commands**: `/restart` (restart, to see whether the desktop comes up; that start is an ordinary one), `/engine` (talk to another engine), `/verify`, `/shell` (a command line; `mentor repair` comes back), `/help`.
+- **If no engine is ready**, the screen says how to make one ready and how to check and put back Mentor's files by hand.
+
+## What to do when you are started in repair mode
+
+You cannot see the desktop from here, and tools that need it do not work: screen_capture, app_open, terminal_run, session_logout, window_mode, and the shell's part of desktop_check. Everything else works. Write plain text, short. Do these in order.
+
+**1. Find out what is wrong. Change nothing yet.** Run each with run_command and read the answer.
+
+| Command | What it tells |
+|---|---|
+| `mentor verify` | which of Mentor's own files are missing or changed |
+| `tail -80 /var/log/pacman.log` | what was installed or upgraded last, and when |
+| `journalctl -b -1 -p err -o cat \| tail -40` | what the start before this one complained of |
+| `journalctl -b -1 -o cat _COMM=gnome-shell \| tail -60` | what the desktop itself said in that start; lines with `mentor` or `JS ERROR` matter most |
+| `journalctl -b -1 -o cat --user \| grep -B2 -A14 Traceback \| tail -40` | whether the assistant (mentor-chat) stopped with an error |
+| `pacman -Q gnome-shell python gtk4 libadwaita` and `cat /usr/share/gnome-shell/extensions/mentor@mentor.local/metadata.json` | which GNOME is installed, and which versions Mentor's extension names |
+| `mentor boot` | which kernel runs, which is known to work, whether a start was undone |
+| `systemctl --failed --no-legend` | services that failed in this start |
+
+(`-b -1` is the start before this one. If that was also a repair start, try `-b -2`.)
+
+**2. Tell the user** in a few lines what you found and what you propose, and wait for their say.
+
+**3. Mend it**, following the file for the part:
+
+| What you found | Read | In short |
+|---|---|---|
+| Files of Mentor's missing or damaged | REBUILD.md, step 2 | the ones you may write: put back from `/etc/mentor/source/rootfs/` through the sandbox. The others: ask the user to type `/shell`, then `sudo mentor restore --all`, then `mentor repair` |
+| GNOME is a major version the extension does not name, or the shell's log has errors from `mentor@mentor.local` | DESKTOP.md, "When GNOME moves to a new major version" and "Mending one part" | read the shell's own code for the names that failed, change that part of `extension.js`, add the version to `metadata.json`, `node --check` |
+| The assistant stopped with a Python error | ASSISTANT.md, "When it is broken" | a damaged file: put back as built. A class or method of GTK or libadwaita that is gone: make that one replacement |
+| An engine no longer answers | ENGINES.md | run it by hand and read what it says |
+| The kernel, the initramfs, a module | BOOT.md | the old one starts by itself; find out why the new one failed |
+| A package upgrade broke something that is not Mentor's | | find the package in pacman's log; its earlier version is in `/var/cache/pacman/pkg/` and can be put back with `pacman -U FILE` in the sandbox |
+| Nothing of the above | | say so plainly, and that the launcher's "Restore points" goes back to before the change, at the cost of what was done since |
+
+Work in the sandbox (sandbox_run, sandbox_changes, sandbox_apply) for anything outside the user's own folder. One part at a time.
+
+**4. Check what can be checked from here**: `mentor verify`; `node --check` on a changed `extension.js`; `python3 -c "import ast; ast.parse(open('/usr/local/bin/mentor-chat').read())"` on a changed assistant. Whether the desktop comes up can only be seen by starting it.
+
+**5. Say that you are done**, what you changed, and that they should type `/restart`. Say what to do if the desktop still does not come up: start the launcher's Repair again and tell you so; you then look at the log of that start (step 1) for the next error.
+
+**6. Write what you changed** in `~/.local/share/mentor/notes.md`, and when a file of Mentor's is now changed on purpose and works, `mentor verify --accept`.
+
+## How it is made
+
+| What | Where | What it does |
+|---|---|---|
+| The launcher's button | `Mentor.exe` on Windows (source: `launcher/Mentor.cs`, `--repair`) | starts QEMU with `-smbios type=11,value=io.systemd.boot.kernel-cmdline-extra=systemd.unit=mentor-repair.target mentor.repair=1`. systemd-boot reads that from the firmware and adds it to the kernel's command line. No desktop is waited for; a restart from there is an ordinary start |
+| The target | `/usr/local/lib/systemd/system/mentor-repair.target` | everything of `multi-user.target` (network, services), no display manager, and the console below |
+| The console | `/usr/local/lib/systemd/system/mentor-repair-console.service`, running `/usr/local/lib/mentor/mentor-repair-console` | in place of the login prompt on the first console: `agetty --autologin USER` for the user the desktop logs in by itself (`AutomaticLogin` in `/etc/gdm/custom.conf`, otherwise user 1000), with larger letters (`setfont -d`). A real login, so that there is a session for approvals |
+| What opens on it | `/etc/profile.d/mentor-repair.sh` | on the first console, when the kernel's command line has `mentor.repair=1`: runs `mentor repair` once |
+| The conversation | `/usr/local/lib/mentor/mentor_repair.py`, started by `mentor repair` | finds an engine that is ready (the one the assistant was set to first: `engine` in `~/.config/mentor/chat.json`), runs it once per message exactly as the assistant does (ENGINES.md), prints its text and tool calls |
+| Approvals | `APPROVALS` in `mentor_repair.py` | a polkit agent of the user's own for the console (`PolkitAgent.TextListener`, registered for the session). Without it pkexec asks by itself and is refused ("No session for cookie"): it asks as root, and the answer is expected from the user |
+| The text preview | `_review_on_console` in `mentor_tools.py` | used by sandbox_apply when there is no `WAYLAND_DISPLAY` or `DISPLAY` |
+| The safe start does not interfere | `ConditionKernelCommandLine=!mentor.repair=1` in `mentor-boot-deadline.service` | a repair start never shows a desktop, and must not be restarted for that |
+
+All of these are files you cannot write: they are the way back in, and stay as built. The user puts them back with `sudo mentor restore PATH` (REBUILD.md).
+
+It leans on: systemd-boot reading `io.systemd.boot.kernel-cmdline-extra` from SMBIOS (a systemd of the last few years); `agetty` and `setfont` (packages `util-linux`, `kbd`); polkit's Python bindings (`Polkit` and `PolkitAgent` through `python-gobject`); the engines' own programs.
+
+## How to tell that it works
+
+| Check | Good answer |
+|---|---|
+| `systemctl cat mentor-repair.target mentor-repair-console.service \| head -3` | the units are found |
+| `systemd-analyze verify /usr/local/lib/systemd/system/mentor-repair.target` | no errors |
+| `mentor repair` in a terminal | the heading "Mentor, repair mode.", the result of `mentor verify`, then "Talking to NAME." and an answer |
+| in it, ask for something that needs root (restart a harmless service) | the password is asked on the same screen and, when right, the action is done (`mentor log -n 1`) |
+| the launcher's Repair button | a text screen, logged in, with the same conversation; `/restart` starts the desktop |
+
+## When repair mode itself is broken
+
+- **The text screen shows a login prompt and nothing else**: the target was reached, the console was not. Log in (the user's name and password), then `mentor repair`. Why: `systemctl status mentor-repair-console.service`.
+- **`mentor repair` ends with a Python error**: a file in `/usr/local/lib/mentor` is damaged or missing. The screen then prints how to check and put files back by hand: `sha256sum --quiet -c /etc/mentor/source/MANIFEST.sha256`, and `sudo cp -a /etc/mentor/source/rootfs/PATH /PATH`.
+- **No engine is ready**: the NVIDIA models need only a key in `~/.config/mentor/keys/nvidia`. Claude and ChatGPT can be signed in to from the text screen (`/usr/local/lib/mentor/mentor-engine claude`); they print an address to open in a browser on another device. Gemini's sign-in is kept in the session's keyring; if it cannot be read here, use another engine.
+- **The desktop starts though Repair was pressed**: the kernel's command line did not get the addition (`cat /proc/cmdline` should end in `systemd.unit=mentor-repair.target mentor.repair=1`). Then a newer systemd-boot may read it differently: its manual page (`man systemd-boot`, "SMBIOS Type 11 Strings") says how. From a running system the text screen is reached with `sudo systemctl isolate mentor-repair.target`; there, type `mentor repair`.
+- **Nothing starts at all**: this is beyond repair mode. The launcher's "Restore points" goes back to a moment when the system worked.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor: this start reached the desktop, keep what it tried
+Documentation=file:///usr/local/lib/mentor/mentor_boot.py
+After=local-fs.target
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+# Stays active, so the path unit does not start it a second time.
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mentor/mentor-boot confirm

@@ -1,0 +1,14 @@
+[Unit]
+Description=Mentor: at shutdown, note what the next start has to prove
+Documentation=file:///usr/local/lib/mentor/mentor_boot.py
+After=local-fs.target
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true
+ExecStop=/usr/local/lib/mentor/mentor-boot arm
+
+[Install]
+WantedBy=multi-user.target

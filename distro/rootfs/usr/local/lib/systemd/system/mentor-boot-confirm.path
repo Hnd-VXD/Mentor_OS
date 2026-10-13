@@ -1,0 +1,8 @@
+[Unit]
+Description=Mentor: wait for the desktop to come up
+
+[Path]
+PathExists=/run/mentor/desktop-ok
+
+[Install]
+WantedBy=multi-user.target

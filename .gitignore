@@ -1,0 +1,6 @@
+out/
+vm/
+Mentor.exe
+backup-*/
+Mentor.settings
+qemu/

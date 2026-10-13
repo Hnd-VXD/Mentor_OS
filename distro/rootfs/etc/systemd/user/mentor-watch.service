@@ -1,0 +1,6 @@
+[Unit]
+Description=Mentor looks for things worth telling the user about
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-watch

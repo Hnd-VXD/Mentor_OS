@@ -1,0 +1,10 @@
+[Unit]
+Description=Mentor: look the system over a few minutes after the start, and twice a day
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=12h
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

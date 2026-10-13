@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Mentor</vendor>
+
+  <action id="org.mentor.manage">
+    <description>Manage packages and services on behalf of the agent</description>
+    <message>The agent wants to change installed software or system services</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-helper</annotate>
+  </action>
+
+  <action id="org.mentor.sandbox">
+    <description>Try changes in a sandbox on behalf of the agent</description>
+    <message>The agent wants to try changes in a sandbox. Nothing reaches your system until you review and apply it</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-sandbox</annotate>
+  </action>
+
+  <action id="org.mentor.root-shell">
+    <description>Run an arbitrary command as root on behalf of the agent</description>
+    <message>The agent wants to run a command as root. Check the command under Details before approving</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-root-shell</annotate>
+  </action>
+</policyconfig>

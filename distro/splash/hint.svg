@@ -1,0 +1,4 @@
+<!-- Drawn into a picture at build time: the boot screen has no fonts to rely on. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="34" viewBox="0 0 420 34">
+  <text x="210" y="23" text-anchor="middle" font-family="Noto Sans, sans-serif" font-size="18" fill="#8a8f98">Ctrl + Alt + F  ·  full screen</text>
+</svg>

@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+"""Puts files on the clipboard, as if they had been copied in Files, and keeps them
+there until something else is copied. Started by mentor-clipboard for files that came
+from the host, with GDK_BACKEND=x11 for the same reason that one runs on X11.
+
+    mentor-clipboard-files PATH...
+"""
+import sys
+
+import gi
+
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk
+
+Gtk.init()
+clipboard = Gdk.Display.get_default().get_clipboard()
+files = Gdk.FileList.new_from_list([Gio.File.new_for_path(path) for path in sys.argv[1:]])
+clipboard.set_content(Gdk.ContentProvider.new_for_value(GObject.Value(Gdk.FileList, files)))
+loop = GLib.MainLoop()
+clipboard.connect("changed", lambda c: None if c.is_local() else loop.quit())
+loop.run()

@@ -1,0 +1,97 @@
+#!/usr/bin/python3
+"""The assistant speaking first: look for things the user has to be told about.
+
+Run from a user timer. The checks are plain commands, no model involved. What is found is
+left for the assistant as a notice, which it shows in the chat as a card: yellow for a
+warning, red for a problem, with a button that hands it to the agent. Nothing is done, and
+no model is called, unless the user presses it. Each finding is raised at most once every
+few days.
+
+Among the checks is Mentor itself: whether its own files are all there and as they were
+built (mentor verify), and whether the parts of its desktop work (mentor doctor).
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_tools
+
+STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "watch.json")
+REMIND_AFTER = 3 * 24 * 3600
+MENTOR = "/usr/local/bin/mentor"
+
+
+def output(*argv, timeout=120):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def findings():
+    """(key, level, title, text, request for the assistant), most urgent first."""
+    # Mentor itself. A file that is gone, or changed without anyone saying it was meant
+    # (mentor verify --accept), and a part of the desktop that does not work.
+    wrong = re.findall(r"(?m)^(missing|changed|cannot be read.*?)\s+(/\S+)$", output(MENTOR, "verify"))
+    if wrong:
+        listed = "\n".join(f"{how}  {path}" for how, path in wrong[:12]) + ("\n…" if len(wrong) > 12 else "")
+        yield ("verify:" + ",".join(sorted(path for _how, path in wrong)), "problem",
+               "Some of Mentor's own files are missing or changed",
+               listed,
+               "`mentor verify` says these files of Mentor's own are missing or no longer what was built:\n\n"
+               f"{listed}\n\nFollow /etc/mentor/REBUILD.md: find out for each whether it was changed on purpose "
+               "(~/.local/share/mentor/notes.md) and works, or is damaged; tell me which, and what putting it back "
+               "would take. Do not change anything before I agree.")
+    broken = re.findall(r"(?m)^BROKEN\s+(.+)$", output(MENTOR, "doctor"))
+    if broken:
+        listed = "\n".join(broken[:10])
+        yield ("doctor:" + ",".join(sorted(line.split(":")[0] for line in broken)), "problem",
+               "Part of Mentor's desktop is not working",
+               listed,
+               f"`mentor doctor` reports these parts of Mentor's desktop as broken:\n\n{listed}\n\n"
+               "Follow /etc/mentor/DESKTOP.md to find out why and mend them, one part at a time, in the sandbox "
+               "first. Tell me what you found before you change anything.")
+
+    usage = shutil.disk_usage("/")
+    percent = round(100 * usage.used / usage.total)
+    if percent >= 90:
+        yield ("disk", "problem", "The disk is almost full",
+               f"{percent}% of the system disk is used; {usage.free / 2**30:.1f} GB are free.",
+               "The system disk is almost full. Find what takes the space and suggest what can be removed safely.")
+
+    failed = [line.split()[0] for scope in ((), ("--user",))
+              for line in output("systemctl", *scope, "--failed", "--no-legend", "--plain").splitlines() if line.split()]
+    if failed:
+        yield ("failed:" + ",".join(sorted(failed)), "warning", "Something on the system is not running",
+               ", ".join(failed[:4]) + (" and more" if len(failed) > 4 else "") + " failed.",
+               f"These systemd units failed: {', '.join(failed)}. Find out why and fix what can be fixed.")
+
+
+def main():
+    try:
+        with open(STATE_PATH) as f:
+            raised = json.load(f)
+    except (OSError, ValueError):
+        raised = {}
+    now = time.time()
+    for key, level, title, text, request in findings():
+        if now - raised.get(key, 0) < REMIND_AFTER:
+            continue
+        raised[key] = now
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+        with open(STATE_PATH, "w") as f:
+            json.dump(raised, f)
+        mentor_tools.leave_notice(level, title, text, request)
+        # The assistant shows it, and says so with a notification when it is covered. When it
+        # is not running at all, that is the first thing the user has to know.
+        if not output("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip():
+            output("notify-send", "--app-name=Mentor", "--icon=dialog-warning", title,
+                   text + "\n\nThe assistant is not running. From a terminal: mentor repair", timeout=20)
+
+
+main()

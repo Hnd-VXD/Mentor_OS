@@ -1,0 +1,19 @@
+[Unit]
+Description=Mentor: a start that tries a change has three minutes to reach the desktop
+Documentation=file:///usr/local/lib/mentor/mentor_boot.py
+DefaultDependencies=no
+After=mentor-boot-check.service
+Before=shutdown.target
+Conflicts=shutdown.target
+# Still counting when a broken start drops to the emergency shell.
+IgnoreOnIsolate=yes
+# Not in a repair start, which never shows a desktop: the user is mending it there.
+ConditionKernelCommandLine=!mentor.repair=1
+
+[Service]
+# Counted once per start, whatever asks for it again later.
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mentor/mentor-boot deadline
+
+[Install]
+WantedBy=sysinit.target

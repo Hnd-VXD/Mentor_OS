@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# pkexec entry point for work inside the sandbox (polkit action org.mentor.sandbox).
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_core
+
+sys.exit(mentor_core.main("sandbox"))

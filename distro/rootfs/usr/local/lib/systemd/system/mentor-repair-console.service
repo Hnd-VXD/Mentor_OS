@@ -1,0 +1,24 @@
+[Unit]
+Description=Mentor repair: the user's console, logged in, with the agent on it
+Documentation=file:///etc/mentor/REPAIR.md
+# In place of the login prompt on the first console. A real login (with its session, so that
+# approvals can be asked for), of the user the desktop logs in by itself; what they get is
+# started by /etc/profile.d/mentor-repair.sh.
+After=systemd-user-sessions.service plymouth-quit-wait.service getty@tty1.service network-online.target
+Wants=network-online.target
+Conflicts=getty@tty1.service
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-repair-console
+Type=idle
+Restart=always
+RestartSec=1
+UtmpIdentifier=tty1
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
