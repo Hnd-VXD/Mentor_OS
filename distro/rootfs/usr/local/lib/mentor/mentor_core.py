@@ -251,9 +251,12 @@ ACTIONS = {
         "system_upgrade": system_upgrade,
         "service": service,
     },
-    # Editing a system file is as powerful as a root shell, so it asks every time too.
-    "shell": {"run_root": run_root, "write_file": write_file, "restore_file": restore_file,
-              "sandbox_apply": sandbox_apply, "change_undo": change_undo},
+    # Each of these asks for the password every time: editing a system file is as powerful as a
+    # root shell. They are separate doors so that the password dialog can say which it is.
+    "shell": {"run_root": run_root},
+    "write": {"write_file": write_file, "restore_file": restore_file},
+    "apply": {"sandbox_apply": sandbox_apply},
+    "undo": {"change_undo": change_undo},
     # Work inside the sandbox cannot reach the real system.
     "sandbox": {"sandbox_run": sandbox_run, "sandbox_changes": sandbox_changes, "sandbox_discard": sandbox_discard},
 }

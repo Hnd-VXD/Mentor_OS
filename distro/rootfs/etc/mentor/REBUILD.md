@@ -130,11 +130,11 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor-explain` | the window with the plain words, and the yellow warning, before a password | user | next call | SECURITY.md |
 | `/etc/nftables.conf`, `/etc/nftables.d/00-example.nft`, `/etc/systemd/system/nftables.service.d/mentor.conf` | the firewall: what comes in from other computers is refused; and its service made to count as running while the rules are loaded. `systemctl reload nftables` after | yes | reload | SECURITY.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
-| `/usr/local/lib/mentor/mentor-helper`, `mentor-root-shell`, `mentor-sandbox` | the three doors to root, one per approval dialog | user | next call | TOOLS.md |
+| `/usr/local/lib/mentor/mentor-helper`, `mentor-sandbox`, `mentor-root-shell`, `mentor-write-file`, `mentor-apply`, `mentor-undo` | the doors to root, one for each password dialog and its words | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-review` | the preview window of a change | user | next preview | TOOLS.md |
 | `/usr/share/applications/org.mentor.Review.desktop` | its name and icon | yes | at once | TOOLS.md |
-| `/usr/share/polkit-1/actions/org.mentor.policy` | the three approval dialogs | user | at once | TOOLS.md |
+| `/usr/share/polkit-1/actions/org.mentor.policy` | the password dialogs: for each door, the plain words the system shows | user | at once | TOOLS.md |
 | `/etc/mentor/policy.toml` | what stays forbidden even with approval | user | next call | TOOLS.md |
 | `/etc/mentor/mcp.json` | names the tool server for Claude Code | user | next message | ENGINES.md |
 | `/etc/mentor/*.md` | these instructions | user | next message | |

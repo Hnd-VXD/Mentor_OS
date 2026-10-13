@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# pkexec entry point for changing or putting back one system file (polkit action org.mentor.write-file).
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_core
+
+sys.exit(mentor_core.main("write"))

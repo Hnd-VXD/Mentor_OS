@@ -42,6 +42,8 @@ How to write it:
 | "Writing /etc/hosts" | "I am changing a list your computer uses to find websites, so that the site you named is blocked." |
 | "Running a root command" | "I am clearing out old update files to free space. Nothing of yours is removed." |
 
+The system's own password dialog comes right after, and has words of its own that cannot be made up for the occasion: one fixed sentence for each kind of thing ("Mentor wants to practise a change on a private copy of your system… Your real system is not touched…"), in `/usr/share/polkit-1/actions/org.mentor.policy` (TOOLS.md, "The doors"). Your `explain` is where the user learns what it is about *this* time.
+
 If you leave it out, the window shows a general sentence of Mentor's own ("Mentor wants to add these programs…"). That is true but tells the user less.
 
 The window is shown once for each request for packages, services and the sandbox (the password is kept for a few minutes there), and every time for a free root command, a system file and an undo (the password is asked every time there). If the user presses "No, stop", the tool answers that they chose not to go on: do not retry, do not try another tool for the same thing, ask what they want.
@@ -152,7 +154,7 @@ You cannot write `/etc/sudoers` or `/etc/sudoers.d` with file_write (they are pr
 |---|---|---|
 | The checks, the note of outside reading, the window's logic | `/usr/local/lib/mentor/mentor_security.py` | `checks()`, `report()`; `saw`, `reads`, `new_request`, `classify`, `outside_file`; `before_root` |
 | The window | `/usr/local/lib/mentor/mentor-explain NOTE.json` | `{"text", "detail", "warning"}`; exits 0 to go on, 10 not to, anything else when it could not be shown. On a text console (repair mode) `_console` in mentor_security.py prints the same, and asks y/N only when there is a warning |
-| Where the tools call it | `_explained(door, a, plain, detail)` in `mentor_tools.py`, first line of every tool that leads to a password | `door` is `manage`, `sandbox` or `shell`, as in TOOLS.md |
+| Where the tools call it | `_explained(door, a, plain, detail)` in `mentor_tools.py`, first line of every tool that leads to a password | `door` is `manage` or `sandbox` (the password is kept a few minutes: explained once for each request) or `shell` (asked every time: explained every time; the tools pass `shell` for a free command, a system file and an undo alike) |
 | Noting what the Mentor tools read | `mentor_security.saw(…)` in `file_read`, `run_command`, `terminal_run`, `sandbox_run` of `mentor_tools.py` | |
 | Noting what the engines' own tools read | `note_reading` in `mentor-chat` (called from `on_block` and `on_codex_event`); `tool` in `mentor_repair.py` | Claude Code's WebSearch, WebFetch, Read, Grep; Codex's shell and web search; the Antigravity CLI's own |
 | The notes themselves | `~/.local/state/mentor/requests/NAME.read` (what was read) and `NAME.asked` (which windows were shown), NAME being the conversation's sandbox | removed when the user sends the next message (`new_request`, called by `note_request` in mentor-chat and by mentor_repair) |

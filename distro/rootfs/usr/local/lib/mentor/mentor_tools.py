@@ -20,6 +20,9 @@ import mentor_security
 LIBDIR = "/usr/local/lib/mentor"
 HELPER = f"{LIBDIR}/mentor-helper"
 ROOT_SHELL = f"{LIBDIR}/mentor-root-shell"
+WRITE_FILE = f"{LIBDIR}/mentor-write-file"
+APPLY = f"{LIBDIR}/mentor-apply"
+UNDO = f"{LIBDIR}/mentor-undo"
 SANDBOX = f"{LIBDIR}/mentor-sandbox"
 REVIEW = f"{LIBDIR}/mentor-review"
 CHANGES = "/var/lib/mentor/changes"
@@ -293,7 +296,7 @@ def file_write(a):
         if not _explained("shell", a, "Mentor wants to change a file that belongs to the system. The file as it "
                           "is now is kept, so this can be undone.", os.path.abspath(path)):
             return 1, STOPPED
-        return _privileged(ROOT_SHELL, "write_file", {"path": os.path.abspath(path)}, timeout=300, stdin=content)
+        return _privileged(WRITE_FILE, "write_file", {"path": os.path.abspath(path)}, timeout=300, stdin=content)
     try:
         note = ""
         if os.path.isfile(real):
@@ -316,7 +319,7 @@ def file_restore(a):
         if not _explained("shell", a, "Mentor wants to put a file of the system back the way it was before.",
                           os.path.abspath(path)):
             return 1, STOPPED
-        return _privileged(ROOT_SHELL, "restore_file", {"path": os.path.abspath(path)}, timeout=300)
+        return _privileged(WRITE_FILE, "restore_file", {"path": os.path.abspath(path)}, timeout=300)
     copies = _home_backups(real)
     if not copies:
         return 1, f"there is no backup of {real}"
@@ -451,7 +454,7 @@ def sandbox_apply(a):
     if code:
         return code, f"the preview window could not be shown: {out}"
     note = _restore_point(a["summary"])
-    code, out = _privileged(ROOT_SHELL, "sandbox_apply", {"sandbox": _sandbox(), "summary": a["summary"]}, timeout=1800)
+    code, out = _privileged(APPLY, "sandbox_apply", {"sandbox": _sandbox(), "summary": a["summary"]}, timeout=1800)
     return code, f"{note}\n{out}"
 
 
@@ -475,7 +478,7 @@ def change_undo(a):
     if not _explained("shell", a, "Mentor wants to undo a change it made to the system earlier: the files go "
                       "back to how they were before it.", f"change {a['id']}"):
         return 1, STOPPED
-    return _privileged(ROOT_SHELL, "change_undo", {"id": a["id"]}, timeout=1800)
+    return _privileged(UNDO, "change_undo", {"id": a["id"]}, timeout=1800)
 
 
 def wallpaper_set(a):

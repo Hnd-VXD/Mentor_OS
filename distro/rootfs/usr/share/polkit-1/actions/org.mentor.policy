@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- What the system's own password dialog says for each kind of thing the agent does as root.
+     The words are for someone who has never heard of root: what is about to happen, and that
+     the password is their yes. One action for each helper in /usr/local/lib/mentor (polkit
+     tells them apart by the program's path). See /etc/mentor/TOOLS.md and SECURITY.md. -->
 <policyconfig>
   <vendor>Mentor</vendor>
 
   <action id="org.mentor.manage">
     <description>Manage packages and services on behalf of the agent</description>
-    <message>The agent wants to change installed software or system services</message>
+    <message>Mentor wants to change which programs are on your computer (add, remove or update them), or to start or stop a program that works in the background. Its window just before this said which one and why. After you type the password it is remembered for a few minutes.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -17,7 +21,7 @@
 
   <action id="org.mentor.sandbox">
     <description>Try changes in a sandbox on behalf of the agent</description>
-    <message>The agent wants to try changes in a sandbox. Nothing reaches your system until you review and apply it</message>
+    <message>Mentor wants to practise a change on a private copy of your system, to see that it works. Your real system is not touched. When it is ready you are shown every file that would change, and nothing happens unless you agree.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -26,9 +30,42 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-sandbox</annotate>
   </action>
 
+  <action id="org.mentor.apply">
+    <description>Apply a change the user has reviewed</description>
+    <message>Mentor wants to make the change you just looked at real: the files in that list are copied into your system. A copy of the whole disk is kept first, and the change can be undone from the chat.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-apply</annotate>
+  </action>
+
+  <action id="org.mentor.undo">
+    <description>Undo a change applied earlier</description>
+    <message>Mentor wants to undo a change it made earlier: the files it changed go back to how they were before, and the files it added are removed.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-undo</annotate>
+  </action>
+
+  <action id="org.mentor.write-file">
+    <description>Change one system file on behalf of the agent</description>
+    <message>Mentor wants to replace one of the system's own settings files. Its window just before this named the file. The file as it is now is kept, and Mentor can put it back if the result is not what you wanted.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/lib/mentor/mentor-write-file</annotate>
+  </action>
+
   <action id="org.mentor.root-shell">
     <description>Run an arbitrary command as root on behalf of the agent</description>
-    <message>The agent wants to run a command as root. Check the command under Details before approving</message>
+    <message>Mentor wants to run a command with full power over your system. Nothing checks it first, and it cannot be undone automatically. The command was shown in Mentor's window just before this: go on only if you asked for it.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

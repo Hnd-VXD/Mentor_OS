@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# pkexec entry point for undoing a change applied earlier (polkit action org.mentor.undo).
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_core
+
+sys.exit(mentor_core.main("undo"))

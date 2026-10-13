@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# pkexec entry point for applying a change the user has just looked at (polkit action org.mentor.apply).
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_core
+
+sys.exit(mentor_core.main("apply"))
