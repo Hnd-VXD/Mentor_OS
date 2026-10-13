@@ -1,0 +1,97 @@
+#!/usr/bin/python3
+"""What the agent is about to do as root, in plain words, shown just before the password is asked.
+
+    mentor-explain note.json      {"text": "…", "detail": "…", "warning": "…"}
+
+`text` is a sentence or two anyone can understand. `detail` is the exact command or file,
+for those who want it. `warning` is there when the agent has just read text from outside
+(a web page, a downloaded file): the window then turns yellow and the safe button is the
+one to stop. Exits 0 to go on to the password, 10 not to (anything else: it could not be shown).
+"""
+import json
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, Gtk, Pango
+
+CSS = """
+.explain-text { font-size: 15pt; font-weight: 600; }
+.explain-next { font-size: 11pt; }
+.explain-warning { background: rgba(255, 214, 64, 0.30); border-radius: 12px; padding: 12px 14px; }
+.explain-detail { background: alpha(currentColor, 0.07); border-radius: 8px; padding: 8px 10px; }
+"""
+
+
+class ExplainWindow(Adw.ApplicationWindow):
+    def __init__(self, app, note):
+        super().__init__(application=app, title="Mentor needs your permission", default_width=560, resizable=False)
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        warning = note.get("warning")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
+                      margin_top=18, margin_bottom=18, margin_start=22, margin_end=22)
+        text = Gtk.Label(label=note.get("text") or "Mentor wants to change something on your system.",
+                         wrap=True, xalign=0, selectable=True)
+        text.add_css_class("explain-text")
+        box.append(text)
+        if note.get("detail"):
+            detail = Gtk.Label(label=note["detail"], wrap=True, xalign=0, selectable=True)
+            detail.set_wrap_mode(Pango.WrapMode.WORD_CHAR)  # commands have long words
+            detail.add_css_class("monospace")
+            detail.add_css_class("explain-detail")
+            more = Gtk.Expander(label="The exact command or file", child=detail, expanded=bool(warning))
+            box.append(more)
+        if warning:
+            band = Gtk.Box(spacing=10)
+            band.add_css_class("explain-warning")
+            band.append(Gtk.Image(icon_name="dialog-warning-symbolic", pixel_size=28, valign=Gtk.Align.START))
+            band.append(Gtk.Label(label=warning, wrap=True, xalign=0, hexpand=True, selectable=True))
+            box.append(band)
+        following = Gtk.Label(label="Next, you are asked for your admin password. It is your way of saying yes: "
+                                    "type it only if this is what you wanted.", wrap=True, xalign=0)
+        following.add_css_class("explain-next")
+        following.add_css_class("dim-label")
+        box.append(following)
+
+        stop = Gtk.Button(label="No, stop")
+        stop.connect("clicked", lambda *_: self.close())
+        go = Gtk.Button(label="Go on anyway" if warning else "OK, go on")
+        go.connect("clicked", self.on_go)
+        # With a warning the button that is ready under Enter is the one that stops.
+        (stop if warning else go).add_css_class("suggested-action")
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        buttons.append(stop)
+        buttons.append(go)
+        box.append(buttons)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(box)
+        self.set_content(view)
+        self.set_default_widget(stop if warning else go)
+        (stop if warning else go).grab_focus()
+
+    def on_go(self, _button):
+        self.get_application().accepted = True
+        self.close()
+
+
+class ExplainApp(Adw.Application):
+    def __init__(self, note):
+        super().__init__(application_id="org.mentor.Review", flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.note = note
+        self.accepted = False
+
+    def do_activate(self):
+        ExplainWindow(self, self.note).present()
+
+
+with open(sys.argv[1]) as f:
+    app = ExplainApp(json.load(f))
+app.run(None)
+sys.exit(0 if app.accepted else 10)

@@ -8,7 +8,8 @@ no model is called, unless the user presses it. Each finding is raised at most o
 few days.
 
 Among the checks is Mentor itself: whether its own files are all there and as they were
-built (mentor verify), and whether the parts of its desktop work (mentor doctor).
+built (mentor verify), and whether the parts of its desktop work (mentor doctor); and the
+user's safety (mentor_security.checks: the firewall, the first password, and more).
 """
 import json
 import os
@@ -19,6 +20,7 @@ import sys
 import time
 
 sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_security
 import mentor_tools
 
 STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "watch.json")
@@ -58,6 +60,10 @@ def findings():
                "Read the journal first (journal_read): a change made lately may be why. Then follow "
                "/etc/mentor/DESKTOP.md to find out why and mend them, one part at a time, in the sandbox "
                "first. Tell me what you found before you change anything.")
+
+    # The user's safety: the firewall, the first password, remote login, root without a password.
+    for key, level, title, text, request in mentor_security.checks():
+        yield ("security:" + key, level, title, text, request)
 
     usage = shutil.disk_usage("/")
     percent = round(100 * usage.used / usage.total)

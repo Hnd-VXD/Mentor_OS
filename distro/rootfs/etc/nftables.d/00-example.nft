@@ -1,0 +1,10 @@
+# A port is opened to other computers by a file like this one, named for what it is for
+# (/etc/nftables.d/50-web-server.nft), holding the lines below without the "#". Then:
+# `nft -c -f /etc/nftables.conf` (checks it), `systemctl reload nftables` (loads it).
+# To close it again, remove the file and reload. See /etc/mentor/SECURITY.md.
+#
+# table inet mentor_firewall {
+#     chain input {
+#         tcp dport 8080 accept comment "the web server the user asked for"
+#     }
+# }

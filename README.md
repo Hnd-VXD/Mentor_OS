@@ -57,7 +57,7 @@ vm\                   your own disk, created on the first start
 
 - The launcher window offers memory, processors, full screen, the graphics card and Vulkan.
 - The assistant asks which engine to use, and nothing is picked for you: free models hosted by NVIDIA, with a key from build.nvidia.com that you paste in, or your own Claude, ChatGPT or Google account (Claude Code, Codex or Google's Antigravity CLI is then downloaded for you). Nothing is preconfigured, and keys and sign-ins stay on your computer.
-- The user is `admin` and its first password is `admin`. Change it: open Console and run `passwd`.
+- The user is `admin` and its first password is `admin`. Change it: open Console and run `passwd`. Mentor reminds you with a card in the chat until you do.
 
 ## What is in it
 
@@ -67,6 +67,7 @@ vm\                   your own disk, created on the first start
 - **The model's menu** shows the limits of your Claude, ChatGPT or Gemini plan where the account tells them, and the effort setting.
 - **Suggestions.** A bell on the desktop holds what the system noticed by itself: waiting updates, a filling disk, failed services, news from Arch and GNOME, new applications and projects. No model is used until you send one to the chat.
 - **Warnings in the chat.** What cannot wait shows in the chat as a card: yellow for a warning, red for a problem, with a button that hands it to the assistant. Mentor checks itself this way too, after every login.
+- **Looking after your safety.** A firewall that refuses connections from other computers is on from the first start. Before your password is asked, a small window says in plain words what is about to happen. When the assistant has just read a web page or a downloaded file and then wants to do something as root, that window turns yellow and says so. The system checks itself for an open firewall, the first password, remote login and root without a password, and tells you in the chat; `mentor security` shows the same.
 - **A journal of every change.** What the assistant changes is written down by itself, under the request it was for: packages, settings (with the value before), services, files, commands run as root, and the way back where there is one. `mentor journal` shows it; the assistant reads it when you ask what was changed, or when something stops working.
 - **It can be rebuilt.** Every file Mentor adds to the system is kept as it was built, with step-by-step instructions for the assistant in `/etc/mentor/`. `mentor verify` says what is missing or changed; `sudo mentor restore` puts it back. A watch on memory, processor and network can be set up on request from the same place.
 - **With Windows.** Text, files and folders copy and paste both ways (up to 256 MB at a time). Memory the system no longer needs goes back to Windows.

@@ -35,6 +35,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+try:  # what the engines read from outside is noted for the tools (mentor_security.py)
+    sys.path.insert(0, "/usr/local/lib/mentor")
+    import mentor_security
+except Exception:
+    mentor_security = None
+
 APP_ID = "org.mentor.Chat"
 # Claude Code, Codex and the Antigravity CLI are not part of the system: each user's copy is
 # put under ~/.local the first time they sign in (mentor-engine).
@@ -331,6 +337,19 @@ def note_request(sandbox, text):
             f.write(text if len(text) <= 400 else text[:399] + "\u2026")
     except OSError:
         pass
+    if mentor_security:
+        mentor_security.new_request(sandbox)  # what was read for the last request no longer counts
+
+
+def note_reading(sandbox, name, arguments):
+    """An engine used a tool of its own (a web search, a page, a file): if that brought in text
+    from outside, the Mentor tools warn the user before the next thing done as root. The Mentor
+    tools note their own reading themselves."""
+    if mentor_security and not str(name).startswith(TOOL_PREFIX):
+        try:
+            mentor_security.saw(sandbox, name, arguments)
+        except Exception:
+            pass
 
 
 def agy_folder(sandbox, instructions):
@@ -1169,10 +1188,13 @@ class Conversation(Gtk.Box):
             self.on_block({"type": "tool_result", "tool_use_id": item.get("id"),
                            "is_error": item.get("status") == "failed" or bool(item.get("error"))})
         elif kind == "item.completed" and item.get("type") == "command_execution":
+            note_reading(self.sandbox, "shell", str(item.get("command", "")))
             self.add_tool(None, "shell", str(item.get("command", "")), described=True,
                           failed=item.get("exit_code") not in (0, None))
         elif kind == "item.completed" and item.get("type") == "agent_message":
             self.on_block({"type": "text", "text": item.get("text", "")})
+        elif "web" in str(item.get("type", "")):  # its own search of the web
+            note_reading(self.sandbox, "web_search", str(item.get("query") or item.get("url") or ""))
         elif kind == "turn.completed":
             self.got_result = True
             self.window.ask_usage("codex")
@@ -1235,6 +1257,7 @@ class Conversation(Gtk.Box):
             self.last_said = block["text"].strip()
             self.add_text(block["text"])
         elif kind == "tool_use":
+            note_reading(self.sandbox, block.get("name", "?"), block.get("input"))
             self.add_tool(block.get("id"), block.get("name", "?"), block.get("input"))
         elif kind == "tool_result":
             icon = self.tool_icons.pop(block.get("tool_use_id"), None)

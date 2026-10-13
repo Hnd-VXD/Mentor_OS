@@ -94,6 +94,8 @@ A line:
  "request": "install gimp and make the desktop dark", "conversation": "tab-1a2b3c4d"}
 ```
 
+`after_reading` is there when the agent had read text from outside (a web page, a downloaded file) since the user's last message: the change was made with the warning shown (SECURITY.md). Such a line is the first to look at when something was changed that nobody asked for.
+
 `kind` is `change` or `command`. `ok` is whether the tool ended without an error. `undo` is there only when there is a way back. `request` is empty when a tool was called by hand (`mentor call …`) or by the system.
 
 Every engine (Claude Code, Codex, the Antigravity CLI, mentor-agent) can change the system only through these tools: their own shells and file-writing tools are switched off (ENGINES.md). That is why one place is enough. The name of the sandbox reaches the tools in the environment (`MENTOR_SANDBOX`), and the request is found by it.

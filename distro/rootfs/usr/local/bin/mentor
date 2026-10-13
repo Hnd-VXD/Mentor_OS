@@ -332,6 +332,8 @@ p = sub.add_parser("restore", help="put files of Mentor's back as they were buil
 p.add_argument("paths", nargs="*")
 p.add_argument("--all", action="store_true", help="every file that verify lists")
 p.set_defaults(func=cmd_restore)
+p = sub.add_parser("security", help="look at how safe this system is right now: firewall, password, remote login")
+p.set_defaults(func=lambda args: run_tool("security_check", {}))
 p = sub.add_parser("journal", help="what the agent changed on this system, when, and after which request")
 p.add_argument("search", nargs="*", help="words to look for: a package, a file, a setting, part of a request")
 p.add_argument("-n", "--lines", type=int, default=40, help="how many of the newest (0: all)")

@@ -37,6 +37,12 @@ class ReviewWindow(Adw.ApplicationWindow):
                       margin_top=12, margin_bottom=12, margin_start=16, margin_end=16)
         top.append(summary)
         top.append(detail)
+        if report.get("warning"):  # the agent read text from outside while working on this (mentor_security)
+            band = Gtk.Box(spacing=10, margin_top=6)
+            band.append(Gtk.Image(icon_name="dialog-warning-symbolic", pixel_size=24, valign=Gtk.Align.START))
+            band.append(Gtk.Label(label=report["warning"], wrap=True, xalign=0, hexpand=True))
+            band.add_css_class("warning")
+            top.append(band)
 
         files = Gtk.ListBox(selection_mode=Gtk.SelectionMode.BROWSE)
         files.add_css_class("navigation-sidebar")

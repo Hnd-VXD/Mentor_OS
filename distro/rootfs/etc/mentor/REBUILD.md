@@ -19,6 +19,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
+| `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
 | `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
 | `AGENT.md` | what every engine is told; the rules of work |
 
@@ -121,6 +122,9 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor-mcp` | gives the tools to Claude Code, Codex and the Antigravity CLI (MCP) | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
+| `/usr/local/lib/mentor/mentor_security.py` | the safety checks; what was read from outside; what is said before a password | user | next message | SECURITY.md |
+| `/usr/local/lib/mentor/mentor-explain` | the window with the plain words, and the yellow warning, before a password | user | next call | SECURITY.md |
+| `/etc/nftables.conf`, `/etc/nftables.d/00-example.nft`, `/etc/systemd/system/nftables.service.d/mentor.conf` | the firewall: what comes in from other computers is refused; and its service made to count as running while the rules are loaded. `systemctl reload nftables` after | yes | reload | SECURITY.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-root-shell`, `mentor-sandbox` | the three doors to root, one per approval dialog | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
@@ -156,7 +160,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 |---|---|---|---|---|
 | `/usr/local/lib/mentor/mentor-advisor` | looks for waiting updates, a filling disk, failed services, and the news | user | next run | SUGGESTIONS.md |
 | `/usr/local/lib/systemd/system/mentor-advisor.service`, `.timer` | runs it four minutes after the start and twice a day | yes | `systemctl daemon-reload` | SUGGESTIONS.md |
-| `/usr/local/lib/mentor/mentor-watch` | checks Mentor itself, the disk and failed services; what it finds becomes a yellow or red card in the chat | user | next run | SUGGESTIONS.md |
+| `/usr/local/lib/mentor/mentor-watch` | checks Mentor itself, the user's safety (SECURITY.md), the disk and failed services; what it finds becomes a yellow or red card in the chat | user | next run | SUGGESTIONS.md |
 | `/etc/systemd/user/mentor-watch.service`, `.timer` | runs it three minutes after login and every six hours | yes | `systemctl --user daemon-reload` | SUGGESTIONS.md |
 
 ## What was done when the system was built, besides the files
@@ -178,6 +182,7 @@ systemctl set-default graphical.target
 systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
 systemctl enable mentor-advisor.timer
+systemctl enable nftables.service          # the firewall
 systemctl --global enable mentor-watch.timer
 
 # Where the root side writes its log
@@ -203,6 +208,7 @@ Run these in order. Each line says what a good answer looks like.
 | `mentor call system_info '{}'` | the system's release, kernel, memory |
 | `mentor boot` | which kernel runs, which is known to work, nothing waiting unless you changed something |
 | `mentor journal -n 3` | the last changes under their requests, or that none is written yet |
+| `mentor security` | "ok  the firewall refuses what comes in…"; findings are for the user to hear of |
 | `systemctl is-enabled mentor-advisor.timer mentor-boot-check.service` | `enabled` twice |
 | `systemctl --user is-enabled mentor-watch.timer` | `enabled` |
 | `pgrep -af bin/mentor-chat` | one line: the assistant is running |

@@ -114,6 +114,8 @@ def readable(found, left_out=0):
         out.append(f"  {clock}  {mark}{entry.get('what', '')}")
         if entry.get("undo") and entry.get("ok", True):
             out.append(f"         way back: {entry['undo']}")
+        if entry.get("after_reading"):
+            out.append(f"         done after reading text from outside ({entry['after_reading']})")
     if not out:
         out.append("No change is written in the journal yet, or none that matches.")
     if left_out:

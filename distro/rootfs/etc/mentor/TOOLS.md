@@ -10,6 +10,7 @@ This is for the agent, written so that a small model can follow it. It describes
 - **Undo** for every change applied that way, and a list of them.
 - **Rules that hold even with approval** (`/etc/mentor/policy.toml`): packages and services that may not be removed or stopped, files that may not be written, commands that are refused.
 - **A record** of everything done as root: `/var/log/mentor/audit.log` (`mentor log`).
+- **Plain words before the password**: a small window that says what is about to happen, and warns in yellow when the agent has just read text from outside (SECURITY.md).
 - **A journal** of every change made through the tools, root or not, under the request it was made for: `mentor journal` (JOURNAL.md).
 
 ## How it hangs together
@@ -26,6 +27,7 @@ the model (through an engine; see ENGINES.md)
 /usr/local/lib/mentor/mentor-root-shell        root, action org.mentor.root-shell  free command, system files, apply, undo
    |  all three are three lines that call:
 /usr/local/lib/mentor/mentor_core.py           checks the request against policy.toml, does it, writes the audit log
+   |     before pkexec: mentor_security.before_root -> mentor-explain   plain words, and the warning (SECURITY.md)
    |- mentor_sandbox.py                        the sandbox
    `- mentor_boot.py                           a change that was applied is on trial at the next start (BOOT.md)
 ```
@@ -39,7 +41,7 @@ the model (through an engine; see ENGINES.md)
 
 ## The tools
 
-Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read`, `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `desktop_check`, `session_logout`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Other: `system_info`, `suggestions_status`, `suggestions_restore`, `journal_read`.
+Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read`, `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `desktop_check`, `session_logout`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Other: `system_info`, `suggestions_status`, `suggestions_restore`, `journal_read`, `security_check`.
 
 `mentor tools` prints them with their descriptions; that list is the truth, this one a summary.
 
@@ -59,6 +61,7 @@ Packages: `package_search`, `package_info`, `package_list`, `package_install`, `
 | `mentor call sandbox_run '{"command": "touch /etc/mentor-test"}'` then `mentor call sandbox_changes '{}'` | a dialog, then `/etc/mentor-test` listed as added; then `mentor call sandbox_discard '{}'` |
 | `mentor log -n 5` | the last things done as root |
 | `mentor journal -n 5` | the last changes, each under the request it was for |
+| `mentor security` | the firewall is on; what else needs attention |
 | `mentor changes` | the changes applied, newest first |
 | `mentor notice warning "A test" "Nothing is wrong."` | a yellow card in the assistant's chat (ASSISTANT.md, "Notices") |
 

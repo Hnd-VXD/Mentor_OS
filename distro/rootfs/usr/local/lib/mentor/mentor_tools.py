@@ -15,6 +15,7 @@ import tempfile
 import time
 
 import mentor_journal
+import mentor_security
 
 LIBDIR = "/usr/local/lib/mentor"
 HELPER = f"{LIBDIR}/mentor-helper"
@@ -77,6 +78,22 @@ def _run(argv, timeout=120, stdin=None):
 # What the call in progress has to say to the journal beyond its arguments and its output.
 _noted = {}
 
+STOPPED = ("[The user was told in plain words what this would do and chose not to go on. Do not retry and do not "
+           "try another way; ask what they want instead.]")
+
+
+def _explained(door, a, plain, detail=""):
+    """Tell the user, just before their password is asked, what is about to happen: the
+    agent's own `explain` if it gave one, otherwise `plain`. With a warning when the agent
+    has just read text from outside (mentor_security). False when they then say no."""
+    go, read = mentor_security.before_root(os.environ.get("MENTOR_SANDBOX"), door,
+                                           " ".join(str(a.get("explain") or plain).split())[:600], detail)
+    if read:
+        _noted["read"] = mentor_security.said(read)
+    if not go:
+        _noted["declined"] = True
+    return go
+
 
 def _privileged(helper, action, args, timeout=1800, stdin=None):
     code, out = _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin)
@@ -120,10 +137,14 @@ def package_list(a):
 
 
 def package_install(a):
+    if not _explained("manage", a, f"Mentor wants to add these programs to your system: {', '.join(a['packages'])}."):
+        return 1, STOPPED
     return _privileged(HELPER, "pkg_install", {"packages": a["packages"]})
 
 
 def package_remove(a):
+    if not _explained("manage", a, f"Mentor wants to take these programs off your system: {', '.join(a['packages'])}."):
+        return 1, STOPPED
     return _privileged(HELPER, "pkg_remove", {"packages": a["packages"]})
 
 
@@ -191,6 +212,9 @@ def system_upgrade(a):
         return 1, (f"Nothing was upgraded. This upgrade would take GNOME from {installed} to {coming}, a new major "
                    f"version. {what}\n\nTell the user this in plain words before anything else. {advice} Only if "
                    "they then say to go ahead, call system_upgrade again with gnome_major_ok set to true.")
+    if not _explained("manage", a, "Mentor wants to bring every program on your system up to date. It can take "
+                      "a few minutes. A copy of the whole disk is kept first, to go back to."):
+        return 1, STOPPED
     note = _restore_point("Before a full system upgrade")
     code, out = _privileged(HELPER, "system_upgrade", {}, timeout=3600)
     return code, f"{note}\n{out}"
@@ -230,6 +254,9 @@ def service_status(a):
 def service_control(a):
     if a.get("user"):
         return _run(["systemctl", "--user", a["operation"], "--", a["unit"]])
+    if not _explained("manage", a, f"Mentor wants to {a['operation']} {a['unit']}, a program that works in the "
+                      "background."):
+        return 1, STOPPED
     return _privileged(HELPER, "service", {"unit": a["unit"], "operation": a["operation"]}, timeout=300)
 
 
@@ -249,6 +276,7 @@ def _home_backups(real):
 
 def file_read(a):
     path = os.path.expanduser(a["path"])
+    mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "read", {"path": path})
     try:
         with open(path, errors="replace") as f:
             return 0, _clip(f.read())
@@ -262,6 +290,9 @@ def file_write(a):
     path, content = os.path.expanduser(a["path"]), a["content"]
     real = _in_home(path)
     if real is None:  # a system file: root writes it, after the user approves
+        if not _explained("shell", a, "Mentor wants to change a file that belongs to the system. The file as it "
+                          "is now is kept, so this can be undone.", os.path.abspath(path)):
+            return 1, STOPPED
         return _privileged(ROOT_SHELL, "write_file", {"path": os.path.abspath(path)}, timeout=300, stdin=content)
     try:
         note = ""
@@ -282,6 +313,9 @@ def file_restore(a):
     path = os.path.expanduser(a["path"])
     real = _in_home(path)
     if real is None:
+        if not _explained("shell", a, "Mentor wants to put a file of the system back the way it was before.",
+                          os.path.abspath(path)):
+            return 1, STOPPED
         return _privileged(ROOT_SHELL, "restore_file", {"path": os.path.abspath(path)}, timeout=300)
     copies = _home_backups(real)
     if not copies:
@@ -326,6 +360,11 @@ def _sandbox():
 
 def sandbox_run(a):
     timeout = int(a.get("timeout_seconds", 600))
+    mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
+    if not _explained("sandbox", a, "Mentor wants to try something out in its sandbox: a copy of your system "
+                      "for practising. Nothing on the real system changes until you have seen it and said yes.",
+                      a["command"]):
+        return 1, STOPPED
     return _privileged(SANDBOX, "sandbox_run", {"sandbox": _sandbox(), "command": a["command"], "timeout": timeout},
                        timeout=timeout + 60)
 
@@ -367,6 +406,8 @@ def _review_on_console(report):
     try:
         with open("/dev/tty") as asked, open("/dev/tty", "w") as tty:  # a terminal cannot be opened for both at once
             tty.write(f"\n--- The agent wants to apply this change: {report['summary']}\n")
+            if report.get("warning"):
+                tty.write(f"!!! {report['warning']}\n")
             tty.write(_describe(report, False) + "\n")
             tty.write("Type d to see what changes inside the files, y to apply, anything else not to.\n")
             while True:
@@ -387,6 +428,12 @@ def sandbox_apply(a):
     if not report["entries"]:
         return 1, _describe(report, False)
     report["summary"] = a["summary"]
+    read = mentor_security.reads(os.environ.get("MENTOR_SANDBOX")) if os.environ.get("MENTOR_SANDBOX") else []
+    if read:  # shown in the preview, above the files
+        _noted["read"] = mentor_security.said(read)
+        report["warning"] = ("While working on this, Mentor read text that came from outside (" + _noted["read"]
+                             + "). Such text can be written to trick an assistant. Apply only if the files below "
+                             "are what you asked for.")
     if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
         # No desktop to show a window on (the repair console): the same preview as text.
         code, out = _review_on_console(report)
@@ -425,6 +472,9 @@ def change_list(a):
 
 
 def change_undo(a):
+    if not _explained("shell", a, "Mentor wants to undo a change it made to the system earlier: the files go "
+                      "back to how they were before it.", f"change {a['id']}"):
+        return 1, STOPPED
     return _privileged(ROOT_SHELL, "change_undo", {"id": a["id"]}, timeout=1800)
 
 
@@ -453,6 +503,7 @@ def app_open(a):
 def terminal_run(a):
     """Run a command in a Console window the user can watch, and report what it printed."""
     timeout = int(a.get("timeout_seconds", 120))
+    mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
     runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
     with tempfile.NamedTemporaryFile(prefix="mentor-terminal-", suffix=".log", dir=runtime, delete=False) as f:
         log = f.name
@@ -620,11 +671,18 @@ def desktop_layout(a):
 
 
 def run_command(a):
+    mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
     return _run(["bash", "-c", a["command"]], timeout=int(a.get("timeout_seconds", 120)))
 
 
 def run_root_command(a):
+    if not _explained("shell", a, "Mentor wants to run a command with full power over your system.", a["command"]):
+        return 1, STOPPED
     return _privileged(ROOT_SHELL, "run_root", {"command": a["command"]})
+
+
+def security_check(a):
+    return 0, mentor_security.report()
 
 
 def journal_read(a):
@@ -641,6 +699,10 @@ _STR = {"type": "string"}
 _PACKAGES = {"type": "array", "items": _STR, "minItems": 1, "description": "Exact pacman package names."}
 _USER_UNIT = {"type": "boolean", "description": "Act on the user's own systemd instance instead of the system one."}
 _OPERATION = {"type": "string", "enum": ["start", "stop", "restart", "reload", "enable", "disable", "mask", "unmask"]}
+_EXPLAIN = {"type": "string", "description":
+            "One or two short sentences for the user, shown in a window just before their password is asked: "
+            "what this does and why they would want it. In their language, in words a child would understand: "
+            "no names of commands, packages or files, no technical terms."}
 _CHANGES = {"type": "string", "description":
             "When the command changes something (a file, a setting, a program): what it changes, in a few "
             "words, for the journal. Leave it out for a command that only reads."}
@@ -743,16 +805,17 @@ TOOLS = {
         _schema({"include_dependencies": {"type": "boolean"}}), package_list),
     "package_install": (
         "Install packages with pacman. Asks the user for approval.",
-        _schema({"packages": _PACKAGES}, ["packages"]), package_install),
+        _schema({"packages": _PACKAGES, "explain": _EXPLAIN}, ["packages"]), package_install),
     "package_remove": (
         "Remove packages and their unneeded dependencies with pacman. Asks the user for approval.",
-        _schema({"packages": _PACKAGES}, ["packages"]), package_remove),
+        _schema({"packages": _PACKAGES, "explain": _EXPLAIN}, ["packages"]), package_remove),
     "system_upgrade": (
         "Upgrade every package on the system (pacman -Syu). Asks the user for approval. Can take several minutes. "
         "When the upgrade would bring a new major version of GNOME it stops first and tells you what that means "
         "for this system: pass that on, and call again with gnome_major_ok only after the user has said to go ahead.",
         _schema({"gnome_major_ok": {"type": "boolean", "description":
-                 "The user was told a new major GNOME is coming and said to go ahead."}}), system_upgrade),
+                 "The user was told a new major GNOME is coming and said to go ahead."},
+                 "explain": _EXPLAIN}), system_upgrade),
     "settings_list": (
         "Without a schema: list all GSettings schemas. With one: list its keys and current values "
         "(e.g. org.gnome.desktop.interface).",
@@ -770,7 +833,8 @@ TOOLS = {
     "service_control": (
         "Start, stop, restart, reload, enable, disable, mask or unmask a systemd unit. "
         "System units ask the user for approval.",
-        _schema({"unit": _STR, "operation": _OPERATION, "user": _USER_UNIT}, ["unit", "operation"]), service_control),
+        _schema({"unit": _STR, "operation": _OPERATION, "user": _USER_UNIT, "explain": _EXPLAIN},
+                ["unit", "operation"]), service_control),
     "window_mode": (
         "Switch the Mentor window on the host between full screen and a normal window. "
         "This is the whole VM's window, not an app inside it; the screen resolution follows it.",
@@ -781,7 +845,8 @@ TOOLS = {
         "sandbox_apply. The sandbox belongs to this conversation, is created on first use and keeps its "
         "state between calls. /boot is included: a kernel, initramfs or boot loader file changed there is "
         "part of the change. No graphical session inside, and the kernel is the running one.",
-        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 600}}, ["command"]), sandbox_run),
+        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 600}, "explain": _EXPLAIN},
+                ["command"]), sandbox_run),
     "sandbox_changes": (
         "List every file the sandbox added, modified or deleted relative to the real system, with text diffs. "
         "Check this before proposing the change.",
@@ -801,7 +866,7 @@ TOOLS = {
     "change_undo": (
         "Undo one applied change by id: the files it replaced or deleted come back, the files it added go away. "
         "Asks the user for approval.",
-        _schema({"id": _STR}, ["id"]), change_undo),
+        _schema({"id": _STR, "explain": _EXPLAIN}, ["id"]), change_undo),
     "file_read": (
         "Read a text file. Works for anything the logged-in user can read.",
         _schema({"path": _STR}, ["path"]), file_read),
@@ -810,7 +875,7 @@ TOOLS = {
         "Files in the home directory are written directly; system files such as /etc/... ask the user for "
         "approval. The previous version is kept and file_restore undoes the change. This is the way to "
         "edit configuration files; do not write them with shell redirection.",
-        _schema({"path": _STR, "content": _STR}, ["path", "content"]), file_write),
+        _schema({"path": _STR, "content": _STR, "explain": _EXPLAIN}, ["path", "content"]), file_write),
     "file_restore": (
         "Undo the last file_write to a file by restoring its previous version. Call again to go further back.",
         _schema({"path": _STR}, ["path"]), file_restore),
@@ -904,7 +969,15 @@ TOOLS = {
     "run_root_command": (
         "Run a bash command as root. The user sees the exact command and must enter their password every time. "
         "Only for changes no other tool covers.",
-        _schema({"command": _STR}, ["command"]), run_root_command),
+        _schema({"command": _STR, "explain": _EXPLAIN}, ["command"]), run_root_command),
+    "security_check": (
+        "Look at how safe this system is right now, without changing anything: whether the firewall refuses "
+        "what comes in from other computers, whether the password is still the one every Mentor starts with, "
+        "remote login, root without a password, a second root account, keys others can read, and which "
+        "programs wait for connections. Use it when the user asks whether their system is safe, and after any "
+        "change to the network, to accounts or to services. /etc/mentor/SECURITY.md says what each finding "
+        "means and what to do about it.",
+        _schema(), security_check),
     "journal_read": (
         "The journal of what was changed on this system through these tools, by you and by every model before "
         "you: under each request of the user's, the changes made for it, when, and the way back where there is "
@@ -986,7 +1059,8 @@ def _journal(name, a, code, out):
         if line is None:
             return
         what, undo, kind = (line, None, "change") if isinstance(line, str) else (*line, "change")[:3]
-        mentor_journal.record(name, what, kind, code == 0, os.environ.get("MENTOR_SANDBOX"), undo=undo)
+        mentor_journal.record(name, what, kind, code == 0, os.environ.get("MENTOR_SANDBOX"), undo=undo,
+                              after_reading=_noted.get("read") if kind == "change" else None)
     except Exception:
         pass
 

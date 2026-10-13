@@ -20,6 +20,7 @@ import textwrap
 
 sys.path.insert(0, "/usr/local/lib/mentor")
 import mentor_journal
+import mentor_security
 
 HOME =os.path.expanduser("~")
 os.environ["PATH"] = f"{HOME}/.local/bin" + os.pathsep + os.environ.get("PATH", "")
@@ -168,6 +169,7 @@ class Engine:
         """Send one message and print what comes back as it comes. True if it answered."""
         argv, folder, extra = self.command(message)
         mentor_journal.note_request(SANDBOX, message)  # the journal of changes names the request
+        mentor_security.new_request(SANDBOX)
         self.text, answered, trouble, stray = "", False, None, []
         try:
             process = subprocess.Popen(argv, cwd=folder, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -210,6 +212,8 @@ class Engine:
     def tool(name, given):
         if name.startswith(TOOL_PREFIX):
             name = name[len(TOOL_PREFIX):]
+        else:  # a tool of the engine's own: what it read from outside is noted for the warning
+            mentor_security.saw(SANDBOX, name, given)
         detail = ""
         if isinstance(given, dict):
             detail = str(given.get("command") or given.get("path") or given.get("packages") or given.get("unit")
