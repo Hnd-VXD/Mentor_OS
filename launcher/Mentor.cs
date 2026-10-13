@@ -63,6 +63,27 @@ static class Program
 {
     const string Title = "Mentor";
     public static int Freezes;  // starts in a row that froze with the graphics card drawing
+    public static bool SoundFailed;  // QEMU would not start with sound: the next start is without
+
+    [DllImport("winmm.dll")] static extern uint waveOutGetNumDevs();
+    [DllImport("winmm.dll")] static extern uint waveInGetNumDevs();
+
+    // How the system's sound reaches Windows. DirectSound, the usual way, refuses to start at
+    // all on a computer without a microphone ("Could not initialize DirectSoundCapture"), and
+    // QEMU then stops: there SDL plays the sound, without a microphone. With nothing to play
+    // on either, or after a start that failed over sound, the system gets a sound card that
+    // goes nowhere.
+    static string[] Sound()
+    {
+        uint speakers = 0, microphones = 0;
+        try { speakers = waveOutGetNumDevs(); microphones = waveInGetNumDevs(); }
+        catch (Exception) { }
+        if (SoundFailed || speakers == 0)
+            return new[] { "-audiodev", "none,id=snd", "-device", "ich9-intel-hda", "-device", "hda-output,audiodev=snd" };
+        if (microphones == 0)
+            return new[] { "-audiodev", "sdl,id=snd", "-device", "ich9-intel-hda", "-device", "hda-output,audiodev=snd" };
+        return new[] { "-audiodev", "dsound,id=snd", "-device", "ich9-intel-hda", "-device", "hda-duplex,audiodev=snd" };
+    }
 
     [STAThread]
     static int Main(string[] args)
@@ -357,9 +378,6 @@ static class Program
             "-device", "qemu-xhci",
             "-device", "usb-tablet",
             "-device", "virtio-rng-pci",
-            "-audiodev", "dsound,id=snd",
-            "-device", "ich9-intel-hda",
-            "-device", "hda-duplex,audiodev=snd",
             "-device", "virtio-serial-pci",
             "-chardev", "socket,id=clipboard,host=127.0.0.1,port=" + clipboardPort + ",server=on,wait=off",
             "-device", "virtserialport,chardev=clipboard,name=org.mentor.clipboard",
@@ -397,6 +415,7 @@ static class Program
         // Nor with Mentor's own QEMU, whose window does not freeze when it is there from the start.
         bool waitMinimized = gpu && !own && !extra.Contains("-display");
         if (gpu && !own && !waitMinimized && File.Exists(modeFile)) q.Add("-full-screen");
+        if (!extra.Contains("-audiodev")) q.AddRange(Sound());
         var stderr = new StringBuilder();
         string program = Path.Combine(qemuDir, "qemu-system-x86_64w.exe");
         string said = Path.Combine(Path.GetDirectoryName(modeFile), "qemu-said.txt");
@@ -465,6 +484,15 @@ static class Program
             return true;  // start it again
         }
         if (bridge.Revealed) Freezes = 0;
+        // Sound that Windows will not give (a device that went away, a driver that is broken)
+        // must not keep the system from starting: once more, without.
+        string complaint = stderr.ToString();
+        if (qemu.ExitCode != 0 && !bridge.TimedOut && !bridge.Revealed && !SoundFailed &&
+            (complaint.Contains("DirectSound") || complaint.Contains("audio driver") || complaint.Contains("audiodev")))
+        {
+            SoundFailed = true;
+            return true;  // start it again
+        }
         if (qemu.ExitCode != 0 && !bridge.TimedOut)
             throw new LauncherException("QEMU stopped with an error:\n\n" + Tail(stderr.ToString(), 1500));
         return qmp.StopReason == "guest-reset" || bridge.TimedOut;
