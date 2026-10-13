@@ -10,12 +10,14 @@ import re
 import select
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
 
 import mentor_journal
 import mentor_security
+import mentor_settings
 
 LIBDIR = "/usr/local/lib/mentor"
 HELPER = f"{LIBDIR}/mentor-helper"
@@ -41,15 +43,16 @@ MAX_OUTPUT = 20000
 NOTICES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "notices")
 
 
-def leave_notice(level, title, text="", prompt=None):
+def leave_notice(level, title, text="", prompt=None, auto=False):
     """Tell the user something by itself: the assistant shows it in the chat as a card, yellow
     for a "warning", red for a "problem" (mentor-chat, NOTICES_DIR). `prompt` is what goes to
-    the agent when the user asks it to look. Returns where it was left."""
+    the agent when the user asks it to look; with `auto` the assistant sends it on by itself,
+    without waiting to be asked (only mentor-firewall-watch does). Returns where it was left."""
     os.makedirs(NOTICES, exist_ok=True)
     path = os.path.join(NOTICES, f"{time.time():.3f}-{os.getpid()}.json")
     with open(path + ".new", "w") as f:
         json.dump({"level": "problem" if level == "problem" else "warning", "title": title, "text": text,
-                   **({"prompt": prompt} if prompt else {})}, f)
+                   **({"prompt": prompt} if prompt else {}), **({"auto": True} if auto and prompt else {})}, f)
     os.replace(path + ".new", path)  # whole when it is seen
     return path
 
@@ -85,21 +88,70 @@ STOPPED = ("[The user was told in plain words what this would do and chose not t
            "try another way; ask what they want instead.]")
 
 
+NEEDS_WORDS = ("Not done yet. The user is about to be asked for their password and must be told what for: call "
+               "this again with `explain`, ONE short sentence in their language, in words a child would "
+               "understand, saying what you are doing and why. No names of commands, packages or files.")
+
+
 def _explained(door, a, plain, detail=""):
-    """Tell the user, just before their password is asked, what is about to happen: the
-    agent's own `explain` if it gave one, otherwise `plain`. With a warning when the agent
-    has just read text from outside (mentor_security). False when they then say no."""
+    """What the user is told when their password is asked: the agent's own sentence
+    (`explain`), which the password dialog shows (mentor-rootd). An agent that gives none is
+    sent back for one, except for work in the sandbox, which has a sentence of its own. With
+    a warning window first when the agent has just read text from outside (mentor_security).
+    Returns None to go on, or what the tool answers instead."""
+    if os.environ.get("MENTOR_SANDBOX") and door != "sandbox" and not str(a.get("explain") or "").strip():
+        _noted["declined"] = True
+        return 1, NEEDS_WORDS
+    _noted["explain"] = " ".join(str(a.get("explain") or "").split())[:300]  # shown in the password dialog
     go, read = mentor_security.before_root(os.environ.get("MENTOR_SANDBOX"), door,
-                                           " ".join(str(a.get("explain") or plain).split())[:600], detail)
+                                           " ".join(str(a.get("explain") or plain).split())[:600], detail,
+                                           told_by_dialog=os.path.exists(ROOT_SOCKET))
     if read:
         _noted["read"] = mentor_security.said(read)
     if not go:
         _noted["declined"] = True
-    return go
+        return 1, STOPPED
+    return None
+
+
+ROOT_SOCKET = "/run/mentor-root.sock"
+
+
+def _ask_root(helper, action, args, timeout, stdin):
+    """Have Mentor's own root service do it (mentor-rootd): it asks for the password through
+    the system's dialog like pkexec, but with words that say exactly what this is, and the
+    agent's reason after them. None when the service is not there."""
+    data = stdin.encode() if stdin is not None else b""
+    link = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        link.connect(ROOT_SOCKET)
+    except OSError:
+        link.close()
+        return None
+    try:
+        link.settimeout(timeout)
+        link.sendall(json.dumps({"helper": os.path.basename(helper), "action": action, "args": args,
+                                 "explain": _noted.get("explain"), "exact": bool(mentor_settings.get("exact")),
+                                 "stdin": len(data)}).encode() + b"\n" + data)
+        answer = b""
+        while chunk := link.recv(65536):
+            answer += chunk
+    except socket.timeout:
+        return 124, _clip(answer.decode(errors="replace")) + f"\n[timed out after {timeout}s]"
+    except OSError as e:
+        return 1, f"the connection to Mentor's root service broke: {e}"
+    finally:
+        link.close()
+    out, mark, code = answer.rpartition(b"\n\0exit ")
+    if not mark or not code.strip().isdigit():
+        return 1, _clip(answer.decode(errors="replace")) + "\n[Mentor's root service ended without saying how]"
+    return int(code), _clip(out.decode(errors="replace"))
 
 
 def _privileged(helper, action, args, timeout=1800, stdin=None):
-    code, out = _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin)
+    # Mentor's own service first; pkexec, with its fixed words, when that is not there.
+    code, out = _ask_root(helper, action, args, timeout, stdin) or \
+        _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin)
     if code in (126, 127) or (code == 3 and "denied by policy" in out):
         _noted["declined"] = True  # nothing was done: not a line for the journal
     if code == 126:
@@ -140,14 +192,16 @@ def package_list(a):
 
 
 def package_install(a):
-    if not _explained("manage", a, f"Mentor wants to add these programs to your system: {', '.join(a['packages'])}."):
-        return 1, STOPPED
+    stop = _explained("manage", a, f"Mentor wants to add these programs to your system: {', '.join(a['packages'])}.")
+    if stop:
+        return stop
     return _privileged(HELPER, "pkg_install", {"packages": a["packages"]})
 
 
 def package_remove(a):
-    if not _explained("manage", a, f"Mentor wants to take these programs off your system: {', '.join(a['packages'])}."):
-        return 1, STOPPED
+    stop = _explained("manage", a, f"Mentor wants to take these programs off your system: {', '.join(a['packages'])}.")
+    if stop:
+        return stop
     return _privileged(HELPER, "pkg_remove", {"packages": a["packages"]})
 
 
@@ -215,9 +269,10 @@ def system_upgrade(a):
         return 1, (f"Nothing was upgraded. This upgrade would take GNOME from {installed} to {coming}, a new major "
                    f"version. {what}\n\nTell the user this in plain words before anything else. {advice} Only if "
                    "they then say to go ahead, call system_upgrade again with gnome_major_ok set to true.")
-    if not _explained("manage", a, "Mentor wants to bring every program on your system up to date. It can take "
-                      "a few minutes. A copy of the whole disk is kept first, to go back to."):
-        return 1, STOPPED
+    stop = _explained("manage", a, "Mentor wants to bring every program on your system up to date. It can take "
+                      "a few minutes. A copy of the whole disk is kept first, to go back to.")
+    if stop:
+        return stop
     note = _restore_point("Before a full system upgrade")
     code, out = _privileged(HELPER, "system_upgrade", {}, timeout=3600)
     return code, f"{note}\n{out}"
@@ -257,9 +312,10 @@ def service_status(a):
 def service_control(a):
     if a.get("user"):
         return _run(["systemctl", "--user", a["operation"], "--", a["unit"]])
-    if not _explained("manage", a, f"Mentor wants to {a['operation']} {a['unit']}, a program that works in the "
-                      "background."):
-        return 1, STOPPED
+    stop = _explained("manage", a, f"Mentor wants to {a['operation']} {a['unit']}, a program that works in the "
+                      "background.")
+    if stop:
+        return stop
     return _privileged(HELPER, "service", {"unit": a["unit"], "operation": a["operation"]}, timeout=300)
 
 
@@ -293,9 +349,10 @@ def file_write(a):
     path, content = os.path.expanduser(a["path"]), a["content"]
     real = _in_home(path)
     if real is None:  # a system file: root writes it, after the user approves
-        if not _explained("shell", a, "Mentor wants to change a file that belongs to the system. The file as it "
-                          "is now is kept, so this can be undone.", os.path.abspath(path)):
-            return 1, STOPPED
+        stop = _explained("shell", a, "Mentor wants to change a file that belongs to the system. The file as it "
+                          "is now is kept, so this can be undone.", os.path.abspath(path))
+        if stop:
+            return stop
         return _privileged(WRITE_FILE, "write_file", {"path": os.path.abspath(path)}, timeout=300, stdin=content)
     try:
         note = ""
@@ -316,9 +373,10 @@ def file_restore(a):
     path = os.path.expanduser(a["path"])
     real = _in_home(path)
     if real is None:
-        if not _explained("shell", a, "Mentor wants to put a file of the system back the way it was before.",
-                          os.path.abspath(path)):
-            return 1, STOPPED
+        stop = _explained("shell", a, "Mentor wants to put a file of the system back the way it was before.",
+                          os.path.abspath(path))
+        if stop:
+            return stop
         return _privileged(WRITE_FILE, "restore_file", {"path": os.path.abspath(path)}, timeout=300)
     copies = _home_backups(real)
     if not copies:
@@ -364,10 +422,11 @@ def _sandbox():
 def sandbox_run(a):
     timeout = int(a.get("timeout_seconds", 600))
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
-    if not _explained("sandbox", a, "Mentor wants to try something out in its sandbox: a copy of your system "
+    stop = _explained("sandbox", a, "Mentor wants to try something out in its sandbox: a copy of your system "
                       "for practising. Nothing on the real system changes until you have seen it and said yes.",
-                      a["command"]):
-        return 1, STOPPED
+                      a["command"])
+    if stop:
+        return stop
     return _privileged(SANDBOX, "sandbox_run", {"sandbox": _sandbox(), "command": a["command"], "timeout": timeout},
                        timeout=timeout + 60)
 
@@ -475,9 +534,10 @@ def change_list(a):
 
 
 def change_undo(a):
-    if not _explained("shell", a, "Mentor wants to undo a change it made to the system earlier: the files go "
-                      "back to how they were before it.", f"change {a['id']}"):
-        return 1, STOPPED
+    stop = _explained("shell", a, "Mentor wants to undo a change it made to the system earlier: the files go "
+                      "back to how they were before it.", f"change {a['id']}")
+    if stop:
+        return stop
     return _privileged(UNDO, "change_undo", {"id": a["id"]}, timeout=1800)
 
 
@@ -679,8 +739,9 @@ def run_command(a):
 
 
 def run_root_command(a):
-    if not _explained("shell", a, "Mentor wants to run a command with full power over your system.", a["command"]):
-        return 1, STOPPED
+    stop = _explained("shell", a, "Mentor wants to run a command with full power over your system.", a["command"])
+    if stop:
+        return stop
     return _privileged(ROOT_SHELL, "run_root", {"command": a["command"]})
 
 
@@ -703,9 +764,10 @@ _PACKAGES = {"type": "array", "items": _STR, "minItems": 1, "description": "Exac
 _USER_UNIT = {"type": "boolean", "description": "Act on the user's own systemd instance instead of the system one."}
 _OPERATION = {"type": "string", "enum": ["start", "stop", "restart", "reload", "enable", "disable", "mask", "unmask"]}
 _EXPLAIN = {"type": "string", "description":
-            "One or two short sentences for the user, shown in a window just before their password is asked: "
-            "what this does and why they would want it. In their language, in words a child would understand: "
-            "no names of commands, packages or files, no technical terms."}
+            "What the password dialog tells the user: ONE short sentence, at most 20 words, in their language, "
+            "in words a child would understand, saying what you are doing and why. No names of commands, "
+            "packages or files (the dialog adds the exact thing itself), no technical terms. Example: "
+            "\"I am adding a drawing program called GIMP, as you asked.\""}
 _CHANGES = {"type": "string", "description":
             "When the command changes something (a file, a setting, a program): what it changes, in a few "
             "words, for the journal. Leave it out for a command that only reads."}

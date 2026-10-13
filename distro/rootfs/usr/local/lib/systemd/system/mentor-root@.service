@@ -1,0 +1,10 @@
+[Unit]
+Description=Mentor: one request to do something as root, asked of the user first
+Documentation=file:///etc/mentor/TOOLS.md
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-rootd
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

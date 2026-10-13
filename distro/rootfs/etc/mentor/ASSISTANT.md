@@ -67,10 +67,10 @@ What it keeps, all in the user's folders:
 Anything that has something to tell the user leaves a file in `~/.local/state/mentor/notices/`:
 
 ```
-NAME.json   {"level": "warning" or "problem", "title": "…", "text": "…", "prompt": "…"}
+NAME.json   {"level": "warning" or "problem", "title": "…", "text": "…", "prompt": "…", "auto": true}
 ```
 
-written under another name and renamed, so that it is whole when it is seen. `prompt` is what goes to the agent when the user presses Let Mentor look; leave it out and the card has only Dismiss. The assistant watches the folder (`show_notices` in `DesktopWindow`), shows each file once as a card in the conversation in front (`Conversation.add_notice`; the colours are `.notice.warning` and `.notice.problem` in `CSS`), and removes the file. A notice left while the assistant is not running is shown when it starts.
+written under another name and renamed, so that it is whole when it is seen. `prompt` is what goes to the agent when the user presses Let Mentor look; leave it out and the card has only Dismiss. With `"auto": true` the assistant sends the prompt on by itself as soon as the card is shown, when an engine is chosen (only `mentor-firewall-watch` leaves such notices; SECURITY.md). The assistant watches the folder (`show_notices` in `DesktopWindow`), shows each file once as a card in the conversation in front (`Conversation.add_notice`; the colours are `.notice.warning` and `.notice.problem` in `CSS`), and removes the file. A notice left while the assistant is not running is shown when it starts.
 
 From a command line or a script, this does it:
 

@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+"""The way to root that can say exactly what it is for.
+
+pkexec asks for the password with a sentence fixed when the system was built. This asks
+through the same system dialog, but as root itself, which is allowed to set the words: so
+the dialog says, short, what this is for in the agent's own words, and under it names the
+very programs, file or command.
+
+Started by systemd for each connection to /run/mentor-root.sock (mentor-root.socket,
+mentor-root@.service), as root, with the connection as standard input and output.
+
+  the caller sends   one line of JSON: {"helper": "mentor-helper", "action": "pkg_install",
+                     "args": {...}, "explain": "…", "exact": false, "stdin": 123}, then 123 bytes for the
+                     helper's standard input (the new text of a file)
+  this answers       what the helper printed, then a line "\\0exit N"
+
+What is done is done by the same helpers pkexec runs (mentor_core.py checks every request
+against the rules and writes the audit log). This only replaces who asks for the password:
+the same polkit actions, the same user, the same password. See /etc/mentor/TOOLS.md.
+"""
+import json
+import os
+import socket
+import struct
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Polkit", "1.0")
+from gi.repository import GLib, Polkit
+
+LIB = "/usr/local/lib/mentor"
+# helper -> the polkit action that guards it (the same pairs as in org.mentor.policy).
+DOORS = {"mentor-helper": "org.mentor.manage", "mentor-sandbox": "org.mentor.sandbox",
+         "mentor-root-shell": "org.mentor.root-shell", "mentor-write-file": "org.mentor.write-file",
+         "mentor-apply": "org.mentor.apply", "mentor-undo": "org.mentor.undo"}
+MAX_STDIN = (1 << 20) + 1
+MAX_SHOWN = 200
+
+
+def short(text, most=MAX_SHOWN):
+    text = " ".join(str(text).split())
+    return text if len(text) <= most else text[:most - 1] + "…"
+
+
+def names(args):
+    listed = args.get("packages")
+    return short(", ".join(map(str, listed)) if isinstance(listed, list) else "?", 200)
+
+
+# What the dialog says. First the agent's own short sentence, in the user's language (the tool's
+# `explain`); under it one line with the thing itself, taken from what was really asked for and
+# not from the agent, so that a sentence that is wrong or was put into its mouth is seen for
+# what it is. action -> (what to say when the agent gave no sentence, the line with the thing).
+FACTS = {
+    "pkg_install": ("Mentor wants to add programs to your computer.", lambda a: f"Adds: {names(a)}"),
+    "pkg_remove": ("Mentor wants to remove programs from your computer.", lambda a: f"Removes: {names(a)}"),
+    "system_upgrade": ("Mentor wants to update all your programs.", lambda a: "Updates every program (a few minutes)"),
+    "service": ("Mentor wants to switch a background program on or off.",
+                lambda a: f"Background program: {short(a.get('operation'), 12)} {short(a.get('unit'), 60)}"),
+    "sandbox_run": ("Mentor wants to try this out on a practice copy of your system first.",
+                    lambda a: f"On the practice copy, nothing real changes: {short(a.get('command'), 110)}"),
+    "sandbox_changes": ("Mentor wants to list what it did on the practice copy of your system.", lambda a: "Changes nothing"),
+    "sandbox_discard": ("Mentor wants to throw away what it did on the practice copy of your system.",
+                        lambda a: "Your real system is not touched"),
+    "sandbox_apply": ("Mentor wants to make the change you just looked at real.",
+                      lambda a: "Applies the change you just looked at. It can be undone"),
+    "change_undo": ("Mentor wants to undo a change it made earlier.", lambda a: f"Undoes change {short(a.get('id'), 40)}"),
+    "write_file": ("Mentor wants to change one of the system's files.",
+                   lambda a: f"File: {short(a.get('path'), 120)} (the old one is kept)"),
+    "restore_file": ("Mentor wants to put one of the system's files back as it was.",
+                     lambda a: f"File: {short(a.get('path'), 120)}"),
+    "run_root": ("Mentor wants to run a command with full power over your system.",
+                 lambda a: f"Command, with full power: {short(a.get('command'), 140)}"),
+}
+
+
+def said(action, args, explain, exact):
+    """The agent's sentence, or ours when it gave none; and for a user who asked for it
+    (Mentor Settings), or when there is no sentence of the agent's, the thing itself under it."""
+    plain, thing = FACTS.get(action, ("Mentor wants to change your system.", lambda a: ""))
+    reason = short(explain or "", 200)
+    if reason and not exact:
+        return reason
+    named = thing(args)
+    return (reason or plain) + (f"\n\n{named}" if named and (exact or action != "run_root") else "")
+
+
+def answer(out, code, text=""):
+    out.write(text.encode() + b"\n\0exit " + str(code).encode() + b"\n")
+    out.flush()
+
+
+def main():
+    connection = socket.socket(fileno=os.dup(0))
+    pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    stream, out = connection.makefile("rb"), connection.makefile("wb")
+    try:
+        request = json.loads(stream.readline(1 << 20))
+        helper, action, args = request["helper"], request["action"], request.get("args") or {}
+        if helper not in DOORS or not isinstance(action, str) or not isinstance(args, dict):
+            raise ValueError("no such helper")
+        length = int(request.get("stdin") or 0)
+        if not 0 <= length <= MAX_STDIN:
+            raise ValueError("too much input")
+        data = stream.read(length) if length else None
+    except (ValueError, KeyError, TypeError) as e:
+        return answer(out, 2, f"mentor: bad request: {e}")
+
+    # Who is asking is the program at the other end of the connection, as the kernel names it.
+    subject = Polkit.UnixProcess.new_for_owner(pid, 0, uid)
+    details = Polkit.Details.new()
+    details.insert("polkit.message", said(action, args, request.get("explain"), bool(request.get("exact"))))
+    try:
+        result = Polkit.Authority.get_sync(None).check_authorization_sync(
+            subject, DOORS[helper], details, Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
+    except GLib.Error as e:
+        return answer(out, 127, f"mentor: could not ask for approval: {e.message}")
+    if not result.get_is_authorized():
+        # As pkexec tells them apart: 126 the user said no, 127 they may not say yes.
+        return answer(out, 126 if result.get_dismissed() else 127, "mentor: not approved")
+
+    done = subprocess.run([f"{LIB}/{helper}", action, json.dumps(args)], cwd="/",
+                          env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/bin", "PKEXEC_UID": str(uid),
+                               "HOME": "/root", "LANG": os.environ.get("LANG", "C.UTF-8")},
+                          stdout=out.fileno(), stderr=out.fileno(),
+                          **({"input": data} if data is not None else {"stdin": subprocess.DEVNULL}))
+    answer(out, done.returncode)
+
+
+main()

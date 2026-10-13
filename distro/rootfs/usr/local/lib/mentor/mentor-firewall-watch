@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+"""Have the agent look at it, by itself, when other computers try to get in.
+
+Runs for as long as the user is logged in (mentor-firewall-watch.service) and reads the
+kernel's log as it is written, for the lines the firewall leaves when it refuses a
+connection. However many come, they are gathered into one: everything refused from the
+first attempt until it has been quiet for a while is one event, and one event is one short
+request to the agent, shown in the chat as a card that the assistant sends on by itself.
+
+A model is called for this without the user asking, so it is held back hard: only for an
+event that is worth it (many attempts, or one at a door people break in through), never
+twice for the same computers within some hours, and a few times a day at most. What is held
+back still shows in `mentor security`, and as an ordinary card when the user switched the
+looking-by-itself off (Mentor Settings). See /etc/mentor/SECURITY.md, "Refused connections".
+"""
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_security
+import mentor_settings
+import mentor_tools
+
+STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "firewall-watch.json")
+QUIET = 20            # seconds without a new attempt that end an event
+LONGEST = 90          # an event is handed over after this long even if attempts keep coming
+SAME_AGAIN = 6 * 3600  # the same computers are not looked at again within this
+A_DAY = 3             # looks in any 24 hours
+APART = 15 * 60       # and never two closer than this
+
+
+def worth_it(knocks):
+    tried = {port.split()[-1] for _source, ports, _times in knocks for port in ports}
+    return sum(times for _s, _p, times in knocks) >= 10 or bool(tried & mentor_security.TELLING)
+
+
+def allowed(key, now):
+    """Whether a look may be spent on this event; notes it when so."""
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        state = {}
+    looks = [when for when in state.get("looks", []) if now - when < 24 * 3600]
+    seen = {k: when for k, when in state.get("seen", {}).items() if now - when < SAME_AGAIN}
+    if key in seen or len(looks) >= A_DAY or (looks and now - looks[-1] < APART):
+        return False
+    seen[key] = now
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    with open(STATE_PATH, "w") as f:
+        json.dump({"looks": looks + [now], "seen": seen}, f)
+    return True
+
+
+def handle(lines):
+    knocks = mentor_security.count_refused(lines)
+    if not knocks or not worth_it(knocks):
+        return
+    if not mentor_settings.get("auto_review") or "refused" in (mentor_settings.get("watch_off") or []):
+        return  # the user's choice: mentor-watch may still tell of it with an ordinary card
+    if not allowed(",".join(sorted(source for source, _p, _t in knocks[:5])), time.time()):
+        return
+    source, ports, times = knocks[0]
+    mentor_tools.leave_notice(
+        "warning", "Something tried to connect to this computer",
+        f"It was turned away. {source} tried at least {times} time(s)"
+        + (f", and {len(knocks) - 1} more did" if len(knocks) > 1 else "") + ". Mentor is having a look.",
+        mentor_security.refused_request(knocks) + " This was noticed just now, by itself, and I did not ask: answer "
+        "in two or three short sentences, in simple words, who it most likely was and whether I need to do anything.",
+        auto=True)
+
+
+def main():
+    following = subprocess.Popen(["journalctl", "-k", "-f", "-n", "0", "-o", "cat", "--grep", "mentor-firewall refused"],
+                                 stdout=subprocess.PIPE, text=True, errors="replace")
+    while True:
+        line = following.stdout.readline()
+        if not line:
+            return 1  # journalctl ended: systemd starts this again
+        event, began = [line], time.monotonic()
+        while time.monotonic() - began < LONGEST and select.select([following.stdout], [], [], QUIET)[0]:
+            line = following.stdout.readline()
+            if not line:
+                break
+            event.append(line)
+        try:
+            handle(event)
+        except Exception as e:  # one event that could not be handled must not end the watching
+            print(f"mentor-firewall-watch: {e}", file=sys.stderr)
+
+
+sys.exit(main())

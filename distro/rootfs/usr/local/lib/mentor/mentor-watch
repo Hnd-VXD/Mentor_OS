@@ -100,6 +100,8 @@ def main():
         raised = {}
     now = time.time()
     off = set(mentor_settings.get("watch_off") or [])
+    if mentor_settings.get("auto_review"):
+        off.add("refused")  # the agent looks at those itself as they happen (mentor-firewall-watch)
     for key, level, title, text, request in findings():
         if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue

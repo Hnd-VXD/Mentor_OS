@@ -19,7 +19,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
-| `SETTINGS.md` | Mentor Settings: the window with the user's choices about safety, suggestions, warnings; where each is kept |
+| `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
 | `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
 | `AGENT.md` | what every engine is told; the rules of work |
@@ -131,6 +131,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/etc/nftables.conf`, `/etc/nftables.d/00-example.nft`, `/etc/systemd/system/nftables.service.d/mentor.conf` | the firewall: what comes in from other computers is refused; and its service made to count as running while the rules are loaded. `systemctl reload nftables` after | yes | reload | SECURITY.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-sandbox`, `mentor-root-shell`, `mentor-write-file`, `mentor-apply`, `mentor-undo` | the doors to root, one for each password dialog and its words | user | next call | TOOLS.md |
+| `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
+| `/usr/local/lib/systemd/system/mentor-root.socket`, `mentor-root@.service` | where the tools reach it (`/run/mentor-root.sock`), one start for each request | user | `systemctl daemon-reload` | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-review` | the preview window of a change | user | next preview | TOOLS.md |
 | `/usr/share/applications/org.mentor.Review.desktop` | its name and icon | yes | at once | TOOLS.md |
@@ -165,6 +167,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor-advisor` | looks for waiting updates, a filling disk, failed services, and the news | user | next run | SUGGESTIONS.md |
 | `/usr/local/lib/systemd/system/mentor-advisor.service`, `.timer` | runs it four minutes after the start and twice a day | yes | `systemctl daemon-reload` | SUGGESTIONS.md |
 | `/usr/local/lib/mentor/mentor-watch` | checks Mentor itself, the user's safety (SECURITY.md), the disk and failed services; what it finds becomes a yellow or red card in the chat | user | next run | SUGGESTIONS.md |
+| `/usr/local/lib/mentor/mentor-firewall-watch` | has the agent look, by itself and once for each burst, when the firewall turns other computers away | user | `systemctl --user restart mentor-firewall-watch` | SECURITY.md |
+| `/etc/systemd/user/mentor-firewall-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | SECURITY.md |
 | `/etc/systemd/user/mentor-watch.service`, `.timer` | runs it three minutes after login and every six hours | yes | `systemctl --user daemon-reload` | SUGGESTIONS.md |
 
 ## What was done when the system was built, besides the files
@@ -187,7 +191,8 @@ systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qe
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
 systemctl enable mentor-advisor.timer
 systemctl enable nftables.service          # the firewall
-systemctl --global enable mentor-watch.timer
+systemctl enable mentor-root.socket        # who asks for the password, saying what for
+systemctl --global enable mentor-watch.timer mentor-firewall-watch.service
 
 # Where the root side writes its log
 install -d -m 755 /var/log/mentor
@@ -214,7 +219,8 @@ Run these in order. Each line says what a good answer looks like.
 | `mentor journal -n 3` | the last changes under their requests, or that none is written yet |
 | `mentor security` | "ok  the firewall refuses what comes in…"; findings are for the user to hear of |
 | `systemctl is-enabled mentor-advisor.timer mentor-boot-check.service` | `enabled` twice |
-| `systemctl --user is-enabled mentor-watch.timer` | `enabled` |
+| `systemctl --user is-enabled mentor-watch.timer mentor-firewall-watch.service` | `enabled` twice |
+| `systemctl is-active mentor-root.socket` | `active` |
 | `pgrep -af bin/mentor-chat` | one line: the assistant is running |
 | `pgrep -af lib/mentor/mentor-clipboard` | one line |
 | `journalctl -b --user -o cat \| grep -A12 Traceback` | nothing |

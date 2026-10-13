@@ -37,6 +37,9 @@ ALWAYS_PROTECTED = (
     # The way back in when the desktop is gone (mentor repair).
     "/usr/local/lib/systemd/system/mentor-repair.target", "/usr/local/lib/systemd/system/mentor-repair-console.service",
     "/etc/profile.d/mentor-repair.sh",
+    # Who asks for the password, and with which words (mentor-rootd).
+    "/usr/local/lib/systemd/system/mentor-root.socket", "/usr/local/lib/systemd/system/mentor-root@.service",
+    "/etc/systemd/system/sockets.target.wants/mentor-root.socket",
 )
 
 # Changes under these (relative to /) only show at the next restart.
@@ -263,6 +266,8 @@ ACTIONS = {
 
 
 def main(mode):
+    # PKEXEC_UID is set by pkexec, and by Mentor's own root service (mentor-rootd), which asks
+    # the user the same way: either way the user has approved this request.
     if os.geteuid() != 0 or "PKEXEC_UID" not in os.environ:
         print("mentor: this helper only runs through pkexec", file=sys.stderr)
         return 2

@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor has the agent look when other computers try to connect
+Documentation=file:///etc/mentor/SECURITY.md
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-firewall-watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -932,7 +932,7 @@ class Conversation(Gtk.Box):
         self.history.append(item)
         return self.add(label)
 
-    def add_notice(self, level, title, text, prompt=None):
+    def add_notice(self, level, title, text, prompt=None, auto=False):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
         problem, with a way to hand it to the agent. Not part of what was said to the agent."""
         heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
@@ -959,6 +959,10 @@ class Conversation(Gtk.Box):
                 self.window.for_request().send(prompt, shown=title)
             look.connect("clicked", hand_over)
             buttons.append(look)
+            # One the system wants looked at now (the firewall turned somebody away): sent on
+            # without waiting, when an engine is chosen. The card stays, to say what it was.
+            if auto and not self.window.unchosen:
+                GLib.timeout_add(800, lambda: hand_over() and False)
         card.append(buttons)
         self.window.note(self, f"{title}. {text}".strip(), False)
         if self.first_run and self.welcome:  # the card of a first start stays where it is
@@ -2278,7 +2282,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             if not title or not self.current:
                 continue
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
-            self.current.add_notice("problem" if notice.get("level") == "problem" else "warning", title, text, prompt)
+            self.current.add_notice("problem" if notice.get("level") == "problem" else "warning", title, text, prompt,
+                                    auto=notice.get("auto") is True)
             shown.append((title, text))
         if shown:
             self.show_chat()

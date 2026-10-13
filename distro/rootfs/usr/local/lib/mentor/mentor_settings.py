@@ -1,6 +1,6 @@
 """The user's choices about Mentor itself, kept in one file of their own.
 
-    ~/.config/mentor/settings.json    {"explain": true, "watch_off": ["disk"]}
+    ~/.config/mentor/settings.json    {"watch_off": ["disk"], "auto_review": true, "exact": false}
 
 Read by the parts the choices are about (mentor_security, mentor-watch) and changed by the
 Mentor Settings window (/usr/local/bin/mentor-settings). A key that is not in the file has
@@ -17,6 +17,12 @@ DEFAULTS = {
     # Groups of mentor-watch's checks that are not to become cards in the chat:
     # "self", "security", "refused", "disk", "failed".
     "watch_off": [],
+    # When other computers try to get in, have the agent look by itself and say what it was
+    # (mentor-firewall-watch). Off: an ordinary card, and nothing goes to a model unasked.
+    "auto_review": True,
+    # Show the exact command, file or program names in the password dialog, under the agent's
+    # own sentence. For people who read commands; everyone else gets the sentence alone.
+    "exact": False,
 }
 
 

@@ -64,13 +64,15 @@ AutomaticLogin=$MENTOR_USER
 EOF
 dconf update
 systemctl set-default graphical.target
-systemctl --global enable mentor-watch.timer
+systemctl --global enable mentor-watch.timer mentor-firewall-watch.service
 systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 # Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
 systemctl enable mentor-advisor.timer
 # The firewall: what comes in from other computers is refused (etc/nftables.conf, etc/mentor/SECURITY.md).
 systemctl enable nftables.service
+# Where the agent's tools ask for root, with a password dialog that says exactly what for (mentor-rootd).
+systemctl enable mentor-root.socket
 
 # Boot splash: our own theme (distro/splash). It shows the emblem (a second one while
 # the system goes back after a failed start), the hint drawn here from hint.svg, and

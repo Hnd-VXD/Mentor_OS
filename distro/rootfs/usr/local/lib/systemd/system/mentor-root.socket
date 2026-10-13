@@ -1,0 +1,12 @@
+[Unit]
+Description=Mentor: where the agent's tools ask for something to be done as root
+Documentation=file:///etc/mentor/TOOLS.md
+
+[Socket]
+ListenStream=/run/mentor-root.sock
+SocketMode=0666
+Accept=yes
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

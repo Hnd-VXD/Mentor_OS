@@ -158,12 +158,15 @@ def _console(text, detail, warning):
         return 0  # nowhere to say it: the password prompt still stands in the way
 
 
-def before_root(conversation, door, text, detail=""):
+def before_root(conversation, door, text, detail="", told_by_dialog=False):
     """Say in plain words what is about to be done as root, just before the password is asked.
     Returns (go on?, what was read from outside). `door` is which approval it is: "manage"
     and "sandbox" keep the password for a few minutes, so they are explained once for each
     request; "shell" asks every time and is explained every time. After reading from
     outside, every one is explained, with the warning.
+
+    `told_by_dialog`: the system's password dialog itself will say exactly what this is
+    (mentor-rootd). Then this window has nothing to add, and is shown only for the warning.
 
     Nothing is shown for a tool called by hand (no conversation): whoever typed it knows."""
     if not conversation:
@@ -177,7 +180,7 @@ def before_root(conversation, door, text, detail=""):
                     return True, found
         except OSError:
             pass
-    if not found and not mentor_settings.get("explain"):
+    if not found and (told_by_dialog or not mentor_settings.get("explain")):
         return True, found  # the user's choice (Mentor Settings); the warning is not theirs to switch off
     warning = ""
     if found:
@@ -260,9 +263,14 @@ def refused(hours=24):
     """Who the firewall turned away lately: [(address, ["tcp 22", …], times)], the busiest
     first. From the kernel's log, where the firewall writes a few a minute at most, so the
     times are "at least"."""
+    return count_refused(_out("journalctl", "-k", "-o", "cat", "--no-pager", f"--since=-{hours}h",
+                              "--grep", "mentor-firewall refused")[1].splitlines())
+
+
+def count_refused(lines):
+    """The same from lines of the kernel's log already in hand."""
     found = {}
-    for line in _out("journalctl", "-k", "-o", "cat", "--no-pager", f"--since=-{hours}h",
-                     "--grep", "mentor-firewall refused")[1].splitlines():
+    for line in lines:
         seen = REFUSED.search(line)
         if seen:
             source, protocol, port = seen.groups()
