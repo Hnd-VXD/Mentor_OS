@@ -85,6 +85,7 @@ Mentor's own QEMU goes into a `qemu` folder beside `Mentor.exe` (unpack `winq-em
 
 ## Licences
 
+- Mentor's own code and files (everything in this repository) are under the [MIT licence](LICENSE).
 - The system is built from Arch Linux packages, each under its own licence; their sources are at archlinux.org.
 - The QEMU in `qemu\` is the WINQ-EMU runtime as built by [Try Omarchy for Windows](https://github.com/omacom/try-omarchy-windows): QEMU (GPL-2.0) and virglrenderer (MIT) from the forks by cmspam, with the libraries they link. Its licences and the record of what it was built from are inside the archive, and the corresponding source is published with every release here as `winq-emu-alpha10-source.zip`.
 
