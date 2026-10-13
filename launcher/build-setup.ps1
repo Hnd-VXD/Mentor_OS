@@ -1,4 +1,7 @@
 # Compiles MentorSetup.exe, the one file a new user downloads, into out\release.
+# Windows trusts a downloaded program more the more often the same file has been downloaded, and
+# this one is not signed: so the one in a release is replaced only when it has to be (a fault in
+# it, or a change in what a release holds), not with every release.
 param([string]$Out = '')
 $ErrorActionPreference = 'Stop'
 
@@ -12,5 +15,5 @@ New-Item -ItemType Directory (Split-Path -Parent $Out) -Force | Out-Null
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll `
     /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll `
     "/win32icon:$(Join-Path $PSScriptRoot 'Mentor.ico')" "/resource:$(Join-Path $PSScriptRoot 'emblem.png'),emblem.png" `
-    "/out:$Out" (Join-Path $PSScriptRoot 'MentorSetup.cs')
+    "/out:$Out" (Join-Path $PSScriptRoot 'MentorSetup.cs') (Join-Path $PSScriptRoot 'Ui.cs')
 exit $LASTEXITCODE

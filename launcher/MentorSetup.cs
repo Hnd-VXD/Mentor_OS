@@ -24,6 +24,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.IO.Compression;
 using System.Net;
@@ -277,92 +278,120 @@ class Installer
     }
 }
 
+// The bar that fills while the system image arrives.
+class Bar : Painted
+{
+    int value;
+    public int Value { get { return value; } set { this.value = Math.Max(0, Math.Min(1000, value)); Invalidate(); } }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = Begin(e);
+        var area = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
+        using (GraphicsPath track = Theme.Round(area, Height / 2f))
+        using (var fill = new SolidBrush(Theme.Track)) g.FillPath(fill, track);
+        if (value == 0) return;
+        var done = new RectangleF(0.5f, 0.5f, Math.Max(Height, (Width - 1) * value / 1000f), Height - 1);
+        using (GraphicsPath part = Theme.Round(done, Height / 2f))
+        using (var fill = new SolidBrush(Theme.Accent)) g.FillPath(fill, part);
+    }
+}
+
+// The setup's one window. It looks like the launcher's (Ui.cs), which is what follows it.
 class SetupWindow : Form
 {
-    static readonly Color Back = Color.FromArgb(22, 23, 27), Field = Color.FromArgb(34, 36, 42),
-        Text1 = Color.FromArgb(240, 240, 244), Text2 = Color.FromArgb(160, 164, 174), Accent = Color.FromArgb(23, 147, 209);
-
     readonly TextBox folder = new TextBox();
-    readonly Button browse = new Button(), go = new Button();
+    readonly PillButton browse = new PillButton(), go = new PillButton();
     readonly Label[] states = new Label[Installer.Steps.Length];
-    readonly ProgressBar bar = new ProgressBar();
-    readonly Label note = new Label();
+    readonly Bar bar = new Bar();
+    readonly Label note;
     Installer installer;
-    bool finished;
+    bool finished, working;
+
+    static Label Words(string text, int left, int top, int width, float size, Color colour, bool onCard)
+    {
+        return new Label { Text = text, Left = left, Top = top, Width = width, Height = (int)(size * 2.3f), ForeColor = colour,
+                           BackColor = onCard ? Theme.Card : Theme.Back, Font = Theme.Font(size, FontStyle.Regular) };
+    }
 
     public SetupWindow()
     {
         Text = "Mentor setup";
-        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        AutoScaleMode = AutoScaleMode.None;  // sized by Theme.Fit, below
+        ClientSize = new Size(440, 632);
         FormBorderStyle = FormBorderStyle.FixedSingle;
-        MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(520, 420);
-        BackColor = Back;
-        ForeColor = Text1;
-        Font = new Font("Segoe UI", 10f);
+        MaximizeBox = false;
+        BackColor = Theme.Back;
+        ForeColor = Theme.Text;
+        Font = Theme.Font(9.5f, FontStyle.Regular);
+        Theme.Dress(this);
 
-        Stream emblem = Assembly.GetExecutingAssembly().GetManifestResourceStream("emblem.png");
-        if (emblem != null)
-            Controls.Add(new PictureBox { Image = Image.FromStream(emblem), SizeMode = PictureBoxSizeMode.Zoom,
-                                          Bounds = new Rectangle(24, 20, 64, 64) });
-        Controls.Add(new Label { Text = "Mentor", Font = new Font("Segoe UI Semibold", 20f), AutoSize = true, Location = new Point(100, 20) });
-        Controls.Add(new Label { Text = "Agentic Linux, in a window on Windows", ForeColor = Text2, AutoSize = true, Location = new Point(103, 58) });
+        var emblem = new PictureBox { Left = 170, Top = 24, Width = 100, Height = 100, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Back };
+        try { emblem.Image = Image.FromStream(Assembly.GetExecutingAssembly().GetManifestResourceStream("emblem.png")); }
+        catch (Exception) { }
+        var title = new Label { Text = "Mentor", Left = 0, Top = 130, Width = 440, Height = 40, TextAlign = ContentAlignment.MiddleCenter,
+                                Font = Theme.Font(20f, FontStyle.Bold), ForeColor = Theme.Text, BackColor = Theme.Back };
+        var subtitle = new Label { Text = "Agentic Linux, in a window on Windows", Left = 0, Top = 170, Width = 440, Height = 22,
+                                   TextAlign = ContentAlignment.MiddleCenter, ForeColor = Theme.Dim, BackColor = Theme.Back };
+        go.Text = "Install";
+        go.Primary = true;
+        go.SetBounds(28, 210, 384, 52);
+        go.Font = Theme.Font(12f, FontStyle.Bold);
+        go.Click += delegate { OnGo(); };
 
-        Controls.Add(new Label { Text = "Folder (needs about 12 GB)", ForeColor = Text2, AutoSize = true, Location = new Point(24, 104) });
+        var card = new Card { Left = 28, Top = 282, Width = 384, Height = 262 };
         folder.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Mentor");
-        folder.Bounds = new Rectangle(24, 128, 372, 27);
-        folder.BackColor = Field;
-        folder.ForeColor = Text1;
+        folder.SetBounds(18, 64, 262, 24);
+        folder.BackColor = Theme.Back;
+        folder.ForeColor = Theme.Text;
         folder.BorderStyle = BorderStyle.FixedSingle;
-        Style(browse, "Browse…", Field);
-        browse.Bounds = new Rectangle(404, 127, 92, 29);
+        browse.Text = "Browse…";
+        browse.BackColor = Theme.Card;
+        browse.SetBounds(288, 61, 78, 28);
         browse.Click += delegate {
+            if (working) return;
             using (var dialog = new FolderBrowserDialog { Description = "Where Mentor goes", SelectedPath = folder.Text })
                 if (dialog.ShowDialog(this) == DialogResult.OK)
                     folder.Text = Path.GetFileName(dialog.SelectedPath).Equals("Mentor", StringComparison.OrdinalIgnoreCase)
                         ? dialog.SelectedPath : Path.Combine(dialog.SelectedPath, "Mentor");
         };
-        Controls.Add(folder);
-        Controls.Add(browse);
-
+        card.Controls.AddRange(new Control[] {
+            Words("Folder", 18, 14, 290, 10.5f, Theme.Text, true),
+            Words("Mentor goes here. It needs about 12 GB.", 18, 37, 340, 8.5f, Theme.Dim, true), folder, browse,
+            new Label { Left = 18, Top = 104, Width = 348, Height = 1, BackColor = Theme.Line },
+        });
         for (int i = 0; i < states.Length; i++)
         {
-            Controls.Add(new Label { Text = Installer.Steps[i], AutoSize = true, Location = new Point(24, 178 + i * 30) });
-            states[i] = new Label { ForeColor = Text2, AutoSize = false, TextAlign = ContentAlignment.TopRight,
-                                    Bounds = new Rectangle(220, 178 + i * 30, 276, 24) };
-            Controls.Add(states[i]);
+            // Short names here: what each has to say needs the room beside it.
+            card.Controls.Add(Words(i == 1 ? "Hypervisor" : Installer.Steps[i], 18, 116 + i * 30, 110, 10.5f, Theme.Text, true));
+            states[i] = Words("", 130, 118 + i * 30, 236, 9.5f, Theme.Dim, true);
+            states[i].AutoEllipsis = true;
+            states[i].TextAlign = ContentAlignment.TopRight;
+            card.Controls.Add(states[i]);
         }
         states[0].Text = "Mentor's own, about 80 MB";
         states[1].Text = Installer.HasHypervisor() ? "already on" : "will be turned on";
-
-        bar.Bounds = new Rectangle(24, 306, 472, 8);
-        bar.Maximum = 1000;
+        states[3].Text = "about 2.2 GB";
+        bar.BackColor = Theme.Card;
+        bar.SetBounds(18, 240, 348, 6);
         bar.Visible = false;
-        Controls.Add(bar);
-        note.Bounds = new Rectangle(24, 322, 472, 40);
-        note.ForeColor = Text2;
-        Controls.Add(note);
+        card.Controls.Add(bar);
 
-        Style(go, "Install", Accent);
-        go.Bounds = new Rectangle(356, 368, 140, 36);
-        go.Click += delegate { OnGo(); };
-        Controls.Add(go);
-        AcceptButton = go;
-    }
+        note = new Label { Left = 28, Top = 558, Width = 384, Height = 60, ForeColor = Theme.Dim, BackColor = Theme.Back,
+                           Text = "Everything is downloaded into that folder; nothing else on this computer is changed. " +
+                                  "Mentor starts by itself when it is ready." };
 
-    static void Style(Button button, string text, Color color)
-    {
-        button.Text = text;
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderSize = 0;
-        button.BackColor = color;
-        button.ForeColor = Color.White;
+        Controls.AddRange(new Control[] { emblem, title, subtitle, go, card, note });
+        Theme.Fit(this);
+        ActiveControl = go;
+        KeyPreview = true;
+        KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape && !working) Close(); };
     }
 
     void OnGo()
     {
+        if (working) return;
         if (finished)
         {
             // Only reached when Windows has to restart ("Restart now"); otherwise Mentor was started already.
@@ -379,12 +408,17 @@ class SetupWindow : Form
             return;
         }
         try { installer = new Installer { Folder = Path.GetFullPath(folder.Text.Trim()) }; }
-        catch (Exception) { note.Text = "That is not a folder name."; return; }
-        folder.Enabled = browse.Enabled = go.Enabled = false;
+        catch (Exception) { Say("That is not a folder name.", true); return; }
+        working = true;
+        folder.Enabled = false;
+        go.Text = "Installing…";
+        bar.Value = 0;
         bar.Visible = true;
-        note.ForeColor = Text2;
-        note.Text = "";
-        installer.Step = (index, state) => BeginInvoke((Action)(() => states[index].Text = state));
+        Say("Downloading. This takes a while; the window can stay in the background.", false);
+        installer.Step = (index, state) => BeginInvoke((Action)(() => {
+            states[index].Text = state;
+            if (state.Length > 30) Say(Installer.Steps[index] + ": " + state, false);  // too long for its line
+        }));
         long shown = -1;
         installer.Progress = (done, total) => {
             long tenth = done * 1000 / Math.Max(total, 1);
@@ -408,20 +442,24 @@ class SetupWindow : Form
         }) { IsBackground = true }.Start();
     }
 
+    void Say(string text, bool wrong)
+    {
+        note.ForeColor = wrong ? Color.FromArgb(255, 138, 117) : Theme.Dim;
+        note.Text = text;
+    }
+
     void Done(string problem)
     {
-        go.Enabled = true;
+        working = false;
         bar.Visible = false;
         if (problem != null)
         {
-            note.ForeColor = Color.FromArgb(255, 138, 117);
-            note.Text = problem;
+            Say(problem, true);
             go.Text = "Try again";
-            folder.Enabled = browse.Enabled = true;
+            folder.Enabled = true;
             return;
         }
         finished = true;
-        note.ForeColor = Text1;
         if (!installer.RestartNeeded)
         {
             // Everything is there: Mentor's own window takes over from here.
@@ -432,6 +470,7 @@ class SetupWindow : Form
         // The hypervisor is only there after a restart of Windows. Mentor starts by itself
         // once the user is back, so that the setup is still the one thing they had to run.
         bool after = StartAfterRestart();
+        note.ForeColor = Theme.Text;
         note.Text = "Installed. Windows has to restart once" +
             (after ? "; Mentor starts by itself after that." : ". Then start Mentor from the shortcut on the desktop.");
         go.Text = "Restart now";
@@ -484,6 +523,7 @@ static class SetupProgram
             }
         if (!unattended)
         {
+            Theme.SetProcessDPIAware();  // sharp on a high-resolution screen instead of stretched
             Application.EnableVisualStyles();
             Application.Run(new SetupWindow());
             return 0;

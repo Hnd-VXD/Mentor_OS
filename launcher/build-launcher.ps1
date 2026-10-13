@@ -10,5 +10,5 @@ if (-not (Test-Path $csc)) { Write-Host "C# compiler not found: $csc"; exit 1 }
 & $csc /nologo /target:winexe /optimize+ /platform:x64 `
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll `
     "/win32icon:$(Join-Path $PSScriptRoot 'Mentor.ico')" "/resource:$(Join-Path $PSScriptRoot 'emblem.png'),emblem.png" `
-    "/out:$(if ($Out) { $Out } else { Join-Path $root 'Mentor.exe' })" (Join-Path $PSScriptRoot 'Mentor.cs')
+    "/out:$(if ($Out) { $Out } else { Join-Path $root 'Mentor.exe' })" (Join-Path $PSScriptRoot 'Mentor.cs') (Join-Path $PSScriptRoot 'Ui.cs')
 exit $LASTEXITCODE

@@ -10,7 +10,23 @@ Download **[MentorSetup.exe](../../releases/latest/download/MentorSetup.exe)** a
 - downloads Mentor and the QEMU it runs on into the folder you choose (about 2.3 GB to download, 12 GB of disk space in use later),
 - puts a shortcut on the desktop.
 
-Nothing else has to be installed. Windows may warn about an unsigned program the first time.
+Nothing else has to be installed, and Mentor starts by itself when it is ready.
+
+**Windows will probably warn you first.** The setup program is not signed yet, and Windows shows "Windows protected your PC" for a downloaded program it has not seen often. Click **More info**, then **Run anyway**. To check that the file is the one published here, compare its SHA-256 with the one in the [release notes](../../releases/latest):
+
+```powershell
+Get-FileHash MentorSetup.exe
+```
+
+### Without the warning
+
+Open PowerShell (right-click the Start button, Terminal) and paste:
+
+```powershell
+irm https://raw.githubusercontent.com/Hnd-VXD/Mentor_OS/main/install.ps1 | iex
+```
+
+It downloads the same setup program and starts it. Windows does not warn this way, because the program was not downloaded by a browser. [`install.ps1`](install.ps1) is a dozen lines: read it first.
 
 ### What you need
 
