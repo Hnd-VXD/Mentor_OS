@@ -13,7 +13,7 @@ This is for the agent, written so that a small model can follow it. The assistan
 - **Attachments**: by the paperclip, by dropping files on the desktop, or by Ctrl+V (a copied picture is saved under `~/.cache/mentor/attachments/` and attached). They show as chips above the text box and go to the agent as paths.
 - **Asking about something**: "Ask Mentor…" on an app icon makes the next message be about that application (a bar "About NAME" over the text box); on a file in Files it attaches the file; typing in the overview offers "Ask Mentor" with the typed words. Selecting words of the agent's and choosing to quote them makes the next message be about those words.
 - **A timeline** at the right edge: a tick per message of the user's, which shows the message when pointed at and scrolls to it when clicked.
-- **A right-click menu on the desktop**: Hide/Show chat, Clear chat…, New conversation, History…, Suggestions…, and Change Background…, Display Settings, Settings.
+- **A right-click menu on the desktop**: Hide/Show chat, Clear chat…, New conversation, History…, Suggestions…, Mentor Settings… (SETTINGS.md), and Change Background…, Display Settings, Settings.
 - **History**: everything ever said, searchable, also after a conversation was cleared.
 - **Nothing is lost at logout**: the conversations come back at the next login.
 - **A notification "Mentor has finished"** when an answer arrives while an application covers the desktop.

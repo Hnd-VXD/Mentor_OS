@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mentor Settings
+Comment=Safety, suggestions, warnings and the journal of what the assistant changed
+Exec=/usr/local/bin/mentor-settings
+Icon=org.mentor.Chat
+Terminal=false
+Categories=Settings;System;
+Keywords=firewall;security;password;suggestions;news;journal;assistant;

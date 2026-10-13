@@ -39,7 +39,7 @@ stage_overlay() {
         chown root:root "$dest/$f"
     done < <(cd "$SRC/distro/rootfs" && find . -type f -print0)
     chmod 755 "$dest"/usr/local/bin/mentor "$dest"/usr/local/bin/mentor-mcp "$dest"/usr/local/bin/mentor-chat \
-        "$dest"/usr/local/bin/mentor-agent \
+        "$dest"/usr/local/bin/mentor-agent "$dest"/usr/local/bin/mentor-settings \
         "$dest"/usr/local/lib/mentor/mentor-helper "$dest"/usr/local/lib/mentor/mentor-root-shell \
         "$dest"/usr/local/lib/mentor/mentor-clipboard "$dest"/usr/local/lib/mentor/mentor-sandbox \
         "$dest"/usr/local/lib/mentor/mentor-clipboard-files "$dest"/usr/local/lib/mentor/mentor-engine "$dest"/usr/local/lib/mentor/mentor-advisor "$dest"/usr/local/lib/mentor/mentor-usage \

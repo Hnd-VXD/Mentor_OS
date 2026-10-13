@@ -1,0 +1,365 @@
+#!/usr/bin/python3
+"""Mentor Settings: the user's choices about what Mentor adds to the system, in one window.
+
+    mentor-settings [safety|suggestions|warnings|changes|about]
+
+Safety        the firewall (on or off, what is open, who was refused), what the safety
+              checks find, the password, the plain words before a password
+Suggestions   the bell on the desktop: on or off, and each kind (updates, the news, …)
+Warnings      which of the system's own checks may put a card in the chat
+Changes       the journal of what the assistant changed, to read and search
+About         whether Mentor's own files are as built
+
+Nothing here calls a model. "Let Mentor look" hands a request to the assistant.
+What is kept where: /etc/mentor/SETTINGS.md.
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk
+
+import mentor_journal
+import mentor_security
+import mentor_settings
+import mentor_tools
+
+CHAT = "/usr/local/bin/mentor-chat"
+MENTOR = "/usr/local/bin/mentor"
+KINDS = {"updates": ("Waiting updates", "Packages that can be upgraded"),
+         "disk": ("A disk that is filling", "Before it is full"),
+         "failed": ("Services that failed", "Programs of the system that stopped with an error"),
+         "news": ("Arch Linux news", "What the makers of the system announce, above all before an upgrade"),
+         "gnome": ("GNOME news", "New versions of the desktop"),
+         "apps": ("New applications", "Applications that appeared on Flathub"),
+         "github": ("New projects on GitHub", "Projects that are getting attention")}
+WATCHES = {"self": ("Mentor itself", "A file of Mentor's that is missing or changed, a part of its desktop that does not work"),
+           "security": ("Your safety", "The firewall off, the first password, remote login, root without a password"),
+           "refused": ("Refused connections", "Another computer that keeps trying to connect to this one"),
+           "disk": ("The disk", "The system disk almost full"),
+           "failed": ("Services", "Something on the system that is not running")}
+PAGES = ("safety", "suggestions", "warnings", "changes", "about")
+
+
+def ask(prompt):
+    """Hand a request to the assistant on the desktop."""
+    try:
+        subprocess.Popen([CHAT, prompt], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def later(work, done):
+    """Run `work` off the window's thread and give its result to `done` on it."""
+    def run():
+        try:
+            result = work()
+        except Exception as e:  # shown, not lost
+            result = e
+        GLib.idle_add(lambda: done(result) and False)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def button(label, action, suggested=False):
+    made = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+    if suggested:
+        made.add_css_class("suggested-action")
+    made.connect("clicked", lambda *_: action())
+    return made
+
+
+def open_ports():
+    """[(file, line)] for what the user's own firewall files let in."""
+    found = []
+    try:
+        names = sorted(os.listdir("/etc/nftables.d"))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join("/etc/nftables.d", name), errors="replace") as f:
+                found += [(name, " ".join(line.split())) for line in f
+                          if "accept" in line and not line.lstrip().startswith("#")]
+        except OSError:
+            pass
+    return found
+
+
+class SettingsWindow(Adw.ApplicationWindow):
+    def __init__(self, app, first):
+        super().__init__(application=app, title="Mentor Settings", default_width=880, default_height=720)
+        self.stack = Adw.ViewStack()
+        for name, title, icon, make in (
+                ("safety", "Safety", "security-high-symbolic", self.safety_page),
+                ("suggestions", "Suggestions", "preferences-system-notifications-symbolic", self.suggestions_page),
+                ("warnings", "Warnings", "dialog-warning-symbolic", self.warnings_page),
+                ("changes", "Changes", "document-open-recent-symbolic", self.changes_page),
+                ("about", "About", "help-about-symbolic", self.about_page)):
+            self.stack.add_titled_with_icon(make(), name, title, icon)
+        header = Adw.HeaderBar(title_widget=Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE))
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(self.stack)
+        self.set_content(view)
+        if first in PAGES:
+            self.stack.set_visible_child_name(first)
+        # The journal grows while the window is open: read it again whenever its page is shown.
+        self.stack.connect("notify::visible-child-name", lambda *_: (
+            self.stack.get_visible_child_name() == "changes" and self.fill_changes()))
+
+    # --- safety -------------------------------------------------------------------
+
+    def safety_page(self):
+        self.safety = Adw.PreferencesPage()
+        self.setting_firewall = False
+        self.fill_safety()
+        return self.safety
+
+    def fill_safety(self, looked=None):
+        """`looked` is (firewall, ports, refused, findings) once the looking is done."""
+        page = self.safety
+        for group in getattr(self, "safety_groups", []):
+            page.remove(group)
+        self.safety_groups = []
+
+        def add(group):
+            page.add(group)
+            self.safety_groups.append(group)
+            return group
+
+        if looked is None or isinstance(looked, Exception):
+            waiting = add(Adw.PreferencesGroup(title="Safety"))
+            waiting.add(Adw.ActionRow(title="Looking…" if looked is None else "Could not look",
+                                      subtitle="" if looked is None else str(looked)))
+            if looked is None:
+                later(lambda: (mentor_security.firewall(), open_ports(), mentor_security.refused(),
+                               [c for c in mentor_security.checks() if not c[0].startswith(("firewall", "refused"))]),
+                      self.fill_safety)
+            return
+        (on, why), ports, refused, findings = looked
+
+        wall = add(Adw.PreferencesGroup(title="Firewall", description=(
+            "With the firewall on, other computers cannot start a connection to this one. What you start "
+            "yourself (the web, updates, the assistant's models) works either way.")))
+        switch = Adw.SwitchRow(title="Refuse connections from other computers",
+                               subtitle="On" if on else f"Off: {why}", active=on)
+        switch.connect("notify::active", self.on_firewall)
+        wall.add(switch)
+        if ports:
+            for name, line in ports:
+                wall.add(Adw.ActionRow(title=line, subtitle=f"let in by /etc/nftables.d/{name}", title_lines=2))
+        else:
+            wall.add(Adw.ActionRow(title="Nothing is let in", subtitle="No port is open to other computers"))
+        change = Adw.ActionRow(title="Open or close a port", subtitle="Say what for: the assistant does it and shows you the change first")
+        change.add_suffix(button("Ask Mentor", lambda: ask(
+            "I want to change what the firewall lets in. Ask me what I need reachable from other computers and "
+            "why, then follow /etc/mentor/SECURITY.md, \"The firewall\".")))
+        wall.add(change)
+
+        knocks = add(Adw.PreferencesGroup(title="Refused in the last day", description=(
+            "Other computers that tried to connect and were turned away. A few are normal on any network.")))
+        if refused:
+            for source, ports_tried, count in refused[:6]:
+                knocks.add(Adw.ActionRow(title=f"{source}  ·  {count} time(s)", subtitle="tried " + ", ".join(ports_tried[:8])))
+            look = Adw.ActionRow(title="What were these?", subtitle="The assistant looks at who they are and whether it matters")
+            look.add_suffix(button("Let Mentor look", lambda: ask(mentor_security.refused_request(refused))))
+            knocks.add(look)
+        else:
+            knocks.add(Adw.ActionRow(title="Nobody was refused" if on else "Nothing is refused while the firewall is off"))
+
+        checks = add(Adw.PreferencesGroup(title="What the safety check finds"))
+        for _key, level, title, text, request in findings:
+            row = Adw.ActionRow(title=title, subtitle=text, title_lines=2, subtitle_lines=3)
+            row.add_prefix(Gtk.Image(icon_name="dialog-error-symbolic" if level == "problem" else "dialog-warning-symbolic"))
+            row.add_suffix(button("Let Mentor look", lambda request=request: ask(request)))
+            checks.add(row)
+        if not findings:
+            fine = Adw.ActionRow(title="Nothing needs attention", subtitle="Password, remote login, root without a password, keys")
+            fine.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
+            checks.add(fine)
+        again = Adw.ActionRow(title="Look again")
+        again.add_suffix(button("Look", lambda: self.fill_safety()))
+        checks.add(again)
+
+        yours = add(Adw.PreferencesGroup(title="Your password"))
+        password = Adw.ActionRow(title="Change your password", subtitle="A Console window opens; you type the old one, then the new one twice")
+        password.add_suffix(button("Change", lambda: subprocess.Popen(
+            ["kgx", "-e", "bash -c 'passwd; echo; read -n1 -p \"Press a key to close.\"'"], start_new_session=True)))
+        yours.add(password)
+        explain = Adw.SwitchRow(
+            title="Say in plain words what is about to happen",
+            subtitle="A small window before your password is asked. The yellow warning after the assistant read "
+                     "something from outside is shown in any case.",
+            active=bool(mentor_settings.get("explain")))
+        explain.connect("notify::active", lambda row, _p: mentor_settings.put("explain", row.get_active()))
+        yours.add(explain)
+
+    def on_firewall(self, row, _param):
+        if self.setting_firewall:
+            return
+        wanted = row.get_active()
+        row.set_sensitive(False)
+
+        def work():
+            for operation in (("enable", "start") if wanted else ("stop", "disable")):
+                code, out = mentor_tools.service_control({"unit": "nftables", "operation": operation})
+                mentor_tools._journal("service_control", {"unit": "nftables", "operation": operation}, code, out)
+                if code:
+                    return out
+            return None
+
+        def done(problem):
+            if problem:
+                self.add_toast_text("The firewall was not changed.")
+            self.fill_safety()
+
+        mentor_tools._noted.clear()
+        later(work, done)
+
+    def add_toast_text(self, text):
+        dialog = Adw.AlertDialog(heading=text)
+        dialog.add_response("ok", "OK")
+        dialog.present(self)
+
+    # --- suggestions --------------------------------------------------------------
+
+    def suggestions_page(self):
+        page = Adw.PreferencesPage()
+        state = mentor_tools._advice_state()
+
+        def save(change):
+            now = mentor_tools._advice_state()
+            change(now)
+            os.makedirs(os.path.dirname(mentor_tools.ADVICE_STATE), exist_ok=True)
+            with open(mentor_tools.ADVICE_STATE, "w") as f:
+                json.dump(now, f)
+
+        main = Adw.PreferencesGroup(description=(
+            "The system looks itself over now and then and notes what may be worth your attention. It waits "
+            "behind the bell on the desktop. Nothing goes to a model until you send it to the chat."))
+        everything = Adw.SwitchRow(title="Suggest things for this system", active=not state["off"])
+        everything.connect("notify::active", lambda row, _p: save(lambda s: s.update(off=not row.get_active())))
+        main.add(everything)
+        page.add(main)
+        kinds = Adw.PreferencesGroup(title="What to suggest")
+        for kind, (title, subtitle) in KINDS.items():
+            row = Adw.SwitchRow(title=title, subtitle=subtitle, active=kind not in state["never"])
+
+            def toggled(row, _p, kind=kind):
+                def change(s):
+                    s["never"] = [k for k in s["never"] if k != kind] + ([] if row.get_active() else [kind])
+                save(change)
+            row.connect("notify::active", toggled)
+            kinds.add(row)
+        page.add(kinds)
+        return page
+
+    # --- warnings -----------------------------------------------------------------
+
+    def warnings_page(self):
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(title="Cards in the chat", description=(
+            "After every login and a few times a day the system checks these by itself, without a model. What "
+            "it finds shows in the chat as a card: yellow for a warning, red for a problem. Switching one off "
+            "stops the card, not the fault."))
+        off = set(mentor_settings.get("watch_off") or [])
+        for key, (title, subtitle) in WATCHES.items():
+            row = Adw.SwitchRow(title=title, subtitle=subtitle, active=key not in off)
+
+            def toggled(row, _p, key=key):
+                now = [k for k in (mentor_settings.get("watch_off") or []) if k != key]
+                mentor_settings.put("watch_off", now if row.get_active() else now + [key])
+            row.connect("notify::active", toggled)
+            group.add(row)
+        page.add(group)
+        now = Adw.PreferencesGroup()
+        check = Adw.ActionRow(title="Check now", subtitle="What is found appears in the chat")
+        check.add_suffix(button("Check", lambda: subprocess.Popen(
+            ["bash", "-c", "rm -f ~/.local/state/mentor/watch.json; exec /usr/local/lib/mentor/mentor-watch"],
+            start_new_session=True)))
+        now.add(check)
+        page.add(now)
+        return page
+
+    # --- changes ------------------------------------------------------------------
+
+    def changes_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12,
+                      margin_start=16, margin_end=16)
+        intro = Gtk.Label(label="What the assistant changed on this system, under the request it was for.",
+                          xalign=0, wrap=True)
+        intro.add_css_class("dim-label")
+        box.append(intro)
+        bar = Gtk.Box(spacing=8)
+        self.search = Gtk.SearchEntry(placeholder_text="A program, a file, a setting, part of a request", hexpand=True)
+        self.commands = Gtk.CheckButton(label="Plain commands too")
+        bar.append(self.search)
+        bar.append(self.commands)
+        box.append(bar)
+        self.journal = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                    left_margin=10, right_margin=10, top_margin=8, bottom_margin=8)
+        scrolled = Gtk.ScrolledWindow(child=self.journal, vexpand=True)
+        scrolled.add_css_class("card")
+        box.append(scrolled)
+        self.search.connect("search-changed", lambda *_: self.fill_changes())
+        self.commands.connect("toggled", lambda *_: self.fill_changes())
+        self.fill_changes()
+        return box
+
+    def fill_changes(self):
+        found, left_out = mentor_journal.entries(self.search.get_text(), 300, self.commands.get_active())
+        self.journal.get_buffer().set_text(mentor_journal.readable(found, 0 if self.commands.get_active() else left_out))
+
+    # --- about --------------------------------------------------------------------
+
+    def about_page(self):
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup(title="Mentor", description=(
+            "Arch Linux with GNOME, and an assistant that changes the system when you ask. Everything Mentor "
+            "adds is kept as it was built, with instructions the assistant mends it from."))
+        files = Adw.ActionRow(title="Mentor's own files", subtitle="Not checked yet", subtitle_lines=3)
+
+        def check():
+            files.set_subtitle("Checking…")
+            later(lambda: subprocess.run([MENTOR, "verify"], capture_output=True, text=True, timeout=120).stdout.strip(),
+                  lambda out: files.set_subtitle(str(out).splitlines()[-1] if str(out).strip() else "No answer"))
+        files.add_suffix(button("Check", check))
+        group.add(files)
+        mend = Adw.ActionRow(title="Something of Mentor's is broken",
+                             subtitle="The assistant finds out what and mends it from its instructions")
+        mend.add_suffix(button("Let Mentor look", lambda: ask(
+            "Something of Mentor's own seems broken. Follow /etc/mentor/REBUILD.md from step 1 and tell me what "
+            "you find before you change anything.")))
+        group.add(mend)
+        group.add(Adw.ActionRow(title="When the desktop does not come up at all",
+                                subtitle="Repair, in the launcher on Windows: the assistant on a text screen"))
+        group.add(Adw.ActionRow(title="In a terminal",
+                                subtitle="mentor security  ·  mentor journal  ·  mentor verify  ·  mentor doctor"))
+        page.add(group)
+        return page
+
+
+class SettingsApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mentor.Settings", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.window = None
+
+    def do_command_line(self, command_line):
+        wanted = (command_line.get_arguments()[1:] or [""])[0]
+        if self.window is None:
+            self.window = SettingsWindow(self, wanted)
+        elif wanted in PAGES:
+            self.window.stack.set_visible_child_name(wanted)
+        self.window.present()
+        return 0
+
+
+sys.exit(SettingsApp().run(sys.argv))

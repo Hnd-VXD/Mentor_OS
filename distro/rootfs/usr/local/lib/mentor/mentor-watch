@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, "/usr/local/lib/mentor")
 import mentor_security
+import mentor_settings
 import mentor_tools
 
 STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "watch.json")
@@ -81,6 +82,16 @@ def findings():
                "that touched them, find out why they failed and fix what can be fixed.")
 
 
+def group(key):
+    """Which of the user's switches (Mentor Settings, Warnings) a finding belongs to."""
+    kind = key.split(":")[0]
+    if kind in ("verify", "doctor"):
+        return "self"
+    if kind == "security":
+        return "refused" if key.startswith("security:refused") else "security"
+    return kind
+
+
 def main():
     try:
         with open(STATE_PATH) as f:
@@ -88,8 +99,9 @@ def main():
     except (OSError, ValueError):
         raised = {}
     now = time.time()
+    off = set(mentor_settings.get("watch_off") or [])
     for key, level, title, text, request in findings():
-        if now - raised.get(key, 0) < REMIND_AFTER:
+        if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue
         raised[key] = now
         os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)

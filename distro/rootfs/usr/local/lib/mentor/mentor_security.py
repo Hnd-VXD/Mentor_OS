@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 
 import mentor_journal
+import mentor_settings
 
 EXPLAIN = "/usr/local/lib/mentor/mentor-explain"
 KEYS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mentor", "keys")
@@ -176,6 +177,8 @@ def before_root(conversation, door, text, detail=""):
                     return True, found
         except OSError:
             pass
+    if not found and not mentor_settings.get("explain"):
+        return True, found  # the user's choice (Mentor Settings); the warning is not theirs to switch off
     warning = ""
     if found:
         warning = ("Just before this, Mentor read text that came from outside (" + said(found) + "). Such text "
@@ -247,6 +250,37 @@ def firewall():
     return True, ""
 
 
+REFUSED = re.compile(r"mentor-firewall refused: .*?SRC=(\S+).*?PROTO=(\S+)(?:.*?DPT=(\d+))?")
+# Ports a stranger knocks on to get in, not to say hello: remote login, file sharing, remote
+# desktop, databases.
+TELLING = {"22", "23", "135", "139", "445", "1433", "3306", "3389", "5432", "5900", "5985"}
+
+
+def refused(hours=24):
+    """Who the firewall turned away lately: [(address, ["tcp 22", …], times)], the busiest
+    first. From the kernel's log, where the firewall writes a few a minute at most, so the
+    times are "at least"."""
+    found = {}
+    for line in _out("journalctl", "-k", "-o", "cat", "--no-pager", f"--since=-{hours}h",
+                     "--grep", "mentor-firewall refused")[1].splitlines():
+        seen = REFUSED.search(line)
+        if seen:
+            source, protocol, port = seen.groups()
+            ports, times = found.get(source, ([], 0))
+            what = f"{protocol.lower()} {port}" if port else protocol.lower()
+            found[source] = (ports if what in ports else ports + [what], times + 1)
+    return sorted(((source, ports, times) for source, (ports, times) in found.items()), key=lambda one: -one[2])
+
+
+def refused_request(knocks):
+    """What the agent is asked when the user wants refused connections looked at."""
+    listed = "\n".join(f"{source}: at least {times} time(s), {', '.join(ports[:10])}" for source, ports, times in knocks[:8])
+    return ("The firewall refused these attempts by other computers to connect to this one in the last day:\n\n"
+            f"{listed}\n\nFollow /etc/mentor/SECURITY.md, \"Refused connections\": tell me in plain words who "
+            "these are likely to be and whether I should do anything. Do not open a port and do not switch the "
+            "firewall off.")
+
+
 def checks():
     """(key, level, title, text for the user, request for the agent), most urgent first."""
     user = os.environ.get("USER") or _out("id", "-un")[1].strip()
@@ -259,6 +293,16 @@ def checks():
                f"The firewall is off: {why}. Follow /etc/mentor/SECURITY.md, \"The firewall\": find out with the "
                "journal (journal_read) whether it was switched off on purpose, tell me, and switch it on again "
                "if I agree.")
+
+    knocks = refused() if on else []
+    tried = {port.split()[-1] for _source, ports, _times in knocks for port in ports}
+    if sum(times for _s, _p, times in knocks) >= 10 or tried & TELLING:
+        source, ports, times = knocks[0]
+        yield ("refused:" + ",".join(sorted(s for s, _p, _t in knocks[:5])), "warning",
+               "Other computers tried to connect to this one",
+               f"The firewall turned them away. Most often {source}: at least {times} time(s), {', '.join(ports[:5])}."
+               + (f" And {len(knocks) - 1} more." if len(knocks) > 1 else ""),
+               refused_request(knocks))
 
     # The password every copy of Mentor starts with. unix_chkpwd is PAM's own helper for
     # letting a user check their own password; nothing is read that the user may not read.
@@ -317,6 +361,12 @@ def report():
     lines = [f"{level.upper():<8} {title}\n         {text}" for _key, level, title, text, _request in found]
     on, _why = firewall()
     lines.append("ok       the firewall refuses what comes in from other computers" if on else "")
+    knocks = refused() if on else []
+    if knocks:
+        lines.append("Refused in the last day: " + "; ".join(
+            f"{source} at least {times} time(s) ({', '.join(ports[:5])})" for source, ports, times in knocks[:6]))
+    elif on:
+        lines.append("Refused in the last day: nobody")
     ports = listening()
     lines.append("Programs waiting for connections from other computers"
                  + (" (the firewall refuses them unless a rule lets them in): " if on else ": ")

@@ -84,6 +84,7 @@ When the user asks "is my computer safe?": run security_check, say in plain word
 
 ## The firewall
 
+- **What it writes down.** Before refusing, the last two rules of the chain drop what was sent to everybody on the network (`meta pkttype { broadcast, multicast } drop`) and write the rest to the kernel's log with the words `mentor-firewall refused:`, six a minute at most. `mentor_security.refused()` reads that log. See "Refused connections".
 - **What it is.** nftables, the kernel's own. One file, `/etc/nftables.conf`, loaded at start-up by `nftables.service`. One table, `inet mentor_firewall`, one chain, `input`, with the policy `drop`: what comes in is refused unless a rule lets it in. Let in: answers to what this computer asked for, programs here talking to each other, ping, and an IPv6 address from the network. Nothing is done to what goes out, and nothing to what passes through.
 - **To see it:** `run_command` with `systemctl is-active nftables`, and as root `nft list ruleset`.
 - **To switch it on again:** service_control `enable` then `start` for `nftables`. If it fails to start, `nft -c -f /etc/nftables.conf` as root says which line is wrong; a file in `/etc/nftables.d/` that is not valid stops the whole of it.
@@ -102,6 +103,37 @@ When the user asks "is my computer safe?": run security_check, say in plain word
   Then, as root: `nft -c -f /etc/nftables.conf && systemctl reload nftables`. Say to the user which port is now open to whom, and that removing the file and reloading closes it. `udp dport` for UDP; `ip saddr 192.168.1.0/24 tcp dport 8080 accept` to let in only the home network.
 - **Do not change `/etc/nftables.conf` itself.** It is one of Mentor's files (`mentor verify` lists it when changed), and ports belong in `/etc/nftables.d/`.
 - Mentor in its window on Windows is not reachable from other computers in any case: the network it has there lets nothing in. The firewall matters when it runs on a real computer, or when the launcher is told to pass ports through.
+
+## Refused connections
+
+The firewall writes down attempts by other computers to connect to this one (not the network's own chatter that goes to everybody: that is dropped without a word). `security_check` lists them ("Refused in the last day"), Mentor Settings shows them, and when there are ten or more in a day, or one aimed at a port people break in through, the user gets a yellow card "Other computers tried to connect to this one" with a button that hands them to you. Then, and when the user asks you to review them:
+
+1. Read them: `security_check`, or `run_command` with `journalctl -k -o cat --since=-24h --grep "mentor-firewall refused" | tail -40`. In a line, `SRC=` is who tried, `DPT=` the port, `PROTO=` TCP or UDP, `IN=` the network it came in on. The firewall writes six a minute at most, so the counts are "at least".
+2. Say who the source is likely to be:
+
+   | Address | Who |
+   |---|---|
+   | `192.168.…`, `10.…`, `172.16.…` to `172.31.…`, `fe80:…` | a device on the same home or office network: a phone, a television, a printer, another computer, the router |
+   | the address in `ip route \| grep default` | the router itself |
+   | anything else | a computer out on the internet; it can only get here if the router passes it on, or this computer is connected directly |
+
+3. Say what it was after, by the port:
+
+   | Port | What knocks there |
+   |---|---|
+   | tcp 22, 23 | remote login (SSH, Telnet) |
+   | tcp 135, 139, 445 | Windows file sharing |
+   | tcp 3389, 5900 | remote desktop |
+   | tcp 1433, 3306, 5432 | databases |
+   | tcp 80, 443, 8080 | a web server |
+   | udp 137, 138, 1900, 5353, 3702; tcp 5357, 7680, 8009, 62078 | devices looking for each other (file sharing, casting, printers, Windows updates between PCs, Apple devices): ordinary on a home network |
+
+4. Tell the user in plain words, and no more alarming than it is:
+   - **A device at home, on the discovery ports, a few times:** ordinary. Nothing to do.
+   - **A device at home, many ports one after another, or the break-in ports again and again:** that device is looking for a way in. It may be a program on it scanning the network, or it may be infected. Say which address, and that the router's list of devices tells which one it is. Nothing got in.
+   - **An address from the internet:** this computer can be reached from outside. That is normal on a server, and unusual at home: say that the firewall held, and that the router should not pass ports on to this computer unless they wanted that.
+5. **Nothing was let in.** That is what "refused" means. Never open a port, and never switch the firewall off, because something knocked. If the user wants one of those devices to reach this computer (a phone to cast to it, say), that is their decision: open the one port for that one address, as "The firewall" says.
+6. If the user does not want to hear of these: Mentor Settings, Warnings, "Refused connections" (SETTINGS.md).
 
 ## Root without a password
 
@@ -128,6 +160,8 @@ You cannot write `/etc/sudoers` or `/etc/sudoers.d` with file_write (they are pr
 | The line in the journal | `after_reading` in the journal's entry (`_journal` in `mentor_tools.py`) | JOURNAL.md |
 | The checks by themselves | `/usr/local/lib/mentor/mentor-watch` | `findings()` yields every `mentor_security.checks()` with the key `security:…` |
 | The tool and the command | `security_check` in `TOOLS`; `mentor security` | |
+| Who was refused | `refused()`, `refused_request()` and the check in `checks()` of `mentor_security.py`; the two last rules in `/etc/nftables.conf` | reads `journalctl -k --grep "mentor-firewall refused"`; the user must be allowed to read the system's log (group `wheel`) |
+| The user's choices | Mentor Settings, `~/.config/mentor/settings.json` (SETTINGS.md) | `explain` switches the plain window off (never the warning); `watch_off` stops kinds of cards |
 | The firewall | `/etc/nftables.conf`, `/etc/nftables.d/00-example.nft`; package `nftables`; `systemctl enable nftables.service` when the system was built. `/etc/systemd/system/nftables.service.d/mentor.conf` adds three lines to the package's service: `RemainAfterExit=yes` (it is "active" while the rules are loaded; without it the service always reads "inactive"), `ExecReload` (load the files again), `ExecStop` (`nft flush ruleset`: stopping really switches it off) | |
 
 It leans on: `nft` and `nftables.service` (package `nftables`); `ss` (package `iproute2`); `unix_chkpwd` (package `pam`: PAM's helper that lets a user check their own password; given the user's name and `nullok`, the password on standard input ending in a zero byte, it exits 0 when it is right); `sudo -n`; GTK 4 and libadwaita for the window.
@@ -146,6 +180,7 @@ All of these files except the notes are ones you cannot write. The user puts the
 | `echo '{"text": "Mentor wants to add a drawing program.", "detail": "pacman -S gimp", "warning": ""}' > /tmp/n.json; /usr/local/lib/mentor/mentor-explain /tmp/n.json; echo $?` | a small window; `0` after "OK, go on", `10` after "No, stop" |
 | the same with `"warning": "Just before this, Mentor read a web page."` | the yellow band, the command shown, "No, stop" as the ready button |
 | ask the assistant to look something up on the web and then to install a small program | the window before the password is yellow and names the search; `mentor journal -n 1` has the line "done after reading text from outside" |
+| as root, with a second computer or a network namespace trying a closed port: `journalctl -k -o cat --since=-5m --grep "mentor-firewall refused"` | a line with `SRC=` and `DPT=`; `mentor security` then lists it under "Refused in the last day" |
 | `/usr/local/lib/mentor/mentor-watch`, with the firewall stopped | a card "The firewall is off" in the chat; start it again afterwards |
 
 ## When it is broken

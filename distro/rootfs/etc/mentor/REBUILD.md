@@ -19,6 +19,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
+| `SETTINGS.md` | Mentor Settings: the window with the user's choices about safety, suggestions, warnings; where each is kept |
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
 | `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
 | `AGENT.md` | what every engine is told; the rules of work |
@@ -94,6 +95,9 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor-chat` | the assistant: the window that is the desktop | yes | at login, or start it again | ASSISTANT.md, ENGINES.md |
 | `/usr/local/bin/mentor-agent` | the engine for the NVIDIA and OpenAI models | yes | next message | ENGINES.md |
 | `/etc/xdg/autostart/mentor-desktop.desktop` | starts mentor-chat at login | yes | login | ASSISTANT.md |
+| `/usr/local/bin/mentor-settings` | Mentor Settings: the window for the user's choices about safety, suggestions, warnings, and the journal to read | yes | next time it is opened | SETTINGS.md |
+| `/usr/share/applications/org.mentor.Settings.desktop` | puts it in the application grid | yes | at once | SETTINGS.md |
+| `/usr/local/lib/mentor/mentor_settings.py` | reads and writes the file of those choices (`~/.config/mentor/settings.json`) | user | next call | SETTINGS.md |
 | `/usr/share/applications/org.mentor.Chat.desktop` | gives the assistant its name and icon | yes | login | ASSISTANT.md |
 | `/usr/share/icons/hicolor/256x256/apps/org.mentor.Chat.png` | the icon; run `gtk-update-icon-cache -q -f /usr/share/icons/hicolor` after | yes | login | ASSISTANT.md |
 | `/usr/local/lib/mentor/mentor-engine` | signs in to Claude, ChatGPT, Gemini; downloads their program | user | next sign-in | ENGINES.md |

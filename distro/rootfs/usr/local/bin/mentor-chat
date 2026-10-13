@@ -1421,6 +1421,7 @@ class DesktopWindow(Adw.ApplicationWindow):
                               ("history", lambda *_: self.show_history()),
                               ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
                               ("advice", lambda *_: self.show_advice_settings()),
+                              ("mentor-settings", lambda *_: self.spawn(["/usr/local/bin/mentor-settings"])),
                               # What the desktop's menu has on stock GNOME.
                               ("background", lambda *_: self.spawn(["gnome-control-center", "background"])),
                               ("displays", lambda *_: self.spawn(["gnome-control-center", "display"])),
@@ -1504,6 +1505,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         menu.append("New conversation", "win.new-chat")
         menu.append("History\u2026", "win.history")
         menu.append("Suggestions\u2026", "win.advice")
+        menu.append("Mentor Settings\u2026", "win.mentor-settings")
         system = Gio.Menu()
         system.append("Change Background\u2026", "win.background")
         system.append("Display Settings", "win.displays")
