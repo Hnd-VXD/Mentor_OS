@@ -261,6 +261,16 @@ def cmd_restore(args):
     print("The assistant and the desktop take the restored files at the next login.")
 
 
+def cmd_journal(args):
+    """What the agent changed on this system, under the request it was for (/etc/mentor/JOURNAL.md)."""
+    import mentor_journal
+    found, left_out = mentor_journal.entries(" ".join(args.search), args.lines, args.all, args.since)
+    if args.json:
+        print("\n".join(json.dumps(entry, ensure_ascii=False) for entry in found))
+    else:
+        print(mentor_journal.readable(found, left_out))
+
+
 def cmd_log(args):
     try:
         with open(mentor_core.AUDIT_PATH) as f:
@@ -322,6 +332,13 @@ p = sub.add_parser("restore", help="put files of Mentor's back as they were buil
 p.add_argument("paths", nargs="*")
 p.add_argument("--all", action="store_true", help="every file that verify lists")
 p.set_defaults(func=cmd_restore)
+p = sub.add_parser("journal", help="what the agent changed on this system, when, and after which request")
+p.add_argument("search", nargs="*", help="words to look for: a package, a file, a setting, part of a request")
+p.add_argument("-n", "--lines", type=int, default=40, help="how many of the newest (0: all)")
+p.add_argument("--since", help="from this date on: 2026-10 or 2026-10-13")
+p.add_argument("--all", action="store_true", help="the plain commands too (reading, work inside the sandbox)")
+p.add_argument("--json", action="store_true", help="as it is kept, one JSON object per line")
+p.set_defaults(func=cmd_journal)
 p = sub.add_parser("log", help="show the audit log of privileged actions")
 p.add_argument("-n", "--lines", type=int, default=20)
 p.set_defaults(func=cmd_log)

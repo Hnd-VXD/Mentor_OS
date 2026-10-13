@@ -19,8 +19,9 @@ import sys
 import textwrap
 
 sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_journal
 
-HOME = os.path.expanduser("~")
+HOME =os.path.expanduser("~")
 os.environ["PATH"] = f"{HOME}/.local/bin" + os.pathsep + os.environ.get("PATH", "")
 GUIDE = "/etc/mentor/AGENT.md"
 MCP_SERVER = "/usr/local/bin/mentor-mcp"
@@ -166,6 +167,7 @@ class Engine:
     def ask(self, message):
         """Send one message and print what comes back as it comes. True if it answered."""
         argv, folder, extra = self.command(message)
+        mentor_journal.note_request(SANDBOX, message)  # the journal of changes names the request
         self.text, answered, trouble, stray = "", False, None, []
         try:
             process = subprocess.Popen(argv, cwd=folder, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

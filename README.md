@@ -67,6 +67,7 @@ vm\                   your own disk, created on the first start
 - **The model's menu** shows the limits of your Claude, ChatGPT or Gemini plan where the account tells them, and the effort setting.
 - **Suggestions.** A bell on the desktop holds what the system noticed by itself: waiting updates, a filling disk, failed services, news from Arch and GNOME, new applications and projects. No model is used until you send one to the chat.
 - **Warnings in the chat.** What cannot wait shows in the chat as a card: yellow for a warning, red for a problem, with a button that hands it to the assistant. Mentor checks itself this way too, after every login.
+- **A journal of every change.** What the assistant changes is written down by itself, under the request it was for: packages, settings (with the value before), services, files, commands run as root, and the way back where there is one. `mentor journal` shows it; the assistant reads it when you ask what was changed, or when something stops working.
 - **It can be rebuilt.** Every file Mentor adds to the system is kept as it was built, with step-by-step instructions for the assistant in `/etc/mentor/`. `mentor verify` says what is missing or changed; `sudo mentor restore` puts it back. A watch on memory, processor and network can be set up on request from the same place.
 - **With Windows.** Text, files and folders copy and paste both ways (up to 256 MB at a time). Memory the system no longer needs goes back to Windows.
 - **Graphics.** The desktop can be drawn by the computer's graphics card, with Vulkan for the applications that want it.
@@ -85,7 +86,7 @@ Everything Mentor is made of is in this repository.
 |---|---|
 | `distro/` | the system: the package list, `customize.sh` (what is set up when the image is built), and `rootfs/`, every file Mentor adds to Arch Linux |
 | `distro/rootfs/usr/local/bin/mentor-chat` | the assistant on the desktop |
-| `distro/rootfs/usr/local/lib/mentor/` | the agent's tools, the sandbox, safe start-up, repair mode, suggestions |
+| `distro/rootfs/usr/local/lib/mentor/` | the agent's tools, the journal of changes, the sandbox, safe start-up, repair mode, suggestions |
 | `distro/rootfs/etc/mentor/` | what the agent is told, and the instructions it rebuilds Mentor from (`REBUILD.md` is the place to start) |
 | `launcher/` | `Mentor.exe` and `MentorSetup.exe` (C#, compiled with the compiler that ships with Windows) |
 | `build/` | builds the image inside an Arch Linux WSL2 distro |

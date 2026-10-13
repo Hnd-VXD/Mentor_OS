@@ -20,6 +20,7 @@ You cannot see the desktop from here, and tools that need it do not work: screen
 | Command | What it tells |
 |---|---|
 | `mentor verify` | which of Mentor's own files are missing or changed |
+| `mentor journal -n 20` | what the assistant changed last, and for which request: what was done just before the desktop went is the first suspect (JOURNAL.md) |
 | `tail -80 /var/log/pacman.log` | what was installed or upgraded last, and when |
 | `journalctl -b -1 -p err -o cat \| tail -40` | what the start before this one complained of |
 | `journalctl -b -1 -o cat _COMM=gnome-shell \| tail -60` | what the desktop itself said in that start; lines with `mentor` or `JS ERROR` matter most |
@@ -42,6 +43,7 @@ You cannot see the desktop from here, and tools that need it do not work: screen
 | An engine no longer answers | ENGINES.md | run it by hand and read what it says |
 | The kernel, the initramfs, a module | BOOT.md | the old one starts by itself; find out why the new one failed |
 | A package upgrade broke something that is not Mentor's | | find the package in pacman's log; its earlier version is in `/var/cache/pacman/pkg/` and can be put back with `pacman -U FILE` in the sandbox |
+| The journal shows a change made just before the desktop went | JOURNAL.md | its "way back" line names the tool that undoes it (change_undo ID, file_restore, package_remove, settings_set to the value before). Say which change you mean and undo that one |
 | Nothing of the above | | say so plainly, and that the launcher's "Restore points" goes back to before the change, at the cost of what was done since |
 
 Work in the sandbox (sandbox_run, sandbox_changes, sandbox_apply) for anything outside the user's own folder. One part at a time.

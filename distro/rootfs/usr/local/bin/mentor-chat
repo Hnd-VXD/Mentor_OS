@@ -51,6 +51,7 @@ MCP_CONFIG = "/etc/mentor/mcp.json"
 # in, so each conversation gets a folder of its own here, holding ours. Its settings are the
 # user's; the one thing added to them is that the Mentor tools need no asking.
 AGY_FOLDERS = os.path.join(GLib.get_user_state_dir(), "mentor", "agy")
+REQUESTS = os.path.join(GLib.get_user_state_dir(), "mentor", "requests")  # see note_request
 AGY_SETTINGS = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
 AGY_ALLOWED = "mcp(mentor/*)"
 AGY_KEYRING_NOTE = os.path.expanduser("~/.gemini/antigravity-cli/cache/antigravity-keyring-unavailable")
@@ -318,6 +319,18 @@ def details_markup(details):
             escaped = GLib.markup_escape_text(block, -1)
             blocks.append(re.sub(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)]", lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', escaped))
     return "\n\n".join(blocks)
+
+
+def note_request(sandbox, text):
+    """Say which request a conversation is working on, for the journal the tools keep of what
+    they change (mentor_journal.py, which reads it by the name of the sandbox)."""
+    text = " ".join(text.split())
+    try:
+        os.makedirs(REQUESTS, exist_ok=True)
+        with open(os.path.join(REQUESTS, re.sub(r"[^A-Za-z0-9._-]", "_", sandbox) + ".txt"), "w", encoding="utf-8") as f:
+            f.write(text if len(text) <= 400 else text[:399] + "\u2026")
+    except OSError:
+        pass
 
 
 def agy_folder(sandbox, instructions):
@@ -1081,6 +1094,7 @@ class Conversation(Gtk.Box):
         self.pending = ""
         self.stray_output = []
         self.got_result = False
+        note_request(self.sandbox, shown or text)
         self.process = self.window.spawn(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
                                          sandbox=self.sandbox, key=key, own_group=True, folder=folder)
         if not self.process:

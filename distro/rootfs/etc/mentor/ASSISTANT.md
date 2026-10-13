@@ -58,6 +58,7 @@ What it keeps, all in the user's folders:
 | Suggestions turned away | `~/.config/mentor/advice.json` |
 | The open conversations | `~/.local/state/mentor/conversations.json` |
 | Everything ever said, a line each | `~/.local/state/mentor/history.jsonl` |
+| The request each conversation is on, for the journal of changes (`note_request`; JOURNAL.md) | `~/.local/state/mentor/requests/` |
 | Pasted pictures | `~/.cache/mentor/attachments/` |
 | Models and usage last told | `~/.cache/mentor/` |
 

@@ -6,12 +6,15 @@ makes GNOME show the approval dialog.
 """
 import json
 import os
+import re
 import select
 import shlex
 import shutil
 import subprocess
 import tempfile
 import time
+
+import mentor_journal
 
 LIBDIR = "/usr/local/lib/mentor"
 HELPER = f"{LIBDIR}/mentor-helper"
@@ -71,8 +74,14 @@ def _run(argv, timeout=120, stdin=None):
         return 127, f"command not found: {argv[0]}"
 
 
+# What the call in progress has to say to the journal beyond its arguments and its output.
+_noted = {}
+
+
 def _privileged(helper, action, args, timeout=1800, stdin=None):
     code, out = _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin)
+    if code in (126, 127) or (code == 3 and "denied by policy" in out):
+        _noted["declined"] = True  # nothing was done: not a line for the journal
     if code == 126:
         out += "\n[The user dismissed the approval dialog or is not allowed to approve. Do not retry; ask the user.]"
     elif code == 127:
@@ -201,6 +210,8 @@ def settings_get(a):
 
 
 def settings_set(a):
+    code, before = _run(["gsettings", "get", a["schema"], a["key"]])
+    _noted["before"] = before.strip() if code == 0 else None
     code, out = _run(["gsettings", "set", a["schema"], a["key"], a["value"]])
     if code != 0:
         return code, out
@@ -616,6 +627,12 @@ def run_root_command(a):
     return _privileged(ROOT_SHELL, "run_root", {"command": a["command"]})
 
 
+def journal_read(a):
+    limit = 40 if a.get("limit") is None else int(a["limit"])  # 0 is all of it
+    found, left_out = mentor_journal.entries(str(a.get("search") or ""), limit, bool(a.get("all")), a.get("since"))
+    return 0, _clip(mentor_journal.readable(found, left_out))
+
+
 def _schema(properties=None, required=()):
     return {"type": "object", "properties": properties or {}, "required": list(required)}
 
@@ -624,6 +641,9 @@ _STR = {"type": "string"}
 _PACKAGES = {"type": "array", "items": _STR, "minItems": 1, "description": "Exact pacman package names."}
 _USER_UNIT = {"type": "boolean", "description": "Act on the user's own systemd instance instead of the system one."}
 _OPERATION = {"type": "string", "enum": ["start", "stop", "restart", "reload", "enable", "disable", "mask", "unmask"]}
+_CHANGES = {"type": "string", "description":
+            "When the command changes something (a file, a setting, a program): what it changes, in a few "
+            "words, for the journal. Leave it out for a command that only reads."}
 
 # name -> (description, input schema, handler)
 # --- suggestions -------------------------------------------------------------
@@ -820,7 +840,8 @@ TOOLS = {
         "its output and exit code. Use this instead of run_command when the user asked for something to be "
         "run in the terminal, or when watching it is the point (a speed test, a download, a long build). "
         "The window stays open afterwards.",
-        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 120}}, ["command"]), terminal_run),
+        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 120}, "changes": _CHANGES},
+                ["command"]), terminal_run),
     "extension_status": (
         "State of one GNOME Shell extension, any error it failed with, and what the shell logged about it. "
         "Use it after writing or enabling an extension to see whether it actually loaded.",
@@ -878,12 +899,96 @@ TOOLS = {
     "run_command": (
         "Run a bash command as the logged-in user, without root. For reading state and for changes "
         "inside the home directory.",
-        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 120}}, ["command"]), run_command),
+        _schema({"command": _STR, "timeout_seconds": {"type": "integer", "default": 120}, "changes": _CHANGES},
+                ["command"]), run_command),
     "run_root_command": (
         "Run a bash command as root. The user sees the exact command and must enter their password every time. "
         "Only for changes no other tool covers.",
         _schema({"command": _STR}, ["command"]), run_root_command),
+    "journal_read": (
+        "The journal of what was changed on this system through these tools, by you and by every model before "
+        "you: under each request of the user's, the changes made for it, when, and the way back where there is "
+        "one. Read it when the user asks what was changed, when or why; before looking for the cause of "
+        "something that stopped working (what changed last is the first suspect); before undoing something; "
+        "and when asked to set another system up the same way. `search` is words to look for (a package, a "
+        "file, a setting, part of a request), `since` the start of a date (2026-10 or 2026-10-13), `all` adds "
+        "the plain commands that were run. Newest last.",
+        _schema({"search": _STR, "since": _STR,
+                 "limit": {"type": "integer", "default": 40, "description": "How many of the newest; 0 for all."},
+                 "all": {"type": "boolean"}}), journal_read),
 }
+
+
+# --- the journal ---------------------------------------------------------------
+# What each tool that changes something writes down (mentor_journal, /etc/mentor/JOURNAL.md):
+# name -> function(arguments, output) giving the line, or (line, the way back), or
+# (line, the way back, kind), or None when the call changed nothing. A tool that is not
+# here only reads, or only shows something.
+
+_OPPOSITE = {"start": "stop", "stop": "start", "enable": "disable", "disable": "enable", "mask": "unmask", "unmask": "mask"}
+
+
+def _applied(a, out):
+    done = re.search(r"applied change (\S+): (\d+) paths", out)
+    if not done:
+        return None  # the user looked at the preview and said no
+    return (f"applied a change to the system: {a['summary']} (change {done.group(1)}, {done.group(2)} paths; "
+            f"change_list shows it)", f"change_undo {done.group(1)}")
+
+
+def _commanded(where=""):
+    def line(a, out):
+        said = " ".join(str(a.get("changes") or "").split())
+        return (f"{said}: {where}{a['command']}", None, "change") if said else (f"{where}{a['command']}", None, "command")
+    return line
+
+
+JOURNAL = {
+    "package_install": lambda a, out: (f"installed packages: {', '.join(a['packages'])}", "package_remove, the same names"),
+    "package_remove": lambda a, out: (f"removed packages, and what only they needed: {', '.join(a['packages'])}",
+                                      "package_install, the same names"),
+    "system_upgrade": lambda a, out: None if "Nothing was upgraded" in out else (
+        "upgraded every package (pacman -Syu); /var/log/pacman.log has the versions",
+        "the restore point made just before it (Restore points in the launcher)"),
+    "settings_set": lambda a, out: (
+        f"setting {a['schema']} {a['key']}: {_noted.get('before') or 'unknown'} -> {a['value']}",
+        f"settings_set {a['schema']} {a['key']} {_noted['before']}" if _noted.get("before") else None),
+    "service_control": lambda a, out: (
+        f"{a['operation']} {a['unit']}" + (" (of the user's own services)" if a.get("user") else ""),
+        f"service_control {_OPPOSITE[a['operation']]} {a['unit']}" if a["operation"] in _OPPOSITE else None),
+    "file_write": lambda a, out: (
+        f"wrote the file {os.path.abspath(os.path.expanduser(a['path']))}",
+        f"file_restore {a['path']}" if "previous version saved" in out else "the file was new: remove it"),
+    "file_restore": lambda a, out: f"put back the version before of {os.path.abspath(os.path.expanduser(a['path']))}",
+    "flatpak_install": lambda a, out: (f"installed the application {a['app_id']} from Flathub", f"flatpak_remove {a['app_id']}"),
+    "flatpak_remove": lambda a, out: (f"removed the application {a['app_id']} (Flathub)", f"flatpak_install {a['app_id']}"),
+    "extension_set": lambda a, out: (
+        f"{'enabled' if a['enabled'] else 'disabled'} the shell extension {a['uuid']}",
+        f"extension_set {a['uuid']}, enabled {'false' if a['enabled'] else 'true'}"),
+    "sandbox_apply": _applied,
+    "change_undo": lambda a, out: f"undid the applied change {a['id']}",
+    "wallpaper_set": lambda a, out: f"wallpaper: {os.path.abspath(os.path.expanduser(a['path']))}",
+    "desktop_layout": lambda a, out: (f"desktop layout: {a['layout']}",
+                                      f"desktop_layout {'normal' if a['layout'] == 'taskbar' else 'taskbar'}"),
+    "suggestions_restore": lambda a, out: f"brought back suggestions that were turned away: {a['what']}",
+    "run_root_command": lambda a, out: f"as root: {a['command']}",
+    "run_command": _commanded(),
+    "terminal_run": _commanded("in a Console window: "),
+    "sandbox_run": lambda a, out: (f"in the sandbox (real only once applied): {a['command']}", None, "command"),
+}
+
+
+def _journal(name, a, code, out):
+    """Write down what a call changed. Never in the way of the call itself."""
+    try:
+        describe = JOURNAL.get(name)
+        line = None if not describe or _noted.get("declined") else describe(a, out)
+        if line is None:
+            return
+        what, undo, kind = (line, None, "change") if isinstance(line, str) else (*line, "change")[:3]
+        mentor_journal.record(name, what, kind, code == 0, os.environ.get("MENTOR_SANDBOX"), undo=undo)
+    except Exception:
+        pass
 
 
 def call(name, arguments):
@@ -897,9 +1002,11 @@ def call_with_image(name, arguments):
     """Run a tool. Returns (ok, text, JPEG bytes or None)."""
     if name not in TOOLS:
         return False, f"unknown tool: {name}", None
+    _noted.clear()
     try:
         code, out, *image = TOOLS[name][2](arguments or {})
     except KeyError as e:
         return False, f"missing argument: {e.args[0]}", None
+    _journal(name, arguments or {}, code, out)
     out = out.strip() or "(no output)"
     return code == 0, out if code == 0 else f"{out}\n[exit code {code}]", image[0] if image else None

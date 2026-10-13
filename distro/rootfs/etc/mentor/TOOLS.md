@@ -10,6 +10,7 @@ This is for the agent, written so that a small model can follow it. It describes
 - **Undo** for every change applied that way, and a list of them.
 - **Rules that hold even with approval** (`/etc/mentor/policy.toml`): packages and services that may not be removed or stopped, files that may not be written, commands that are refused.
 - **A record** of everything done as root: `/var/log/mentor/audit.log` (`mentor log`).
+- **A journal** of every change made through the tools, root or not, under the request it was made for: `mentor journal` (JOURNAL.md).
 
 ## How it hangs together
 
@@ -30,7 +31,7 @@ the model (through an engine; see ENGINES.md)
 ```
 
 - **mentor-mcp** speaks JSON-RPC, one message per line: `initialize` (answers with the protocol version, `capabilities: {"tools": {}}` and the text of `/etc/mentor/AGENT.md` as `instructions`), `ping`, `tools/list`, `tools/call`. A picture a tool returns goes out as an `image` part.
-- **mentor_tools.py** holds the dictionary `TOOLS`: name -> (description, JSON schema of the arguments, function). `call(name, arguments)` returns (ok, text); `call_with_image` also a picture. Adding a tool is adding an entry there; if it needs root, also an action in `ACTIONS` of `mentor_core.py`.
+- **mentor_tools.py** holds the dictionary `TOOLS`: name -> (description, JSON schema of the arguments, function). `call(name, arguments)` returns (ok, text); `call_with_image` also a picture. Adding a tool is adding an entry there; if it needs root, also an action in `ACTIONS` of `mentor_core.py`; if it changes something, also an entry in `JOURNAL`, which is what gets it written into the journal (`mentor_journal.py`, JOURNAL.md).
 - **The three doors.** Each is a program of three lines (`mentor_core.main("manage")`, `("sandbox")`, `("shell")`). polkit knows them by their path (`org.freedesktop.policykit.exec.path` in `/usr/share/polkit-1/actions/org.mentor.policy`). `auth_admin_keep` for the first two means the password holds for a few minutes; `auth_admin` for the root shell means every time. `mentor_core.main` refuses to run unless it is root and was started by pkexec (`PKEXEC_UID`).
 - **mentor_core.py**: `ACTIONS[mode][action]` is a function that checks the arguments and returns a command to run (or does the work and returns an exit status). A refusal raises `Denied`, is written to the log, and exits 3 with "denied by policy".
 - **The sandbox** (`mentor_sandbox.py`): an overlay file system over `/`, in an image file `/var/lib/mentor/sandbox.img` (sparse, 24 GB, mounted at `/var/lib/mentor/sandbox`). Each conversation has its own layer, named by `MENTOR_SANDBOX`. A command runs in it as root inside a container (`systemd-nspawn`), so it cannot touch the running system. `/boot` cannot have an overlay, so the sandbox gets a copy of it. `scan()` lists what the layer added, changed or deleted; `report()` adds text differences; `apply()` copies it onto the real system and keeps what it replaced under `/var/lib/mentor/changes/ID/`; `undo(ID)` puts that back. Sandboxes do not outlive a restart.
@@ -38,7 +39,7 @@ the model (through an engine; see ENGINES.md)
 
 ## The tools
 
-Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read`, `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `desktop_check`, `session_logout`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Other: `system_info`, `suggestions_status`, `suggestions_restore`.
+Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read`, `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `desktop_check`, `session_logout`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Other: `system_info`, `suggestions_status`, `suggestions_restore`, `journal_read`.
 
 `mentor tools` prints them with their descriptions; that list is the truth, this one a summary.
 
@@ -57,6 +58,7 @@ Packages: `package_search`, `package_info`, `package_list`, `package_install`, `
 | `pkaction --action-id org.mentor.manage` | the action is known to polkit |
 | `mentor call sandbox_run '{"command": "touch /etc/mentor-test"}'` then `mentor call sandbox_changes '{}'` | a dialog, then `/etc/mentor-test` listed as added; then `mentor call sandbox_discard '{}'` |
 | `mentor log -n 5` | the last things done as root |
+| `mentor journal -n 5` | the last changes, each under the request it was for |
 | `mentor changes` | the changes applied, newest first |
 | `mentor notice warning "A test" "Nothing is wrong."` | a yellow card in the assistant's chat (ASSISTANT.md, "Notices") |
 
@@ -79,7 +81,7 @@ Everything is in `/etc/mentor/source/rootfs/` at its own path. In this order, as
 
 ```
 src=/etc/mentor/source/rootfs
-cp -a $src/usr/local/lib/mentor /usr/local/lib/
+cp -a $src/usr/local/lib/mentor /usr/local/lib/        # mentor_journal.py among them
 cp -a $src/usr/local/bin/mentor $src/usr/local/bin/mentor-mcp /usr/local/bin/
 cp -a $src/usr/share/polkit-1/actions/org.mentor.policy /usr/share/polkit-1/actions/
 cp -a $src/usr/local/lib/mentor/mentor-review /usr/local/lib/mentor/

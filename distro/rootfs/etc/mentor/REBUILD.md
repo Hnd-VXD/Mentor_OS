@@ -19,6 +19,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
+| `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
 | `AGENT.md` | what every engine is told; the rules of work |
 
 `/etc/mentor` is closed to you: you read these files, you cannot change them. What you make or change that they do not say yet, write in `~/.local/share/mentor/notes.md`, and read that file together with them.
@@ -44,6 +45,8 @@ mentor doctor
 ```
 
 (tool: desktop_check). It says which parts of the desktop work right now.
+
+Then `mentor journal -n 20` (tool: journal_read): what was changed on this system last, and for which request. A fault that began after one of those changes most likely comes from it.
 
 Then read `~/.local/share/mentor/notes.md` if it exists. **A file that verify calls changed is not a fault if the notes say it was changed on purpose** (for example the extension, adapted to a new GNOME). Only a file that is missing, or changed with no note, or changed and no longer working, is to be put back.
 
@@ -114,9 +117,10 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
-| `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, log, boot, …` | user | at once | TOOLS.md |
+| `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, journal, log, boot, …` | user | at once | TOOLS.md |
 | `/usr/local/bin/mentor-mcp` | gives the tools to Claude Code, Codex and the Antigravity CLI (MCP) | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side | user | next message | TOOLS.md |
+| `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-root-shell`, `mentor-sandbox` | the three doors to root, one per approval dialog | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
@@ -198,6 +202,7 @@ Run these in order. Each line says what a good answer looks like.
 | `mentor tools \| head -3` | the first tools and what they do |
 | `mentor call system_info '{}'` | the system's release, kernel, memory |
 | `mentor boot` | which kernel runs, which is known to work, nothing waiting unless you changed something |
+| `mentor journal -n 3` | the last changes under their requests, or that none is written yet |
 | `systemctl is-enabled mentor-advisor.timer mentor-boot-check.service` | `enabled` twice |
 | `systemctl --user is-enabled mentor-watch.timer` | `enabled` |
 | `pgrep -af bin/mentor-chat` | one line: the assistant is running |

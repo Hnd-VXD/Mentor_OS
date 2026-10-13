@@ -46,7 +46,8 @@ def findings():
                "`mentor verify` says these files of Mentor's own are missing or no longer what was built:\n\n"
                f"{listed}\n\nFollow /etc/mentor/REBUILD.md: find out for each whether it was changed on purpose "
                "(~/.local/share/mentor/notes.md) and works, or is damaged; tell me which, and what putting it back "
-               "would take. Do not change anything before I agree.")
+               "would take. The journal (journal_read) says what was changed lately and for which request. Do not "
+               "change anything before I agree.")
     broken = re.findall(r"(?m)^BROKEN\s+(.+)$", output(MENTOR, "doctor"))
     if broken:
         listed = "\n".join(broken[:10])
@@ -54,7 +55,8 @@ def findings():
                "Part of Mentor's desktop is not working",
                listed,
                f"`mentor doctor` reports these parts of Mentor's desktop as broken:\n\n{listed}\n\n"
-               "Follow /etc/mentor/DESKTOP.md to find out why and mend them, one part at a time, in the sandbox "
+               "Read the journal first (journal_read): a change made lately may be why. Then follow "
+               "/etc/mentor/DESKTOP.md to find out why and mend them, one part at a time, in the sandbox "
                "first. Tell me what you found before you change anything.")
 
     usage = shutil.disk_usage("/")
@@ -69,7 +71,8 @@ def findings():
     if failed:
         yield ("failed:" + ",".join(sorted(failed)), "warning", "Something on the system is not running",
                ", ".join(failed[:4]) + (" and more" if len(failed) > 4 else "") + " failed.",
-               f"These systemd units failed: {', '.join(failed)}. Find out why and fix what can be fixed.")
+               f"These systemd units failed: {', '.join(failed)}. Look in the journal (journal_read) for a change "
+               "that touched them, find out why they failed and fix what can be fixed.")
 
 
 def main():
