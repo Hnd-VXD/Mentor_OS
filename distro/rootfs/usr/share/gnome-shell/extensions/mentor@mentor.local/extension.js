@@ -175,6 +175,28 @@ class DesktopLayer {
             }));
     }
 
+    // The text box over the windows: above them all, on every workspace, at the bottom
+    // of the screen in the middle, and with the keyboard.
+    _float(window) {
+        const place = () => {
+            const area = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+            const frame = window.get_frame_rect();
+            window.move_frame(true, area.x + Math.floor((area.width - frame.width) / 2),
+                area.y + area.height - frame.height - 12);
+        };
+        window.make_above();
+        window.stick();
+        window.connect('shown', () => {
+            place();
+            Main.activateWindow(window);
+        });
+        window.connect('size-changed', place);
+        if (window.get_compositor_private()?.visible) {
+            place();
+            Main.activateWindow(window);
+        }
+    }
+
     _adopt(window) {
         if (window.get_wm_class() !== ASSISTANT && window.get_gtk_application_id() !== ASSISTANT)
             return false;
@@ -183,6 +205,13 @@ class DesktopLayer {
         const type = window.get_window_type();
         if (window === this._window || (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DESKTOP))
             return true;
+        // The assistant has one more window: its text box, lifted out of the desktop to be
+        // shown over whatever is in front (Alt+Space). The desktop is there already when
+        // that one comes, which is how the two are told apart.
+        if (this._window && type === Meta.WindowType.NORMAL) {
+            this._float(window);
+            return true;
+        }
         this._window = window;
         // A desktop window sits under all others and stays out of the taskbar,
         // Alt+Tab and the overview: mutter does the rest.
@@ -303,6 +332,7 @@ const SERVICE = `
     <method name="Show"/>
     <method name="Restore"/>
     <method name="Toggle"/>
+    <method name="Ask"/>
     <method name="Status">
       <arg type="s" direction="out" name="json"/>
     </method>
@@ -338,6 +368,11 @@ class ShellService {
 
     Toggle() {
         this._desktop?.toggle();
+    }
+
+    // The assistant's text box, brought up over whatever is in front (see ASK_WINDOW below).
+    Ask() {
+        ask('--ask');
     }
 
     // Which parts of Mentor in the shell are working (see `mentor doctor`, /etc/mentor/DESKTOP.md).

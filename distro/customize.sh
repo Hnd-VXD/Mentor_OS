@@ -64,7 +64,7 @@ AutomaticLogin=$MENTOR_USER
 EOF
 dconf update
 systemctl set-default graphical.target
-systemctl --global enable mentor-watch.timer mentor-firewall-watch.service
+systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
 systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 # Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service

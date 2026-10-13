@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 
 import mentor_journal
+import mentor_recipes
 import mentor_settings
 
 EXPLAIN = "/usr/local/lib/mentor/mentor-explain"
@@ -89,6 +90,9 @@ def saw(conversation, name, arguments):
     found = classify(name, arguments)
     if not found:
         return
+    for kind, what in found:  # a recipe that is read must be inspected before it is followed
+        if kind == "file":
+            mentor_recipes.note_seen(conversation, what)
     try:
         known = reads(conversation)
         with open(_mark(conversation, ".read"), "a", encoding="utf-8") as f:

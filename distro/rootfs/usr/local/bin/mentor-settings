@@ -30,7 +30,8 @@ import mentor_tools
 CHAT = "/usr/local/bin/mentor-chat"
 KINDS = {"updates": "Updates for my programs", "disk": "When the disk is getting full",
          "failed": "When something stopped working", "news": "News about the system",
-         "gnome": "News about the desktop", "apps": "New applications", "github": "New projects on GitHub"}
+         "gnome": "News about the desktop", "apps": "New applications", "github": "New projects on GitHub",
+         "recipes": "Recipes that people found useful"}
 WATCHES = {"security": "my safety", "refused": "someone trying to connect to this computer",
            "self": "Mentor itself", "disk": "the disk", "failed": "programs in the background"}
 
@@ -130,6 +131,12 @@ class SettingsWindow(Adw.ApplicationWindow):
                          lambda on, key=key: self.busy or self.one_warning(key, on))
             fold.add_row(row)
             self.watch_rows[key] = row
+        fold.add_row(switch("Tell the recipes site about harmful recipes",
+                            "When Mentor finds something serious in a recipe that came from the site, it says so, so it can be taken down",
+                            bool(mentor_settings.get("report_to_hub")), lambda on: mentor_settings.put("report_to_hub", on)))
+        fold.add_row(switch("Offer to write down what I built",
+                            "A green card after something worked, to keep how it was done and share it",
+                            bool(mentor_settings.get("offer_recipes")), lambda on: mentor_settings.put("offer_recipes", on)))
         fold.add_row(switch("Show the exact command when my password is asked",
                             "For those who read commands. Mentor's own short explanation is shown either way",
                             bool(mentor_settings.get("exact")), lambda on: mentor_settings.put("exact", on)))

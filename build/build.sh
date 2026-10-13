@@ -39,7 +39,7 @@ stage_overlay() {
         chown root:root "$dest/$f"
     done < <(cd "$SRC/distro/rootfs" && find . -type f -print0)
     chmod 755 "$dest"/usr/local/bin/mentor "$dest"/usr/local/bin/mentor-mcp "$dest"/usr/local/bin/mentor-chat \
-        "$dest"/usr/local/bin/mentor-agent "$dest"/usr/local/bin/mentor-settings \
+        "$dest"/usr/local/bin/mentor-agent "$dest"/usr/local/bin/mentor-settings "$dest"/usr/local/bin/mentor-recipes \
         "$dest"/usr/local/lib/mentor/mentor-helper "$dest"/usr/local/lib/mentor/mentor-root-shell \
         "$dest"/usr/local/lib/mentor/mentor-clipboard "$dest"/usr/local/lib/mentor/mentor-sandbox \
         "$dest"/usr/local/lib/mentor/mentor-clipboard-files "$dest"/usr/local/lib/mentor/mentor-engine "$dest"/usr/local/lib/mentor/mentor-advisor "$dest"/usr/local/lib/mentor/mentor-usage \
@@ -47,7 +47,8 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-boot "$dest"/usr/local/lib/mentor/mentor-repair-console \
         "$dest"/usr/local/lib/mentor/mentor-explain "$dest"/usr/local/lib/mentor/mentor-write-file \
         "$dest"/usr/local/lib/mentor/mentor-apply "$dest"/usr/local/lib/mentor/mentor-undo \
-        "$dest"/usr/local/lib/mentor/mentor-rootd "$dest"/usr/local/lib/mentor/mentor-firewall-watch
+        "$dest"/usr/local/lib/mentor/mentor-rootd "$dest"/usr/local/lib/mentor/mentor-firewall-watch \
+        "$dest"/usr/local/lib/mentor/mentor-recipe-watch
 
     # A copy of everything of ours as it was built, and what each file's contents should be:
     # what the agent checks the system against (mentor verify) and makes a lost part again

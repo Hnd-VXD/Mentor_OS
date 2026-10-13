@@ -305,6 +305,8 @@ p = sub.add_parser("desktop", help="go to the assistant on the desktop, or back 
 p.set_defaults(func=lambda args: sys.exit(subprocess.run(
     ["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/mentor/Shell",
      "--method", "org.mentor.Shell.Toggle"], stdout=subprocess.DEVNULL).returncode))
+p = sub.add_parser("ask", help="bring the assistant's text box up over the program in front, with a picture of the screen for the agent")
+p.set_defaults(func=lambda args: sys.exit(subprocess.run(["/usr/local/bin/mentor-chat", "--ask"]).returncode))
 p = sub.add_parser("changes", help="list the changes applied through the sandbox")
 p.set_defaults(func=lambda args: run_tool("change_list", {}))
 p = sub.add_parser("undo", help="undo one applied change")
@@ -335,6 +337,9 @@ p.set_defaults(func=cmd_restore)
 p = sub.add_parser("settings", help="open Mentor Settings: safety, suggestions, warnings, the journal")
 p.add_argument("page", nargs="?", default="", choices=("", "safety", "suggestions", "warnings", "changes", "about"))
 p.set_defaults(func=lambda args: sys.exit(subprocess.run(["/usr/local/bin/mentor-settings", *filter(None, [args.page])]).returncode))
+p = sub.add_parser("recipes", help="the recipes kept on this computer; with a file: a report of what it would do (made by rules)")
+p.add_argument("file", nargs="?", help="a recipe file to look at, without running anything")
+p.set_defaults(func=lambda args: run_tool("recipe_inspect", {"path": args.file}) if args.file else run_tool("recipe_list", {}))
 p = sub.add_parser("security", help="look at how safe this system is right now: firewall, password, remote login")
 p.set_defaults(func=lambda args: run_tool("security_check", {}))
 p = sub.add_parser("journal", help="what the agent changed on this system, when, and after which request")

@@ -26,7 +26,24 @@ toggle-application-view=@as []
 show-screenshot-ui=['Print', '<Shift><Super>s']
 
 [org/gnome/settings-daemon/plugins/media-keys]
-custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/']
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2/']
+
+# Alt+Space and Super+Z bring up the ask bar over whatever is in front: a text box for the
+# assistant, which is sent a picture of the screen with the words (/etc/mentor/ASKBAR.md).
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask]
+name='Ask Mentor'
+command='/usr/local/bin/mentor ask'
+binding='<Alt>space'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2]
+name='Ask Mentor (second key)'
+command='/usr/local/bin/mentor ask'
+binding='<Super>z'
+
+# Alt+Space is the ask bar's: the window menu it used to open is still on a right-click
+# of a window's title.
+[org/gnome/desktop/wm/keybindings]
+activate-window-menu=@as []
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor]
 name='Mentor Assistant'
@@ -47,14 +64,14 @@ idle-delay=uint32 0
 
 [org/gnome/desktop/screensaver]
 lock-enabled=false
-picture-uri='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
+picture-uri='file:///usr/share/backgrounds/mentor/blue-waves.jpg'
 
 [org/gnome/settings-daemon/plugins/power]
 sleep-inactive-ac-type='nothing'
 
 # The default wallpaper; the others of ours are offered in Settings > Appearance.
 [org/gnome/desktop/background]
-picture-uri='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
-picture-uri-dark='file:///usr/share/backgrounds/mentor/mentor-mist.jpg'
+picture-uri='file:///usr/share/backgrounds/mentor/blue-waves.jpg'
+picture-uri-dark='file:///usr/share/backgrounds/mentor/blue-waves.jpg'
 picture-options='zoom'
 primary-color='#16171b'

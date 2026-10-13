@@ -23,6 +23,12 @@ DEFAULTS = {
     # Show the exact command, file or program names in the password dialog, under the agent's
     # own sentence. For people who read commands; everyone else gets the sentence alone.
     "exact": False,
+    # After something that took some doing has worked, offer (a green card) to write it down as
+    # a recipe. Off: only when the user asks for one.
+    "offer_recipes": True,
+    # When the rules find something serious in a recipe that came from the recipes site, tell the
+    # site so (a signed report, with nothing of this computer's in it). It looks for itself.
+    "report_to_hub": True,
 }
 
 

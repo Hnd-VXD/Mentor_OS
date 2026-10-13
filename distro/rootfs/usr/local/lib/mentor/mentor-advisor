@@ -49,6 +49,9 @@ GITHUB_MOST = 8
 NEWS_EVERY = 1         # days between two readings of it
 NEWS_DAYS = 21         # how long an announcement counts as news
 NEWS_MOST = 3          # and how many of them at a time
+RECIPES_INDEX = "https://mentor-recipes.netlify.app/index.json"
+RECIPE_MIN_UP = 2      # a recipe is news when this many Mentors said it worked,
+RECIPE_SHOWN_DAYS = 30  # and then it is not brought up again for this long
 
 
 def run(*argv, timeout=120):
@@ -333,6 +336,50 @@ def github_projects():
     }]
 
 
+def recipes():
+    """One recipe from the recipes site that Mentors found useful and that has not been brought up
+    lately. Only its name and counts are used here: the text of a recipe is a stranger's, and is
+    read by the assistant (and inspected) only when the user asks for it."""
+    import re
+    import urllib.request
+    request = urllib.request.Request(RECIPES_INDEX, headers={"User-Agent": "mentor-advisor"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        listed = json.load(response).get("recipes", [])
+    seen_path = os.path.join(DIR, "recipes-shown.json")
+    try:
+        with open(seen_path) as f:
+            seen = json.load(f)
+    except (OSError, ValueError):
+        seen = {}
+    now = time.time()
+    seen = {k: v for k, v in seen.items() if now - v < RECIPE_SHOWN_DAYS * 86400}
+    good = []
+    for r in listed:
+        rid, up, down = str(r.get("id", "")), int(r.get("up") or 0), int(r.get("down") or 0)
+        if (re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", rid) and r.get("status") != "example" and up >= RECIPE_MIN_UP
+                and down * 3 <= up and rid not in seen):
+            good.append((up - down, up, down, rid, str(r.get("title", rid))))
+    if not good:
+        return []
+    good.sort(reverse=True)
+    _score, up, down, rid, title = good[0]
+    seen[rid] = now
+    with open(seen_path, "w") as f:
+        json.dump(seen, f)
+    return [{
+        "id": "recipe-" + rid, "kind": "recipes",
+        "title": "A recipe people found useful",
+        "body": short(f"{title}: {up} Mentor users said it worked" + (f", {down} said it did not." if down else "."), 200),
+        "details": f"{title}\n{up} up, {down} down\nhttps://mentor-recipes.netlify.app/r/{rid}/index.html",
+        "link": f"https://mentor-recipes.netlify.app/r/{rid}/index.html",
+        "prompt": (f"The recipes site lists a recipe called {rid} that {up} Mentor users rated as working"
+                   + (f" and {down} as not." if down else ".") + " Download it with recipe_fetch, inspect it "
+                   "(recipe_inspect), and give me the whole report in plain words, as RECIPES.md says for a recipe "
+                   "from someone else. Tell me what it would change and whether it suits this system. Do not "
+                   "change anything before I answer."),
+    }]
+
+
 def hash_of(names):
     import zlib
     return zlib.crc32("\n".join(names).encode())
@@ -340,7 +387,7 @@ def hash_of(names):
 
 def news():
     """All of them, read once a day; in between, what was found last time stands."""
-    kinds = ("news", "gnome", "apps", "github")
+    kinds = ("news", "gnome", "apps", "github", "recipes")
     stamp = os.path.join(DIR, "news-read")
     try:
         if time.time() - os.path.getmtime(stamp) < NEWS_EVERY * 86400:
@@ -349,7 +396,7 @@ def news():
     except (OSError, ValueError, AttributeError):
         pass
     found, read = [], False
-    for source in (arch_news, gnome_news, new_apps, github_projects):
+    for source in (arch_news, gnome_news, new_apps, github_projects, recipes):
         try:
             found += source()
             read = True

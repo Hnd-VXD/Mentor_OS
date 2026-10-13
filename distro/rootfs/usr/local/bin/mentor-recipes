@@ -1,0 +1,189 @@
+#!/usr/bin/python3
+"""Recipes: the recipes that were used on this computer, the ones written here, the ones downloaded
+and not used yet, and a way to the recipes site. See /etc/mentor/RECIPES.md.
+
+Nothing here calls a model. "Take it away", "Share" and "Follow it" hand a request to the assistant
+on the desktop; the thumbs send one signed vote to the site (mentor_hub.rate).
+"""
+import os
+import subprocess
+import sys
+import threading
+import time
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk
+
+import mentor_recipes
+
+CHAT = "/usr/local/bin/mentor-chat"
+SITE = "https://mentor-recipes.netlify.app"
+SITE_FOLDER = os.path.join(mentor_recipes.FOLDER, "from the site")
+
+
+def ask(prompt):
+    """Hand a request to the assistant on the desktop."""
+    try:
+        subprocess.Popen([CHAT, prompt], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def later(work, done):
+    def run():
+        try:
+            result = work()
+        except Exception as e:
+            result = e
+        GLib.idle_add(lambda: done(result) and False)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def button(label, action, suggested=False, tip=None):
+    made = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+    if suggested:
+        made.add_css_class("suggested-action")
+    if tip:
+        made.set_tooltip_text(tip)
+    made.connect("clicked", lambda *_: action())
+    return made
+
+
+def day(when):
+    return time.strftime("%Y-%m-%d", time.localtime(float(when or 0)))
+
+
+def open_file(path):
+    try:
+        Gio.AppInfo.launch_default_for_uri(Gio.File.new_for_path(path).get_uri(), None)
+    except GLib.Error:
+        pass
+
+
+class RecipesWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Recipes", default_width=620, default_height=720)
+        self.view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        site = Gtk.Button(label="Open the recipes site")
+        site.add_css_class("suggested-action")
+        site.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(SITE, None))
+        header.pack_start(site)
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
+        refresh.connect("clicked", lambda *_: self.rebuild())
+        header.pack_end(refresh)
+        self.view.add_top_bar(header)
+        self.set_content(self.view)
+        self.connect("notify::is-active", lambda *_: self.is_active() and self.rebuild())
+        self.rebuild()
+
+    def rebuild(self):
+        page = Adw.PreferencesPage()
+        used = mentor_recipes.used_load()
+
+        # what came from the site and was applied here
+        group = Adw.PreferencesGroup(title="Used on this computer", description="Recipes from the site that Mentor applied")
+        if not used:
+            group.add(Adw.ActionRow(title="None yet", subtitle="A recipe you download from the site and follow is listed here"))
+        for rid, entry in sorted(used.items(), key=lambda item: -float(item[1].get("applied", 0))):
+            row = Adw.ActionRow(title=GLib.markup_escape_text(entry.get("title", rid)))
+            self.say(row, entry)
+            if not entry.get("undone"):
+                row.add_suffix(button("Take it away", lambda rid=rid, entry=entry: ask(
+                    f"Take away the recipe “{entry.get('title', rid)}” from this computer. Its file is "
+                    f"{entry.get('path', '')}: follow its \"Take it away again\" section, with a preview first, and tell "
+                    f"me in plain words what you changed back. When it is really done, call recipe_used with taken_away set to {rid}.")))
+            for vote, label, tip in (("up", "\U0001F44D", "It worked"), ("down", "\U0001F44E", "It did not work")):
+                row.add_suffix(button(label, lambda rid=rid, vote=vote, row=row: self.rate(rid, vote, row), tip=tip))
+            group.add(row)
+        page.add(group)
+
+        # downloaded, and not applied
+        waiting, known = [], {e.get("sha") for e in used.values()}
+        downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or os.path.expanduser("~/Downloads")
+        for folder in (SITE_FOLDER, downloads):
+            try:
+                names = sorted(os.listdir(folder))
+            except OSError:
+                continue
+            for name in names:
+                path = os.path.join(folder, name)
+                if not name.endswith(".md") or not mentor_recipes.looks_like_recipe(path):
+                    continue
+                sha = mentor_recipes.sha_of(path)
+                if sha and sha not in known:  # the same recipe in both folders is listed once
+                    known.add(sha)
+                    waiting.append((name[:-3], path))
+        if waiting:
+            group = Adw.PreferencesGroup(title="Downloaded, not used yet")
+            for rid, path in waiting:
+                title = rid
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        title = next((l[2:].strip() for l in f if l.startswith("# ")), rid)
+                except OSError:
+                    pass
+                row = Adw.ActionRow(title=GLib.markup_escape_text(title), subtitle="Mentor looks at it with you before it changes anything")
+                row.add_suffix(button("Follow it", lambda path=path: ask(
+                    f"I want to use the recipe at {path}. Follow “Following a recipe made by someone else” in "
+                    "/etc/mentor/RECIPES.md from the first step: inspect it, give me the short report, and wait for my answer."),
+                    suggested=True))
+                group.add(row)
+            page.add(group)
+
+        # written here
+        mine = [(n, t, w) for n, t, w in mentor_recipes.listing()]
+        group = Adw.PreferencesGroup(title="Written here", description="Kept in Documents / Mentor recipes")
+        if not mine:
+            group.add(Adw.ActionRow(title="None yet", subtitle="After something works, Mentor offers to write down how it was done"))
+        for name, title, when in mine[:30]:
+            path = os.path.join(mentor_recipes.FOLDER, name)
+            row = Adw.ActionRow(title=GLib.markup_escape_text(title), subtitle=day(when))
+            row.add_suffix(button("Open", lambda path=path: open_file(path)))
+            row.add_suffix(button("Share", lambda path=path, title=title: ask(
+                f"I want to share my recipe “{title}” ({path}) on the recipes site. Look first whether the same one is "
+                "there, choose the category, show me exactly what would be posted, and wait for my yes.")))
+            group.add(row)
+        page.add(group)
+
+        self.view.set_content(page)
+
+    def say(self, row, entry):
+        said = {"up": "you said it worked", "down": "you said it did not work"}.get(entry.get("vote"), "not rated yet")
+        row.set_subtitle(f"Used {day(entry.get('applied'))}, " + ("taken away again" if entry.get("undone") else said))
+
+    def rate(self, rid, vote, row):
+        def send():
+            import mentor_hub
+            entry = mentor_recipes.used_load().get(rid, {})
+            mentor_hub.rate(rid, entry.get("sha", ""), vote)
+            mentor_recipes.used_vote(rid, vote)
+            return mentor_recipes.used_load().get(rid, {})
+
+        def done(result):
+            if isinstance(result, Exception):
+                row.set_subtitle("It could not be sent just now. Try again later.")
+            else:
+                self.say(row, result)
+        row.set_subtitle("Sending…")
+        later(send, done)
+
+
+class RecipesApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="org.mentor.Recipes", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.window = None
+
+    def do_command_line(self, _command_line):
+        if self.window is None:
+            self.window = RecipesWindow(self)
+        self.window.present()
+        return 0
+
+
+sys.exit(RecipesApp().run(sys.argv))

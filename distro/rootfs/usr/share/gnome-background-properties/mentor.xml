@@ -2,6 +2,15 @@
 <!DOCTYPE wallpapers SYSTEM "gnome-wp-list.dtd">
 <wallpapers>
   <wallpaper deleted="false">
+    <name>Blue waves</name>
+    <filename>/usr/share/backgrounds/mentor/blue-waves.jpg</filename>
+    <filename-dark>/usr/share/backgrounds/mentor/blue-waves.jpg</filename-dark>
+    <options>zoom</options>
+    <shade_type>solid</shade_type>
+    <pcolor>#0b1630</pcolor>
+    <scolor>#000000</scolor>
+  </wallpaper>
+  <wallpaper deleted="false">
     <name>Mentor in the mist</name>
     <filename>/usr/share/backgrounds/mentor/mentor-mist.jpg</filename>
     <filename-dark>/usr/share/backgrounds/mentor/mentor-mist.jpg</filename-dark>

@@ -1,0 +1,166 @@
+#!/usr/bin/python3
+"""Start looking at a recipe by itself when one has been downloaded.
+
+Runs for as long as the user is logged in (mentor-recipe-watch.service). Every few seconds it
+looks in ~/Downloads for a new Markdown file that has the form of a Mentor recipe
+(mentor_recipes.looks_like_recipe). When one has arrived whole, it leaves one notice, which the
+assistant sends on by itself: the agent inspects it and tells the user everything it would do,
+and waits for their yes. The user does not have to say "follow this recipe": pressing Download
+on the recipes site was the request. Nothing is changed by this program; it only hands the
+file's path over. The same recipe (same checksum) is handed over once.
+See /etc/mentor/RECIPES.md, "Downloading a recipe from the site".
+"""
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_recipes
+import mentor_tools
+
+HOME = os.path.expanduser("~")
+CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+BROWSER_PREFS = (os.path.join(CONFIG, "chromium"), os.path.join(CONFIG, "google-chrome"), os.path.join(CONFIG, "BraveSoftware", "Brave-Browser"))
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "recipe-watch.json")
+EVERY = 3        # seconds between looks
+RECENT = 600     # at start, files younger than this count as new
+KEEP = 200       # checksums remembered
+
+
+def folders():
+    """Where a download can have landed: the user's Downloads folder (wherever the system puts it), the folder the
+    browser is set to save in and the one it last saved in when it asks, and the places people pick by hand
+    (Desktop, Documents, the home folder itself). Looked up again each time, so a change of setting is followed."""
+    found = []
+
+    def add(path):
+        path = os.path.expanduser(str(path or ""))
+        if os.path.isabs(path) and os.path.isdir(path) and path not in found:
+            found.append(path)
+
+    try:
+        with open(os.path.join(CONFIG, "user-dirs.dirs"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.match(r'\s*XDG_(DOWNLOAD|DESKTOP|DOCUMENTS)_DIR="(.*)"', line)
+                if m:
+                    add(m.group(2).replace("$HOME", HOME))
+    except OSError:
+        pass
+    add(os.path.join(HOME, "Downloads"))
+    for base in BROWSER_PREFS:  # Chromium-family: every profile's Preferences
+        try:
+            profiles = [n for n in os.listdir(base) if n == "Default" or n.startswith("Profile ")]
+        except OSError:
+            continue
+        for profile in profiles:
+            try:
+                with open(os.path.join(base, profile, "Preferences"), encoding="utf-8", errors="replace") as f:
+                    prefs = json.load(f)
+            except (OSError, ValueError):
+                continue
+            add(prefs.get("download", {}).get("default_directory"))
+            add(prefs.get("savefile", {}).get("default_directory"))
+    try:  # Firefox, in case the user installs it
+        for profile in glob.glob(os.path.join(HOME, ".mozilla", "firefox", "*", "prefs.js")):
+            with open(profile, encoding="utf-8", errors="replace") as f:
+                m = re.search(r'"browser\.download\.(?:dir|lastDir)",\s*"([^"]+)"', f.read())
+            if m:
+                add(m.group(1))
+    except OSError:
+        pass
+    for path in (os.path.join(HOME, "Desktop"), os.path.join(HOME, "Documents"), HOME):
+        add(path)
+    # Mentor's own folder of recipes holds the user's own and the ones fetched by the agent: not looked at here.
+    own = os.path.realpath(mentor_recipes.FOLDER)
+    return [p for p in found if os.path.realpath(p) != own]
+
+
+def load():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def keep(state):
+    state["done"] = dict(sorted(state.get("done", {}).items(), key=lambda kv: kv[1])[-KEEP:])
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE + ".new", "w") as f:
+        json.dump(state, f)
+    os.replace(STATE + ".new", STATE)
+
+
+def hand_over(path, sha):
+    name = os.path.basename(path)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            gone = mentor_recipes.missing_needs(f.read())
+    except OSError:
+        gone = []
+    if gone:  # not for this computer: said at once, plainly, with no model and no report
+        what = ", ".join(gone)
+        mentor_tools.leave_notice(
+            "warning", "This recipe is not for you",
+            f"“{name}” is for {what}, and {what} is not installed on this computer. Nothing was done.")
+        return
+    mentor_tools.leave_notice(
+        "idea", "A recipe was downloaded",
+        f"“{name}”. Mentor is looking at it now. Nothing is changed before you have seen what it would do and said yes.",
+        f"The user just downloaded the recipe {path} from the recipes site; downloading it was the request, so do not "
+        "ask whether to follow it. Follow “Following a recipe made by someone else” in /etc/mentor/RECIPES.md from the "
+        "first step: recipe_inspect on that exact file, then give the report in plain words (short when there is nothing wrong with it), then wait for the user's "
+        "answer. Change nothing before that.",
+        auto=True)
+
+
+def main():
+    state = load()
+    done = state.setdefault("done", {})
+    sizes = {}
+    now = time.time()
+    known = set()  # folders already looked at once: what was in them then is not new
+    where, looked = [], 0.0
+    while True:
+        if time.time() - looked > 30:  # settings can change; the answer is cheap
+            where, looked = folders(), time.time()
+        files = []
+        for folder in where:
+            try:
+                names = [n for n in os.listdir(folder) if n.endswith(".md")]
+            except OSError:
+                continue
+            files += [os.path.join(folder, n) for n in names]
+            if folder not in known:
+                known.add(folder)
+                for path in files[-len(names):] if names else []:
+                    try:
+                        if os.path.getmtime(path) < time.time() - RECENT and mentor_recipes.sha_of(path):
+                            done[mentor_recipes.sha_of(path)] = now
+                    except OSError:
+                        pass
+        for path in files:
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            key = (st.st_size, st.st_mtime)
+            if sizes.get(path) != key:  # new, or still being written: look again next time
+                sizes[path] = key
+                continue
+            sha = mentor_recipes.sha_of(path)
+            if not sha or sha in done or not mentor_recipes.looks_like_recipe(path):
+                continue
+            done[sha] = time.time()
+            keep(state)
+            try:
+                hand_over(path, sha)
+            except Exception as e:  # one file that could not be handled must not end the watching
+                print(f"mentor-recipe-watch: {e}", file=sys.stderr)
+        time.sleep(EVERY)
+
+
+sys.exit(main())

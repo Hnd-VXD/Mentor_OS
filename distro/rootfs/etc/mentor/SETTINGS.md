@@ -30,6 +30,9 @@ Nothing in the window calls a model. "Ask Mentor" and "Let Mentor look" hand you
 |---|---|---|
 | Which warnings may not become a card | `~/.config/mentor/settings.json` | `"watch_off": ["disk", "refused"]`; the names are `security`, `refused`, `self`, `disk`, `failed`. The one switch for all warnings writes all five, or none |
 | Looking by itself at refused connections | the same file | `"auto_review": true` (the first value) or `false` |
+| Telling the recipes site about a harmful recipe | the same file | `"report_to_hub": true` (the first value) or `false`; the switch is "Tell the recipes site about harmful recipes" under More choices |
+| Which recipes were used here, and what the user said of them | `~/.local/state/mentor/recipes-used.json` | shown in the Recipes app (not in Mentor Settings), each with a thumb up, a thumb down and "Take it away" |
+| The green card that offers to write down what was built | the same file | `"offer_recipes": true` (the first value) or `false`; the switch is "Offer to write down what I built" under More choices, and the card has "Don't suggest this" |
 | The exact command in the password dialog | the same file | `"exact": false` (the first value) or `true` |
 | Tips on or off, kinds never to hear of | `~/.config/mentor/advice.json` | `{"off": false, "never": ["github"], "until": {…}}` (SUGGESTIONS.md) |
 | The firewall on or off | the service `nftables` (enabled and started, or stopped and disabled) | SECURITY.md |

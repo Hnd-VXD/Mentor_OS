@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Recipes
+Comment=The recipes used on this computer, the ones written here, and the recipes site
+Exec=/usr/local/bin/mentor-recipes
+Icon=org.mentor.Chat
+Terminal=false
+Categories=Utility;System;
+Keywords=recipes;mentor;share;undo;rate;

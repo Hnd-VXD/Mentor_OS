@@ -18,6 +18,8 @@ Started at login. Later invocations hand their request to the running one:
     mentor-chat "a request"                ask it
     mentor-chat --app chromium.desktop     ask about one application (from its right-click menu)
     mentor-chat --file PATH...             attach files or folders (from Files' right-click menu)
+    mentor-chat --ask                      bring the text box up over whatever is in front
+                                           (Alt+Space, Super+Z), or put it back
 """
 import json
 import math
@@ -40,6 +42,12 @@ try:  # what the engines read from outside is noted for the tools (mentor_securi
     import mentor_security
 except Exception:
     mentor_security = None
+try:  # what was built here, for the offer to write it down (RECIPES.md)
+    import mentor_journal
+    import mentor_recipes
+    import mentor_settings
+except Exception:
+    mentor_journal = mentor_recipes = mentor_settings = None
 
 APP_ID = "org.mentor.Chat"
 # Claude Code, Codex and the Antigravity CLI are not part of the system: each user's copy is
@@ -109,7 +117,11 @@ AGY_PROMPT = (
     "\n\nYou are run without a terminal, in a folder that is only your scratch space. Everything you do on "
     "this computer goes through the tools of the mentor server (call_mcp_tool with ServerName mentor). "
     "Never use your own run_command or file-writing tools: nobody can approve them here, and the attempt "
-    "ends your turn with nothing said. Name files by their path; links are not shown as links."
+    "ends your turn with nothing said. Name files by their path; links are not shown as links.\n\n"
+    "Your own file viewer (view_file) may open only what is inside this folder: attached/NAME for what the "
+    "user attached, and mentor-docs/NAME.md for Mentor's instruction files, which are also named "
+    "/etc/mentor/NAME.md in what you were told (open them as mentor-docs/NAME.md). For every other file "
+    "use the Mentor tool file_read. A file your viewer is not allowed to open ends your turn with nothing said."
 )
 # The picker, a menu in two levels: label on the button, engine, model, name in its provider's submenu.
 # The engines:
@@ -205,10 +217,11 @@ ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
 ADVICE_STATE_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "advice.json")
 ADVICE_KINDS = {"updates": "Waiting updates", "disk": "A disk that is filling", "failed": "Services that failed",
                 "news": "Arch Linux news", "gnome": "GNOME news", "apps": "New applications",
-                "github": "New projects on GitHub"}
+                "github": "New projects on GitHub", "recipes": "Recipes people found useful"}
 ADVICE_ICONS = {"updates": "software-update-available-symbolic", "disk": "drive-harddisk-symbolic",
                 "failed": "dialog-warning-symbolic", "news": "web-browser-symbolic", "gnome": "start-here-symbolic",
-                "apps": "view-app-grid-symbolic", "github": "applications-engineering-symbolic"}
+                "apps": "view-app-grid-symbolic", "github": "applications-engineering-symbolic",
+                "recipes": "emblem-favorite-symbolic"}
 WELCOME_PROMPT = (
     "This is the first start of Mentor for this user. Greet them in one sentence, then set the system up "
     "with them one topic at a time, asking before you change anything: language and keyboard layout; time "
@@ -229,7 +242,9 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
 .notice { border-radius: 14px; padding: 12px 16px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55); }
 .notice.warning { background: rgba(255, 214, 64, 0.30); color: #fff6cf; border: 1px solid rgba(255, 221, 87, 0.65); }
 .notice.problem { background: rgba(214, 40, 30, 0.34); color: #ffffff; border: 1px solid rgba(255, 99, 88, 0.75); }
+.notice.idea { background: rgba(48, 196, 120, 0.32); color: #f0fff6; border: 1px solid rgba(110, 235, 165, 0.80); }
 .notice button { color: inherit; text-shadow: none; }
+.notice.idea button.look { background: rgba(110, 235, 165, 0.36); font-weight: 600; }
 .notice.warning button.look { background: rgba(255, 221, 87, 0.26); }
 .notice.problem button.look { background: rgba(255, 99, 88, 0.34); }
 .advice-open { background: none; border: none; box-shadow: none; padding: 0; font-weight: inherit; }
@@ -358,6 +373,13 @@ def agy_folder(sandbox, instructions):
     folder = os.path.join(AGY_FOLDERS, sandbox)
     try:
         os.makedirs(os.path.join(folder, ".agents"), exist_ok=True)
+        # Mentor's instruction files, where its own file viewer may open them: it opens nothing
+        # outside the folder, and what it is told names them under /etc/mentor.
+        docs = os.path.join(folder, "mentor-docs")
+        os.makedirs(docs, exist_ok=True)
+        for name in os.listdir("/etc/mentor"):
+            if name.endswith(".md"):
+                shutil.copyfile(os.path.join("/etc/mentor", name), os.path.join(docs, name))
         with open(os.path.join(folder, "AGENTS.md"), "w") as f:
             f.write(instructions)
         with open(os.path.join(folder, ".agents", "mcp_config.json"), "w") as f:
@@ -478,6 +500,18 @@ def describe_tool(name, arguments):
     return name, detail if len(detail) <= 90 else detail[:89] + "\u2026"
 
 
+# The user's words of being pleased with what was done (English and Greek): the moment to offer a recipe.
+PLEASED = re.compile(r"(?i)\b(it\s+works?|works?\s+(now|great|fine|perfect)|worked|perfect|great|awesome|excellent|"
+                     r"thanks?|thank\s+you|nice|good\s+job|that'?s\s+it|fixed|done|exactly)\b|"
+                     r"\u03b4\u03bf\u03c5\u03bb\u03b5\u03cd|\u03c4\u03ad\u03bb\u03b5\u03b9|\u03b5\u03c5\u03c7\u03b1\u03c1\u03b9\u03c3\u03c4|"
+                     r"\u03bc\u03c0\u03c1\u03ac\u03b2\u03bf|\u03c9\u03c1\u03b1\u03af\u03b1|\u03ad\u03b3\u03b9\u03bd\u03b5")
+
+# What the agent is told with a question asked over a program (Alt+Space).
+ASKED_OVER = ("\n\n(Asked with the text box over the program I am using. The attached picture, if there is one, is "
+              "my screen as I see it now: look at it first. Answer in a few short sentences; it is shown in a small "
+              "bubble over my program.)")
+
+
 class Conversation(Gtk.Box):
     """One tab: a conversation with the agent, with its own history and its own running turn."""
 
@@ -498,6 +532,13 @@ class Conversation(Gtk.Box):
         self.quote = None  # words of the agent's that the next message is about
         self.workspace = window.workspace  # the workspace this conversation is the desktop of
         self.last_said = ""  # the agent's latest words, for the notification when it finishes unseen
+        self.quick = False  # this turn was asked with the text box over a program: its answer is shown there too
+        self.positive = False  # the user's last words were of being pleased: "it works", "thanks"
+        self.offered_after = ""  # the time of the last offer to write something down (journal time format)
+        self.turn_start = 0.0
+        self.turn_stamp = ""
+        self.rating_asked = set()  # checksums of the recipes that have had their "did it work?" card here
+        self.share_offered = set()  # recipes that have had their "share it?" card
         self.history = []  # what is shown, in a form that can be saved and shown again
         self.tool_items = {}  # tool_use id -> its item in the history
         # Trial changes made here stay apart from those of the other tabs.
@@ -578,8 +619,10 @@ class Conversation(Gtk.Box):
         for widget in (Gtk.Image(icon_name="mail-reply-sender-symbolic", pixel_size=16), self.quote_label, unquote):
             self.quote_bar.append(widget)
 
-        bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
-                         margin_top=6, margin_start=12, margin_end=12)
+        # The text box and what belongs to it. It can be lifted out and shown over the
+        # windows (DesktopWindow.toggle_ask), which is why it is kept by name.
+        bottom = self.bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                                       margin_top=6, margin_start=12, margin_end=12)
         bottom.append(self.subject_bar)
         bottom.append(self.quote_bar)
         bottom.append(self.attachment_bar)
@@ -587,7 +630,8 @@ class Conversation(Gtk.Box):
         body = Gtk.Overlay(child=self.scroller, vexpand=True)
         body.add_overlay(self.timeline_scroller)
         self.append(body)
-        self.append(Adw.Clamp(maximum_size=680, child=bottom))
+        self.bottom_home = Adw.Clamp(maximum_size=680, child=bottom)
+        self.append(self.bottom_home)
 
         # Until something is asked the wallpaper stays bare, except on the very first start.
         self.welcome = Gtk.Box(vexpand=True)
@@ -932,16 +976,18 @@ class Conversation(Gtk.Box):
         self.history.append(item)
         return self.add(label)
 
-    def add_notice(self, level, title, text, prompt=None, auto=False):
+    def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
-        problem, with a way to hand it to the agent. Not part of what was said to the agent."""
+        problem, green for an idea (something it suggests, such as writing down what was just
+        built), with a way to hand it to the agent. Not part of what was said to the agent.
+        `silence` is a function: the user does not want ideas of this kind (a button for it)."""
         heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
         heading.add_css_class("heading")
         body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64,
                          selectable=True, visible=bool(text))
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.START)
         card.add_css_class("notice")
-        card.add_css_class("problem" if level == "problem" else "warning")
+        card.add_css_class(level if level in ("problem", "idea") else "warning")
         card.append(heading)
         card.append(body)
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
@@ -949,8 +995,13 @@ class Conversation(Gtk.Box):
         dismiss.add_css_class("flat")
         dismiss.connect("clicked", lambda *_: self.messages.remove(card))
         buttons.append(dismiss)
+        if silence:
+            quiet = Gtk.Button(label="Don't suggest this")
+            quiet.add_css_class("flat")
+            quiet.connect("clicked", lambda *_: (silence(), self.messages.remove(card)))
+            buttons.append(quiet)
         if prompt:
-            look = Gtk.Button(label="Let Mentor look")
+            look = Gtk.Button(label=action)
             look.add_css_class("pill")
             look.add_css_class("look")
 
@@ -968,6 +1019,249 @@ class Conversation(Gtk.Box):
         if self.first_run and self.welcome:  # the card of a first start stays where it is
             self.messages.append(card)
             return card
+        return self.add(card)
+
+    def offer_recipe(self):
+        """After a turn that went well: when something was built here that took some doing, say
+        so with a green card and offer to write it down as a recipe (RECIPES.md). Never twice
+        for the same work, and never for a recipe that was only followed."""
+        if not (mentor_journal and mentor_recipes and mentor_settings) or not self.got_result or self.trouble:
+            return
+        try:
+            if not mentor_settings.get("offer_recipes"):
+                return
+            if any(not v.get("own") for v in mentor_recipes._load(self.sandbox).values()):
+                return  # a recipe of someone else's was followed here: it is theirs, not ours to hand on
+            entries, _left_out = mentor_journal.entries("", 0, True)
+        except Exception:
+            return
+        mine = [e for e in entries if e.get("conversation") == self.sandbox and str(e.get("time", "")) > self.offered_after]
+        done = [e for e in mine if e.get("kind") == "change" and e.get("ok", True)
+                and not str(e.get("tool", "")).startswith("recipe_")
+                and e.get("tool") not in ("change_undo", "file_restore", "suggestions_restore")]
+        # Anything that was changed and worked is worth a recipe: one flag in one file is the
+        # most reusable kind. Never twice for the same work (offered_after); "Don't suggest this" ends it.
+        if not done:
+            return
+        self.offered_after = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        self.add_notice(
+            "idea", "That worked. Want to keep how it was done?",
+            "I can write down how this was built, step by step, so you can use it again or give it to other "
+            "Mentor users. It takes a minute, and I show you what it says before anything is kept.",
+            "Write a recipe of what we just built in this conversation. Follow /etc/mentor/RECIPES.md: get the "
+            "material with recipe_material, keep only what ended up working, show me in a few plain sentences what "
+            "it says, and save it with recipe_save.",
+            action="Write it down",
+            silence=lambda: mentor_settings.put("offer_recipes", False))
+
+    def offer_share(self):
+        """A recipe of the user's own was written down in this turn: a green card with what it
+        does in one line (written by the agent, the user can change it), everything that would
+        be shared, and a Share button. The button is the user's yes to exactly this text; the
+        agent then finds the category and posts (recipe_share accepts the card's yes, see
+        RECIPES.md, "Sharing one")."""
+        if not (mentor_recipes and mentor_settings) or self.trouble or not self.got_result:
+            return
+        try:
+            if not mentor_settings.get("offer_recipes"):
+                return
+            state = mentor_recipes._load(self.sandbox)
+            for name, title, _when in mentor_recipes.listing():
+                path = os.path.join(mentor_recipes.FOLDER, name)
+                if path in self.share_offered or os.path.getmtime(path) < self.turn_start - 2:
+                    continue
+                if not state.get(os.path.realpath(path), {}).get("own"):
+                    continue
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+                self.share_offered.add(path)
+                self.share_card(path, title, text)
+                return
+        except Exception:
+            return
+
+    def share_card(self, path, title, text):
+        summary = next((l.lstrip("> ").strip() for l in text.splitlines() if l.startswith(">")), "")
+        heading = Gtk.Label(label=f"Share \u201c{title}\u201d with other Mentor users?", xalign=0, wrap=True, max_width_chars=64)
+        heading.add_css_class("heading")
+        body = Gtk.Label(
+            label="It is saved on your computer. If you share it, it goes on the public recipes site and cannot be taken "
+                  "back. It names no one. The site checks it by itself before showing it. This is what it does:",
+            xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64)
+        said = Gtk.Entry(text=summary, hexpand=True, max_length=200)
+        everything = Gtk.Label(label=text, xalign=0, wrap=True, selectable=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
+        scroll = Gtk.ScrolledWindow(max_content_height=260, propagate_natural_height=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroll.set_child(everything)
+        expander = Gtk.Expander(label="See everything that would be shared")
+        expander.set_child(scroll)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.START)
+        card.add_css_class("notice")
+        card.add_css_class("idea")
+        for part in (heading, body, said, expander):
+            card.append(part)
+        buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
+        dismiss = Gtk.Button(label="Not now")
+        dismiss.add_css_class("flat")
+        dismiss.connect("clicked", lambda *_: self.messages.remove(card))
+        share = Gtk.Button(label="Share it")
+        share.add_css_class("pill")
+        share.add_css_class("look")
+
+        def go(*_):
+            if self.busy:  # the request could not be handed over now: the card stays for later
+                return
+            share.set_sensitive(False)
+            said.set_sensitive(False)
+            try:
+                line = " ".join(said.get_text().split())
+                if line and line != summary:
+                    lines = text.split("\n")
+                    for i, l in enumerate(lines):
+                        if l.startswith(">"):
+                            lines[i] = "> " + line
+                            break
+                    with open(path, "w", encoding="utf-8", newline="\n") as f:
+                        f.write("\n".join(lines))
+                sha = mentor_recipes.sha_of(path)
+                mentor_recipes.mark_checked(self.sandbox, path, sha, {}, own=True)
+                share_path = os.path.join(REQUESTS, re.sub(r"[^A-Za-z0-9._-]", "_", self.sandbox) + ".share")
+                try:
+                    with open(share_path, encoding="utf-8") as f:
+                        approved = json.load(f)
+                except (OSError, ValueError):
+                    approved = {}
+                approved["card:" + sha] = time.time() - 1  # what the card showed, said yes to
+                os.makedirs(REQUESTS, exist_ok=True)
+                with open(share_path, "w", encoding="utf-8") as f:
+                    json.dump(approved, f)
+            except OSError:
+                share.set_sensitive(True)
+                return
+            self.send(
+                f"The user pressed Share on the card for the recipe {path}. They saw the exact text and said yes on the "
+                "card, so do not ask them again. Do this: recipe_hub_look with that path, to see if the same recipe is "
+                "already on the site (if it is, say so in one sentence and do not post); choose the category (a new "
+                "sub-category only when none fits); then recipe_share with confirmed true straight away. Finish with one "
+                "short, plain sentence about what happens next. RECIPES.md, \"Sharing one\".",
+                shown=f"Share the recipe \u201c{title}\u201d")
+            self.messages.remove(card)
+        share.connect("clicked", go)
+        buttons.append(dismiss)
+        buttons.append(share)
+        card.append(buttons)
+        self.window.note(self, f"Share the recipe {title}?", False)
+        self.add(card)
+
+    def note_used(self):
+        """A recipe from the site was followed in this turn and something was changed: remember it
+        as used here (the Recipes app lists those) and ask how it went, with a card. Wherever the
+        file is (the agent fetched it, or the user downloaded it with the browser): which recipe
+        of the site it is, is told by its checksum, not by its name or its folder."""
+        if not (mentor_journal and mentor_recipes) or not self.got_result or self.trouble:
+            return
+        try:
+            state = mentor_recipes._load(self.sandbox)
+            entries, _left_out = mentor_journal.entries("", 0, True)
+        except Exception:
+            return
+        changed = [e for e in entries if e.get("conversation") == self.sandbox and str(e.get("time", "")) >= self.turn_stamp  # the same second counts: times are whole seconds
+                   and e.get("kind") == "change" and e.get("ok", True)
+                   and not str(e.get("tool", "")).startswith("recipe_") and e.get("tool") not in ("change_undo", "file_restore")]
+        if not changed:
+            return
+        # The recipe of someone else's that was inspected most recently in this conversation.
+        mine = [(float(v.get("when", 0)), path, v) for path, v in state.items()
+                if isinstance(v, dict) and not v.get("own") and v.get("checked")]
+        if not mine:
+            return
+        _when, path, v = max(mine)
+        sha = v.get("checked")
+        if sha in self.rating_asked:
+            return
+        self.rating_asked.add(sha)
+
+        def work():
+            try:
+                import mentor_hub
+                listed = mentor_hub.on_hub(sha)
+                if not listed:
+                    try:  # published a moment ago: the list kept here may be older than it
+                        listed = next((r for r in mentor_hub.get_index(True)["recipes"] if str(r.get("sha256", "")).lower() == sha), None)
+                    except Exception:
+                        listed = None
+                if not listed:
+                    return  # not a recipe of the site (a file from somewhere else): nothing to rate
+                rid, title, kept = str(listed["id"]), str(listed.get("title") or listed["id"]), path
+                try:  # a copy in Mentor's own folder, so that taking it away still works when the download is gone
+                    folder = os.path.join(mentor_recipes.FOLDER, "from the site")
+                    os.makedirs(folder, exist_ok=True)
+                    kept = os.path.join(folder, rid + ".md")
+                    if os.path.realpath(kept) != os.path.realpath(path):
+                        shutil.copyfile(path, kept)
+                except OSError:
+                    kept = path
+                mentor_recipes.used_note(rid, title, sha, kept)
+                GLib.idle_add(lambda: self.rating_card(rid, title, again=False) and False)
+            except Exception:
+                pass
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def rating_card(self, rid, title, again=False):
+        """"Did it work?" with thumbs. The answer goes to the recipes site, signed, as one vote;
+        the site shows it, and Mentors give less attention to recipes that did not work."""
+        heading = Gtk.Label(label=f"Did \u201c{title}\u201d work for you?", xalign=0, wrap=True, max_width_chars=64)
+        heading.add_css_class("heading")
+        text = ("You used this recipe a while ago and have not said how it went. " if again else "") + \
+               "Your answer helps other Mentor users know which recipes to trust. It names no one."
+        body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.START)
+        card.add_css_class("notice")
+        card.add_css_class("idea")
+        card.append(heading)
+        card.append(body)
+        buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
+        later = Gtk.Button(label="Not sure yet")
+        later.add_css_class("flat")
+        no = Gtk.Button(label="\U0001F44E It did not")
+        no.add_css_class("flat")
+        yes = Gtk.Button(label="\U0001F44D It worked")
+        yes.add_css_class("pill")
+        yes.add_css_class("look")
+
+        def done_card(said):
+            body.set_text(said)
+            card.remove(buttons)
+            return GLib.SOURCE_REMOVE
+
+        def vote(which):
+            for b in (later, no, yes):
+                b.set_sensitive(False)
+
+            def work():
+                import mentor_hub
+                try:
+                    entry = mentor_recipes.used_load().get(rid, {})
+                    mentor_hub.rate(rid, entry.get("sha", ""), which)
+                    mentor_recipes.used_vote(rid, which)
+                    said = "Thank you. Your answer was sent."
+                except Exception as e:
+                    mentor_recipes.used_asked(rid)
+                    said = "It could not be sent just now (" + str(e)[:80] + "). Mentor will ask again later."
+                GLib.idle_add(done_card, said)
+            import threading
+            threading.Thread(target=work, daemon=True).start()
+
+        def not_now(*_):
+            mentor_recipes.used_asked(rid)
+            self.messages.remove(card)
+        later.connect("clicked", not_now)
+        no.connect("clicked", lambda *_: vote("down"))
+        yes.connect("clicked", lambda *_: vote("up"))
+        for b in (later, no, yes):
+            buttons.append(b)
+        card.append(buttons)
+        self.window.note(self, f"Did the recipe {title} work?", False)
         return self.add(card)
 
     def add_note(self, text):
@@ -1013,6 +1307,15 @@ class Conversation(Gtk.Box):
         text = text or "Look at this."
         self.entry.set_text("")
         prompt = text
+        self.positive = bool(PLEASED.search(text)) and shown is None  # their own words, not a card's request
+        self.turn_start = time.time()
+        self.turn_stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        # Asked with the text box over a program (Alt+Space): the agent is told so, and the
+        # answer is shown there as well.
+        self.quick = self.window.asking(self)
+        if self.quick:
+            prompt += ASKED_OVER
+            self.window.ask_say("Mentor is looking\u2026")
         if self.subject:
             name, description = self.subject
             prompt = f"This is about {description}.\n\n{text}"
@@ -1097,7 +1400,9 @@ class Conversation(Gtk.Box):
                 said, listed, _paths = prompt.rpartition("\n\nAttached files:\n")
                 prompt = said + listed + "\n".join(agy_attach(folder, path) or path for path in attached)
             # A message that begins with a slash is still a message, not one of its commands.
-            argv = [AGY, "-p", prompt, "--output-format", "stream-json", "--disable-slash-commands", *folders]
+            # /etc/mentor too (read only for the user): the files it is told to read are there.
+            argv = [AGY, "-p", prompt, "--output-format", "stream-json", "--disable-slash-commands",
+                    "--add-dir", "/etc/mentor", *folders]
             if model:
                 argv += ["--model", model]
             if self.sessions.get("gemini"):
@@ -1261,6 +1566,8 @@ class Conversation(Gtk.Box):
             self.last_said = block["text"].strip()
             self.add_text(block["text"])
         elif kind == "tool_use":
+            if self.quick:  # say over the program that something is happening
+                self.window.ask_say("Mentor is working\u2026")
             note_reading(self.sandbox, block.get("name", "?"), block.get("input"))
             self.add_tool(block.get("id"), block.get("name", "?"), block.get("input"))
         elif kind == "tool_result":
@@ -1294,6 +1601,14 @@ class Conversation(Gtk.Box):
         self.process = None
         self.set_busy(False)
         self.window.save_conversations()
+        self.offer_recipe()
+        self.offer_share()
+        self.note_used()
+        if self.quick:  # asked with the text box over a program: the answer is shown above it
+            self.quick = False
+            said = self.last_said or self.trouble or "Mentor did not answer. The chat on the desktop says more."
+            self.window.ask_say(re.sub(r"[*`#]", "", said))
+            return
         self.window.on_finished(self)
 
 
@@ -1391,6 +1706,8 @@ class DesktopWindow(Adw.ApplicationWindow):
 
         # Top right: a bell, there only while the system has something to suggest. It does
         # not speak up by itself: what it holds is read when the user opens it.
+        # The text box lifted out over the windows (toggle_ask): its window, whose it is, the picture taken.
+        self.ask_window = self.ask_of = self.ask_shot = None
         self.advice_count = Gtk.Label()
         bell = Gtk.Box(spacing=6)
         bell.append(Gtk.Image(icon_name="preferences-system-notifications-symbolic"))
@@ -1491,6 +1808,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.advice_state_monitor = Gio.File.new_for_path(ADVICE_STATE_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
         self.advice_state_monitor.connect("changed", lambda *_: GLib.timeout_add(800, self.refresh_advice))
         self.refresh_advice()
+        # A recipe that was used and never rated is asked about again, a long while after.
+        GLib.timeout_add_seconds(90, self.ask_rating_again)
+        GLib.timeout_add_seconds(6 * 3600, lambda: self.ask_rating_again() or True)
         # What was put off comes back when its time is up, without anything else having to happen.
         GLib.timeout_add_seconds(3600, lambda: self.refresh_advice() or True)
         self.check_sign_in()
@@ -1862,7 +2182,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.advice_popover.popdown()
         self.put_off(suggestion, days=7)
         prompt, shown = suggestion["prompt"], suggestion.get("title") or "Look into it"
-        if suggestion.get("kind") in ("news", "gnome", "apps", "github"):
+        if suggestion.get("kind") in ("news", "gnome", "apps", "github", "recipes"):
             prompt = ("Review this, and tell me what we can make of it: what in it is of use to me and to this "
                       "system, and what we could do with it, most worthwhile first.\n\n" + prompt)
             shown = "Review this, what can we make of it: " + shown
@@ -1934,6 +2254,104 @@ class DesktopWindow(Adw.ApplicationWindow):
             if conversation.workspace != index and conversation.untouched and not conversation.first_run:
                 self.tabs.close_page(self.tabs.get_page(conversation))
         self.focus_entry()
+
+    # --- the text box over the windows (Alt+Space) --------------------------------
+
+    def asking(self, conversation):
+        """Whether this conversation's text box is the one shown over the windows now."""
+        return self.ask_of is conversation
+
+    def ask_say(self, text):
+        """What is shown above the text box while it is over the windows."""
+        if self.ask_of is None:
+            return
+        self.ask_words.set_label(text if len(text) <= 1500 else text[:1499] + "\u2026")
+        self.ask_bubble.set_visible(bool(text))
+
+    def toggle_ask(self):
+        """Lift the text box of the conversation in front out of the desktop and show it
+        over whatever the user is looking at, or put it back. A picture of the screen, as
+        it was before the box came up, is attached for the agent to see what they see."""
+        if self.ask_of is not None:
+            self.close_ask()
+            return
+        conversation = self.current
+        if conversation is None or self.unchosen or self.stack.get_visible_child_name() == "sign-in":
+            self.get_application().shell("Show")  # nothing to ask yet: to the desktop, to connect an engine
+            return
+        os.makedirs(PASTED_DIR, exist_ok=True)
+        shot = os.path.join(PASTED_DIR, time.strftime("screen-%H%M%S.png"))
+        try:  # the shell takes it; nothing else may on Wayland
+            self.get_application().get_dbus_connection().call_sync(
+                "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "Screenshot",
+                GLib.Variant("(s)", (shot,)), None, Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error:
+            shot = None
+        if self.ask_window is None:
+            self.ask_words = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True,
+                                       max_width_chars=70)
+            self.ask_bubble = card(self.ask_words, visible=False, margin_start=12, margin_end=12)
+            self.ask_bubble.add_css_class("said")
+            self.ask_slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, width_request=720)
+            box.append(self.ask_bubble)
+            box.append(self.ask_slot)
+            self.ask_window = Gtk.Window(application=self.get_application(), title="Ask Mentor", decorated=False,
+                                         resizable=False, child=box)
+            self.ask_window.add_css_class("agent")
+            self.ask_window.add_css_class("ask-over")
+            keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            keys.connect("key-pressed", lambda _c, keyval, *_: keyval == Gdk.KEY_Escape and self.close_ask() is None)
+            self.ask_window.add_controller(keys)
+            self.ask_window.connect("close-request", lambda *_: self.close_ask() is None)
+            # A click anywhere else puts the box back where it lives, on the desktop.
+            self.ask_window.connect("notify::is-active", lambda window, _p: (
+                not window.is_active() and GLib.timeout_add(200, self.ask_left)))
+        self.ask_of, self.ask_shot = conversation, shot
+        self.ask_say("")
+        conversation.bottom_home.set_child(None)
+        self.ask_slot.append(conversation.bottom)
+        if shot and os.path.isfile(shot):
+            conversation.attach(shot)
+            conversation.entry.set_placeholder_text("Ask Mentor about what you see\u2026   (Esc puts this away)")
+        self.ask_window.present()
+        conversation.entry.grab_focus()
+
+    def ask_left(self):
+        """The window with the text box is no longer the one in front. (A moment after, so
+        that a menu of its own opening and closing does not count.)"""
+        if self.ask_of is not None and self.ask_window and not self.ask_window.is_active():
+            self.close_ask()
+        return GLib.SOURCE_REMOVE
+
+    def close_ask(self):
+        conversation, self.ask_of = self.ask_of, None
+        if conversation is None:
+            return
+        conversation.quick = False  # an answer still to come is told of as always: in the chat, with a notification
+        self.ask_window.set_visible(False)
+        self.ask_slot.remove(conversation.bottom)
+        conversation.bottom_home.set_child(conversation.bottom)
+        # A picture that was taken for a question never asked is not kept for the next one.
+        if self.ask_shot and conversation.attachments == [os.path.abspath(self.ask_shot)]:
+            conversation.attachments = []
+            while chip := conversation.attachment_bar.get_first_child():
+                conversation.attachment_bar.remove(chip)
+            conversation.attachment_bar.set_visible(False)
+        conversation.entry.set_placeholder_text("Ask Mentor to do something\u2026")
+
+    def ask_rating_again(self):
+        """A recipe from the site that was applied here and never rated: one card, in the open
+        conversation if it is quiet. Not more than one at a time, and each only again after days."""
+        try:
+            due = mentor_recipes.used_due() if mentor_recipes and mentor_settings and mentor_settings.get("offer_recipes") else None
+            if due and self.current and not self.current.busy:
+                rid, entry = due
+                mentor_recipes.used_asked(rid)  # asked now, whatever the answer
+                self.current.rating_card(rid, entry.get("title", rid), again=True)
+        except Exception:
+            pass
+        return GLib.SOURCE_REMOVE
 
     def for_request(self):
         """The conversation a request from outside goes to: the open tab if nothing was
@@ -2282,7 +2700,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             if not title or not self.current:
                 continue
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
-            self.current.add_notice("problem" if notice.get("level") == "problem" else "warning", title, text, prompt,
+            self.current.add_notice(notice.get("level") if notice.get("level") in ("problem", "idea") else "warning", title, text, prompt,
                                     auto=notice.get("auto") is True)
             shown.append((title, text))
         if shown:
@@ -2574,7 +2992,9 @@ class AssistantApp(Adw.Application):
 
     def do_command_line(self, command_line):
         arguments = command_line.get_arguments()[1:]
-        window = self.get_active_window()
+        # The desktop's own window, not "the active one": once the text box has been lifted over
+        # a program (Alt+Space) the active window can be that second window, and not this one.
+        window = next((w for w in self.get_windows() if isinstance(w, DesktopWindow)), None)
         if window is None:  # first start: at login, or summoned after a crash
             window = DesktopWindow(self)
             window.present()
@@ -2586,6 +3006,9 @@ class AssistantApp(Adw.Application):
         if arguments[:1] == ["--workspace"] and len(arguments) == 2 and arguments[1].isdigit():
             if int(arguments[1]) != window.workspace:
                 window.go_to_workspace(int(arguments[1]))
+            return 0
+        if arguments == ["--ask"]:  # Alt+Space, Super+Z
+            window.toggle_ask()
             return 0
         if arguments[:1] == ["--app"] and len(arguments) == 2:
             window.for_request().set_subject(app_id=arguments[1])

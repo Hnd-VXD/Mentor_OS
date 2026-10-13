@@ -17,11 +17,12 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 | Part (name in `Status`) | What the user has | What of the shell it leans on |
 |---|---|---|
 | `desktop` | The assistant is the desktop: under every window, on every workspace, as large as the work area. A click on it or Super+A clears the windows away; Escape or Super+A brings them back. | `Meta.Window.set_type(DESKTOP)`, `stick()`, `move_resize_frame`; `global.display` signals `window-created`, `workareas-changed`; `Main.layoutManager` `monitors-changed`, `getWorkAreaForMonitor`. The window is known by `wm_class` / `gtk_application_id` `org.mentor.Chat`. |
-| `service` | Nothing to see: the D-Bus object `/org/mentor/Shell` (`org.mentor.Shell`: `Screenshot`, `Show`, `Restore`, `Toggle`, `Status`) on the shell's session bus name. screen_capture, Super+A and the assistant use it. | `Shell.Screenshot`, `Gio.DBusExportedObject`. |
+| `service` | Nothing to see: the D-Bus object `/org/mentor/Shell` (`org.mentor.Shell`: `Screenshot`, `Show`, `Restore`, `Toggle`, `Status`, `Ask`) on the shell's session bus name. screen_capture, Super+A and the assistant use it. | `Shell.Screenshot`, `Gio.DBusExportedObject`. |
 | `start on the desktop` | A session begins on the desktop, not in the overview. | `Main.layoutManager._startingUp` (private), signal `startup-complete`, `Main.overview.hide()`. |
 | `system menu switches` | "Full Screen" and "Taskbar" in the system menu. Full Screen is lit while the window on Windows is full screen. | `QuickToggle`, `SystemIndicator`, `Main.panel.statusArea.quickSettings.addExternalIndicator`. The state comes from `/run/mentor/fullscreen`, written by mentor-clipboard. |
 | `app grid click` | A click on the empty space of the app grid closes it; the click that closes an open folder does not. | `Main.overview._overview.controls.appDisplay` and its `_currentDialog` (both private), `Clutter.ClickGesture` (older: `ClickAction`). |
 | `search` | Typing in the overview offers "Ask Mentor" with the typed words. | The search provider interface of `Main.overview.searchController`. |
+| (in `desktop`) the text box over a program | The assistant's own text box, lifted out of the desktop by Alt+Space and Super+Z (`mentor-chat --ask`), is a second window of the assistant: `_adopt` makes it float above the others, on every workspace, in the middle of the bottom of the screen (`_float`). All of it is in ASKBAR.md. | `Meta.Window.make_above`, `stick`, `move_frame`, `Main.activateWindow`. |
 | `app menus` | "Ask Mentor…" in the right-click menu of every app icon. | `AppMenu.prototype.open` and `addAction` (overridden with `InjectionManager`). |
 
 Inside `desktop` (class `DesktopLayer`) there is more that leans on the shell:

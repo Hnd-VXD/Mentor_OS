@@ -14,6 +14,7 @@ This is for the agent, written so that a small model can follow it. The assistan
 - **Asking about something**: "Ask Mentor…" on an app icon makes the next message be about that application (a bar "About NAME" over the text box); on a file in Files it attaches the file; typing in the overview offers "Ask Mentor" with the typed words. Selecting words of the agent's and choosing to quote them makes the next message be about those words.
 - **A timeline** at the right edge: a tick per message of the user's, which shows the message when pointed at and scrolls to it when clicked.
 - **A right-click menu on the desktop**: Hide/Show chat, Clear chat…, New conversation, History…, Suggestions…, Mentor Settings… (SETTINGS.md), and Change Background…, Display Settings, Settings.
+- **Over a program**: Alt+Space or Super+Z lifts this text box out of the desktop and shows it over the program in front, with a picture of the screen attached; the answer also shows in a bubble above it, and a click elsewhere puts the box back (ASKBAR.md).
 - **History**: everything ever said, searchable, also after a conversation was cleared.
 - **Nothing is lost at logout**: the conversations come back at the next login.
 - **A notification "Mentor has finished"** when an answer arrives while an application covers the desktop.
@@ -67,7 +68,7 @@ What it keeps, all in the user's folders:
 Anything that has something to tell the user leaves a file in `~/.local/state/mentor/notices/`:
 
 ```
-NAME.json   {"level": "warning" or "problem", "title": "…", "text": "…", "prompt": "…", "auto": true}
+NAME.json   {"level": "warning", "problem" or "idea", "title": "…", "text": "…", "prompt": "…", "auto": true}
 ```
 
 written under another name and renamed, so that it is whole when it is seen. `prompt` is what goes to the agent when the user presses Let Mentor look; leave it out and the card has only Dismiss. With `"auto": true` the assistant sends the prompt on by itself as soon as the card is shown, when an engine is chosen (only `mentor-firewall-watch` leaves such notices; SECURITY.md). The assistant watches the folder (`show_notices` in `DesktopWindow`), shows each file once as a card in the conversation in front (`Conversation.add_notice`; the colours are `.notice.warning` and `.notice.problem` in `CSS`), and removes the file. A notice left while the assistant is not running is shown when it starts.

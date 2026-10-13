@@ -19,6 +19,8 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
+| `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
+| `ASKBAR.md` | the assistant's text box lifted over the program in front (Alt+Space, Super+Z), with a picture of the screen for the agent |
 | `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
 | `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
@@ -96,6 +98,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor-agent` | the engine for the NVIDIA and OpenAI models | yes | next message | ENGINES.md |
 | `/etc/xdg/autostart/mentor-desktop.desktop` | starts mentor-chat at login | yes | login | ASSISTANT.md |
 | `/usr/local/bin/mentor-settings` | Mentor Settings: the window for the user's choices about safety, suggestions, warnings, and the journal to read | yes | next time it is opened | SETTINGS.md |
+| `/usr/local/bin/mentor-recipes` | the Recipes app: used recipes (thumbs, take away), written here (open, share), downloaded and not used, and a button to the site | user | next start | RECIPES.md |
+| `/usr/share/applications/org.mentor.Recipes.desktop` | puts the Recipes app in the application grid | yes | at once | RECIPES.md |
 | `/usr/share/applications/org.mentor.Settings.desktop` | puts it in the application grid | yes | at once | SETTINGS.md |
 | `/usr/local/lib/mentor/mentor_settings.py` | reads and writes the file of those choices (`~/.config/mentor/settings.json`) | user | next call | SETTINGS.md |
 | `/usr/share/applications/org.mentor.Chat.desktop` | gives the assistant its name and icon | yes | login | ASSISTANT.md |
@@ -108,8 +112,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
-| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus | yes | login (session_logout) | DESKTOP.md |
-| `/etc/dconf/db/local.d/00-mentor`, `/etc/dconf/profile/user` | the defaults: enabled extensions, favourites, keys, dark style, wallpaper. Run `dconf update` after | yes | login | DESKTOP.md |
+| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus, the ask bar | yes | login (session_logout) | DESKTOP.md |
+| `/etc/dconf/db/local.d/00-mentor`, `/etc/dconf/profile/user` | the defaults: enabled extensions, favourites, keys (Super+A, Alt+Space and Super+Z for the ask bar), dark style, wallpaper. Run `dconf update` after | yes | login | DESKTOP.md |
 | `/usr/share/nautilus-python/extensions/mentor.py` | "Ask Mentor…" in Files | yes | `nautilus -q` | DESKTOP.md |
 | `/usr/share/backgrounds/mentor/*.jpg`, `/usr/share/gnome-background-properties/mentor.xml` | the wallpapers and their list in Settings | yes | at once | DESKTOP.md |
 | `/etc/chromium/policies/managed/mentor.json` | Chromium comes with uBlock Origin Lite | yes | next start of Chromium | DESKTOP.md |
@@ -122,13 +126,15 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
-| `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, journal, log, boot, …` | user | at once | TOOLS.md |
+| `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, journal, recipes, security, settings, ask, log, boot, …` | user | at once | TOOLS.md |
 | `/usr/local/bin/mentor-mcp` | gives the tools to Claude Code, Codex and the Antigravity CLI (MCP) | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
 | `/usr/local/lib/mentor/mentor_security.py` | the safety checks; what was read from outside; what is said before a password | user | next message | SECURITY.md |
 | `/usr/local/lib/mentor/mentor-explain` | the window with the plain words, and the yellow warning, before a password | user | next call | SECURITY.md |
 | `/etc/nftables.conf`, `/etc/nftables.d/00-example.nft`, `/etc/systemd/system/nftables.service.d/mentor.conf` | the firewall: what comes in from other computers is refused; and its service made to count as running while the rules are loaded. `systemctl reload nftables` after | yes | reload | SECURITY.md |
+| `/usr/local/lib/mentor/mentor_hub.py` | the client of the recipes site: its own key, signed posts and reports, reading the list, finding similar recipes | user | next message | RECIPES.md |
+| `/usr/local/lib/mentor/mentor_recipes.py` | the material for a recipe from the journal, the folder, and the check for secrets | user | next message | RECIPES.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-sandbox`, `mentor-root-shell`, `mentor-write-file`, `mentor-apply`, `mentor-undo` | the doors to root, one for each password dialog and its words | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
@@ -169,6 +175,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor-watch` | checks Mentor itself, the user's safety (SECURITY.md), the disk and failed services; what it finds becomes a yellow or red card in the chat | user | next run | SUGGESTIONS.md |
 | `/usr/local/lib/mentor/mentor-firewall-watch` | has the agent look, by itself and once for each burst, when the firewall turns other computers away | user | `systemctl --user restart mentor-firewall-watch` | SECURITY.md |
 | `/etc/systemd/user/mentor-firewall-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | SECURITY.md |
+| `/usr/local/lib/mentor/mentor-recipe-watch` | starts looking at a recipe by itself when one is downloaded, wherever the browser saves it; says "not for you" when a program it needs is missing | user | `systemctl --user restart mentor-recipe-watch` | RECIPES.md |
+| `/etc/systemd/user/mentor-recipe-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | RECIPES.md |
 | `/etc/systemd/user/mentor-watch.service`, `.timer` | runs it three minutes after login and every six hours | yes | `systemctl --user daemon-reload` | SUGGESTIONS.md |
 
 ## What was done when the system was built, besides the files
@@ -192,7 +200,7 @@ systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-b
 systemctl enable mentor-advisor.timer
 systemctl enable nftables.service          # the firewall
 systemctl enable mentor-root.socket        # who asks for the password, saying what for
-systemctl --global enable mentor-watch.timer mentor-firewall-watch.service
+systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
 
 # Where the root side writes its log
 install -d -m 755 /var/log/mentor
@@ -219,7 +227,7 @@ Run these in order. Each line says what a good answer looks like.
 | `mentor journal -n 3` | the last changes under their requests, or that none is written yet |
 | `mentor security` | "ok  the firewall refuses what comes in…"; findings are for the user to hear of |
 | `systemctl is-enabled mentor-advisor.timer mentor-boot-check.service` | `enabled` twice |
-| `systemctl --user is-enabled mentor-watch.timer mentor-firewall-watch.service` | `enabled` twice |
+| `systemctl --user is-enabled mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service` | `enabled` three times |
 | `systemctl is-active mentor-root.socket` | `active` |
 | `pgrep -af bin/mentor-chat` | one line: the assistant is running |
 | `pgrep -af lib/mentor/mentor-clipboard` | one line |

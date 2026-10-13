@@ -149,14 +149,24 @@ class Engine:
             # must be allowed the Mentor tools in its own settings (as mentor-chat does).
             folder = os.path.join(STATE, "agy", SANDBOX)
             os.makedirs(os.path.join(folder, ".agents"), exist_ok=True)
+            docs = os.path.join(folder, "mentor-docs")  # where its own file viewer may open them
+            os.makedirs(docs, exist_ok=True)
+            for name in os.listdir("/etc/mentor"):
+                if name.endswith(".md"):
+                    shutil.copyfile(os.path.join("/etc/mentor", name), os.path.join(docs, name))
             with open(os.path.join(folder, "AGENTS.md"), "w") as f:
                 f.write(system + "\n\nNever use your own run_command or file-writing tools: nobody can approve "
                                  "them here, and the attempt ends your turn. Everything goes through the tools "
-                                 "of the mentor server (call_mcp_tool with ServerName mentor).")
+                                 "of the mentor server (call_mcp_tool with ServerName mentor).\n\n"
+                                 "Your own file viewer (view_file) may open only what is inside this folder: "
+                                 "Mentor's instruction files are there as mentor-docs/NAME.md (the same as "
+                                 "/etc/mentor/NAME.md in what you were told). For every other file use the "
+                                 "Mentor tool file_read. A file your viewer may not open ends your turn.")
             with open(os.path.join(folder, ".agents", "mcp_config.json"), "w") as f:
                 json.dump({"mcpServers": {"mentor": {"command": MCP_SERVER, "env": {"MENTOR_SANDBOX": SANDBOX}}}}, f)
             allow_mentor_tools()
-            argv = ["agy", "-p", message, "--output-format", "stream-json", "--disable-slash-commands"]
+            argv = ["agy", "-p", message, "--output-format", "stream-json", "--disable-slash-commands",
+                    "--add-dir", "/etc/mentor"]
             if self.session:
                 argv += ["--conversation", self.session]
             return argv, folder, {}
