@@ -72,6 +72,53 @@ def _supported_scales(size):
     return []
 
 
+def cmd_keyring(args):
+    """Make the "login" keyring open by itself again: give it no password. It gets one when the user
+    types their password at the login screen (after a log out) on a system built before that was
+    turned off (customize.sh); from then on every start asks for it. The user types the password
+    here, once. What is kept in the keyring stays."""
+    import getpass
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def call(path, interface, method, value, reply):
+        return bus.call_sync("org.freedesktop.secrets", path, interface, method, value, GLib.VariantType(reply),
+                             Gio.DBusCallFlags.NONE, 30000, None).unpack()
+
+    path = "/org/freedesktop/secrets/collection/login"
+    try:
+        locked = bus.call_sync("org.freedesktop.secrets", path, "org.freedesktop.DBus.Properties", "Get",
+                               GLib.Variant("(ss)", ("org.freedesktop.Secret.Collection", "Locked")),
+                               GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 10000, None).unpack()[0]
+    except GLib.Error as e:
+        sys.exit(f"The keyring cannot be reached: {e.message}")
+    keyring = os.path.expanduser("~/.local/share/keyrings/login.keyring")
+    try:
+        with open(keyring, "rb") as f:
+            plain = f.read(9) == b"[keyring]"
+    except OSError:
+        plain = False
+    if plain:
+        print("The login keyring has no password already: it opens by itself.")
+        return
+    _out, session = call("/org/freedesktop/secrets", "org.freedesktop.Secret.Service", "OpenSession",
+                         GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))), "(vo)")
+    password = getpass.getpass("Your password (the one you log in with; it is not shown): ")
+
+    def secret(text):
+        return (session, b"", text.encode(), "text/plain")
+    try:
+        bus.call_sync("org.freedesktop.secrets", "/org/freedesktop/secrets",
+                      "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface", "ChangeWithMasterPassword",
+                      GLib.Variant("(o(oayays)(oayays))", (path, secret(password), secret(""))),
+                      None, Gio.DBusCallFlags.NONE, 30000, None)
+    except GLib.Error as e:
+        sys.exit("That did not work: the password is not the keyring's (" + e.message.split(":")[-1].strip() + "). Nothing was changed.")
+    print("Done. The login keyring opens by itself again, and what was in it is kept.")
+
+
 def cmd_scale(args):
     """Scale the desktop the way the host's screen is scaled, so that it is drawn sharp.
 
@@ -317,6 +364,8 @@ def cmd_log(args):
 
 parser = argparse.ArgumentParser(prog="mentor", description=__doc__)
 sub = parser.add_subparsers(required=True)
+p = sub.add_parser("keyring", help="make the login keyring open by itself again (asks your password once)")
+p.set_defaults(func=cmd_keyring)
 p = sub.add_parser("tools", help="list the tools an agent gets")
 p.set_defaults(func=cmd_tools)
 p = sub.add_parser("call", help="call one tool, e.g. mentor call package_search '{\"query\": \"gimp\"}'")

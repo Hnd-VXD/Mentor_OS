@@ -808,6 +808,9 @@ def _told_the_hub(report, counts, sha):
 
 def recipe_inspect(a):
     path = os.path.realpath(os.path.expanduser(a["path"]))
+    if path.startswith("/etc/mentor/") or path.startswith("/usr/local/"):
+        return 1, ("That is one of Mentor's own files, not a recipe: it is not inspected. Read it with file_read. "
+                   "recipe_inspect is for a recipe someone gave the user (a download, a file they attached).")
     report, counts, sha = mentor_recipes.inspect(path)
     if sha is None:
         return 1, report
@@ -1077,10 +1080,17 @@ def recipe_save(a):
 
 def recipe_used(a):
     """The recipes of the site that were applied on this computer, with what the user said of each."""
-    if a.get("taken_away"):
-        if str(a["taken_away"]) not in mentor_recipes.used_load():
-            return 1, "That recipe is not in the list of the ones used here."
-        mentor_recipes.used_undone(str(a["taken_away"]))
+    for key, off in (("taken_away", True), ("put_back", False)):
+        name = str(a.get(key) or "")
+        if not name:
+            continue
+        own = os.path.basename(name) if name.endswith(".md") else ""
+        if own and os.path.isfile(os.path.join(mentor_recipes.FOLDER, own)):
+            mentor_recipes.off_set(own, off)  # one of the user's own recipes, switched off or on
+        elif name in mentor_recipes.used_load():
+            (mentor_recipes.used_undone if off else mentor_recipes.used_put_back)(name)
+        else:
+            return 1, "That recipe is not one used here, nor one of the user's own."
     used = mentor_recipes.used_load()
     if not used:
         return 0, "No recipe from the site has been applied on this computer yet."
@@ -1463,8 +1473,9 @@ TOOLS = {
         "The recipes from the recipes site that were applied on this computer, when, whether they were taken away, "
         "and what the user rated each. Use it when they ask which recipes they have used, or want to undo one. After "
         "you have really taken one away (its \"Take it away again\" section, applied), call it with `taken_away` set "
-        "to the recipe's id so that it is listed as taken away.",
-        _schema({"taken_away": _STR}), recipe_used),
+        "to the recipe's id (or, for one of the user's own recipes, its file name) so that it shows as switched off; "
+        "after you have really put one back (its steps applied again), call it with `put_back` the same way.",
+        _schema({"taken_away": _STR, "put_back": _STR}), recipe_used),
     "recipe_rate": (
         "Give the recipes site the user's own rating (vote: up or down) of a recipe they used. Only when they have "
         "said which recipe and how it went; never to rate one for them.",
@@ -1540,7 +1551,9 @@ JOURNAL = {
     "run_root_command": lambda a, out: f"as root: {a['command']}",
     "recipe_share": lambda a, out: f"posted the recipe {os.path.basename(a['path'])} to the recipes site" if out.startswith("Posted") else None,
     "recipe_fetch": lambda a, out: f"downloaded the recipe {a['id']} from the recipes site" if out.startswith("Downloaded") else None,
-    "recipe_used": lambda a, out: f"noted that the recipe {a['taken_away']} was taken away" if a.get("taken_away") and not out.startswith("That recipe") else None,
+    "recipe_used": lambda a, out: None if out.startswith("That recipe") else (
+        f"noted that the recipe {a['taken_away']} was switched off" if a.get("taken_away") else
+        f"noted that the recipe {a['put_back']} was switched on again" if a.get("put_back") else None),
     "recipe_update": lambda a, out: f"sent a new text of the recipe {a['id']} to the recipes site" if out.startswith("Sent") else None,
     "recipe_withdraw": lambda a, out: f"asked the recipes site to take off the recipe {a['id']}" if out.startswith("Sent") else None,
     "recipe_rate": lambda a, out: f"rated the recipe {a['id']} {a['vote']} on the recipes site" if out.startswith("Rated") else None,

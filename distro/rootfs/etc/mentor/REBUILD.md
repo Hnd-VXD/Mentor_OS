@@ -210,7 +210,7 @@ install -d -m 755 /var/log/mentor
 gtk-update-icon-cache -q -f /usr/share/icons/hicolor
 ```
 
-Also done there, each explained in the file named: the name of the system in `/etc/os-release` (NAME="Mentor", ID=mentor, ID_LIKE=arch); a keyring without a password for new users, in `/etc/skel/.local/share/keyrings/` (with automatic login there is no password to unlock one with); the user in group `wheel` and `%wheel ALL=(ALL:ALL) ALL` in `/etc/sudoers.d/10-wheel`; the start-up picture (BOOT.md); the boot loader entries (BOOT.md). Read `customize.sh` itself for the exact lines.
+Also done there: `/etc/pam.d/gdm-password` and `gdm-autologin` are gdm's own files without `pam_gnome_keyring.so`, so that typing the password at the login screen (after a log out) does not lock the "login" keyring with it; a keyring that got a password that way is opened again with `mentor keyring` (the user types the password once). Also done there, each explained in the file named: the name of the system in `/etc/os-release` (NAME="Mentor", ID=mentor, ID_LIKE=arch); a keyring without a password for new users, in `/etc/skel/.local/share/keyrings/` (with automatic login there is no password to unlock one with); the user in group `wheel` and `%wheel ALL=(ALL:ALL) ALL` in `/etc/sudoers.d/10-wheel`; the start-up picture (BOOT.md); the boot loader entries (BOOT.md). Read `customize.sh` itself for the exact lines.
 
 Do not use `systemctl enable` on the `mentor-boot-*` units through run_root_command to get around a refusal; ask the user to run the line.
 

@@ -518,6 +518,19 @@ def similarity(a_text, b_text):
 # says), and a Mentor compares it with its own system before anything is built.
 
 SETUP_ROW = re.compile(r"(?m)^\|\s*Made on\s*\|\s*(.+?)\s*\|\s*$")
+MODEL_ROW = re.compile(r"(?mi)^\|\s*Written by\s*\|\s*(.+?)\s*\|\s*\n?")
+
+
+def writer_model():
+    """The model the conversation that is saving a recipe runs on, as the assistant noted it (mentor-chat,
+    note_model), or "" when it is not known."""
+    name = os.environ.get("MENTOR_SANDBOX") or ""
+    try:
+        with open(os.path.join(mentor_journal.REQUESTS, re.sub(r"[^A-Za-z0-9._-]", "_", name) + ".model"), encoding="utf-8") as f:
+            text = f.read(120)
+    except (OSError, AttributeError):
+        return ""
+    return re.sub(r"[^A-Za-z0-9 .()/+-]", "", text).strip()[:80]
 KERNEL_THINGS = re.compile(r"mkinitcpio|modprobe|insmod|/boot/|/etc/kernel|\bgrub\b|systemd-boot|linux-(lts|zen)")
 
 
@@ -577,8 +590,52 @@ def local_setup():
             "gnome_full": facts.get("gnome-shell", ""), "kernel_full": facts.get("kernel", "")}
 
 
+def fork(path, based_on=""):
+    """A copy of a recipe (one downloaded, or one used) in Documents/Mentor recipes, for the user to improve:
+    without the site's header, with a "Based on" row naming the recipe of the site it was made from, so
+    that when it is shared the site shows it as a version of that one. Returns the new path; an existing
+    file is never overwritten."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if text.startswith("---\n") and "\n---" in text[4:]:
+        text = text[text.find("\n---", 4) + 4:].lstrip("\n")
+    text = re.sub(r"(?mi)^\|\s*Based on\s*\|.*\|\s*\n?", "", text)
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", based_on or ""):
+        row = f"| Based on | {based_on} |"
+        divider = re.search(r"(?m)^\|\s*-{3,}\s*\|\s*-{3,}\s*\|\s*$", text)
+        if divider:
+            text = text[:divider.end()] + "\n" + row + text[divider.end():]
+        else:
+            lines = text.split("\n")
+            i = 1 if lines and lines[0].startswith("# ") else 0
+            while i < len(lines) and (not lines[i].strip() or lines[i].startswith(">")):
+                i += 1
+            text = "\n".join(lines[:i]) + "\n| | |\n|---|---|\n" + row + "\n\n" + "\n".join(lines[i:])
+    title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), os.path.basename(path)[:-3])
+    os.makedirs(FOLDER, exist_ok=True)
+    base = slug(title) + "-my-version"
+    dest, n = os.path.join(FOLDER, base + ".md"), 2
+    while os.path.exists(dest):
+        dest, n = os.path.join(FOLDER, f"{base}-{n}.md"), n + 1
+    with open(dest, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    return dest
+
+
 def stamp_setup(text):
-    """The text with its "Made on" row made true: this system's GNOME and kernel, and today."""
+    """The text with its "Made on" row made true (this system's GNOME and kernel, and today), and its
+    "Written by" row: the model that wrote it, from the system, never from the text. A "Written by" the
+    text brought itself is taken out when the model is not known."""
+    text = MODEL_ROW.sub("", text)
+    text = _stamp_made_on(text)
+    model = writer_model()
+    if model:
+        made = SETUP_ROW.search(text)
+        text = text[:made.end()] + "\n| Written by | " + model + " |" + text[made.end():]
+    return text
+
+
+def _stamp_made_on(text):
     facts = system_facts()
     kernel = re.match(r"[\d.]+", facts.get("kernel", ""))
     row = f"| Made on | Mentor, GNOME {facts.get('gnome-shell', 'unknown')}, kernel {kernel.group(0) if kernel else 'unknown'}, {time.strftime('%Y-%m-%d')} |"
@@ -689,3 +746,38 @@ def used_due(now=None):
            and now - float(e.get("asked", 0)) > ASK_AGAIN_DAYS * 86400]
     due.sort(key=lambda item: float(item[1].get("applied", 0)))
     return due[0] if due else None
+
+
+# --- the user's own recipes that are switched off: what they built was taken away, and can be put back
+OFF = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "recipes-off.json")
+
+
+def off_load():
+    try:
+        with open(OFF, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def off_set(name, off):
+    """Note one of the user's own recipes (its file name in FOLDER) as switched off, or on again."""
+    data = off_load()
+    if off:
+        data[name] = time.time()
+    else:
+        data.pop(name, None)
+    try:
+        os.makedirs(os.path.dirname(OFF), exist_ok=True)
+        with open(OFF, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+    except OSError:
+        pass
+
+
+def used_put_back(rid):
+    data = used_load()
+    if rid in data:
+        data[rid]["undone"] = 0
+        used_save(data)

@@ -46,6 +46,17 @@ lock-on-idle=false
 lock-after=false
 EOF
 chmod 600 "$keyrings"/*
+# The login screen does not touch the keyring. After a log out, the password is typed at the login
+# screen, and gdm's PAM gives it to gnome-keyring, which then locks "login" with it: the next
+# automatic login cannot open it, and a box asks for it at every start. Ours has no password and
+# opens by itself, so the login screen has nothing to do with it (the daemon is started by systemd).
+# Copies of gdm's own files without that module; /etc/pam.d goes before /usr/lib/pam.d.
+for f in gdm-password gdm-autologin; do
+    if [ -f "/usr/lib/pam.d/$f" ]; then
+        # replaced by pam_permit, not deleted: these files jump over a number of lines ([success=N])
+        sed -E 's/^([a-z-]+[[:space:]]+[^[:space:]]+[[:space:]]+)pam_gnome_keyring\.so.*/\1pam_permit.so/' "/usr/lib/pam.d/$f" > "/etc/pam.d/$f"
+    fi
+done
 
 # User
 if ! id "$MENTOR_USER" &>/dev/null; then

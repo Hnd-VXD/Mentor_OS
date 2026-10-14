@@ -6,6 +6,7 @@ Nothing here calls a model. "Take it away", "Share" and "Follow it" hand a reque
 on the desktop; the thumbs send one signed vote to the site (mentor_hub.rate).
 """
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -25,10 +26,19 @@ SITE = "https://mentor-recipes.netlify.app"
 SITE_FOLDER = os.path.join(mentor_recipes.FOLDER, "from the site")
 
 
+def short_words(prompt):
+    """What the user sees of a request handed to the assistant: its first sentence, without the paths."""
+    first = re.split(r"(?<=[^\d])[.:](?:\s|$)", prompt, maxsplit=1)[0]
+    first = re.sub(r"\s*\(/[^)]*\)", "", first)            # "(/home/admin/...md)"
+    first = re.sub(r"\s(at|is)\s/\S*?([^/\s]+)\.md\b", " \u201c\\2\u201d", first)  # "at /home/.../x.md" -> the quoted name
+    return first if len(first) <= 110 else first[:109] + "\u2026"
+
+
 def ask(prompt):
-    """Hand a request to the assistant on the desktop."""
+    """Hand a request to the assistant on the desktop. The chat shows the user its first sentence; the
+    rest (the steps, the file, the tool to call) is for the agent."""
     try:
-        subprocess.Popen([CHAT, prompt], start_new_session=True, stdin=subprocess.DEVNULL,
+        subprocess.Popen([CHAT, "--as", short_words(prompt), prompt], start_new_session=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
@@ -65,9 +75,49 @@ def open_file(path):
         pass
 
 
+ROW = re.compile(r"(?m)^\|\s*([A-Za-z][A-Za-z ]{1,20}?)\s*\|\s*(.+?)\s*\|\s*$")
+SHOWN = ("Needs", "Touches", "Risk", "Made on", "Written by", "Based on")
+
+
+def details(path):
+    """(title, one line of what it does, [(name, value)] of the rows worth showing) of a recipe file."""
+    title, summary, rows = os.path.basename(path)[:-3], "", []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read(60000)
+    except OSError:
+        return title, summary, rows
+    if text.startswith("---\n") and "\n---" in text[4:]:  # the site's header
+        text = text[text.find("\n---", 4) + 4:]
+    title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), title)
+    summary = next((l.lstrip("> ").strip() for l in text.splitlines() if l.startswith(">")), "")
+    found = {m.group(1).strip(): m.group(2) for m in ROW.finditer(text)}
+    rows = [(k, found[k]) for k in SHOWN if found.get(k)]
+    return title, summary, rows
+
+
+class WidePage(Gtk.ScrolledWindow):
+    """A page of groups, like Adw.PreferencesPage but as wide as the window allows (up to 1100 pixels):
+    the standard page stops at about 600, which leaves rows of buttons squeezed in a wide window."""
+
+    def __init__(self):
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24,
+                           margin_start=12, margin_end=12)
+        self.set_child(Adw.Clamp(maximum_size=1100, tightening_threshold=900, child=self.box))
+
+    def add(self, group):
+        self.box.append(group)
+
+
 class RecipesWindow(Adw.ApplicationWindow):
+    """Two tabs (from the site, and the user's own), one search over both, and a row for each recipe
+    that opens to say what it does. Built for hundreds: rows are only hidden by the search, never rebuilt."""
+
     def __init__(self, app):
-        super().__init__(application=app, title="Recipes", default_width=620, default_height=720)
+        super().__init__(application=app, title="Recipes", default_width=680, default_height=760)
+        self.rows = []  # (row, the words it can be found by)
+        self.built = 0.0
         self.view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         site = Gtk.Button(label="Open the recipes site")
@@ -77,33 +127,69 @@ class RecipesWindow(Adw.ApplicationWindow):
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh")
         refresh.connect("clicked", lambda *_: self.rebuild())
         header.pack_end(refresh)
+        self.stack = Adw.ViewStack()
+        self.site_bin, self.mine_bin = Adw.Bin(), Adw.Bin()
+        self.stack.add_titled_with_icon(self.site_bin, "site", "From the site", "folder-download-symbolic")
+        self.stack.add_titled_with_icon(self.mine_bin, "mine", "Mine", "document-edit-symbolic")
+        header.set_title_widget(Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE))
         self.view.add_top_bar(header)
+        self.search = Gtk.SearchEntry(placeholder_text="Search recipes", hexpand=True,
+                                      margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        self.search.connect("search-changed", lambda *_: self.filter())
+        self.view.add_top_bar(self.search)
+        self.view.set_content(self.stack)
         self.set_content(self.view)
-        self.connect("notify::is-active", lambda *_: self.is_active() and self.rebuild())
+        # Back to the window: look again, but not more than twice a minute (and the search stays as it was).
+        self.connect("notify::is-active", lambda *_: self.is_active() and time.time() - self.built > 30 and self.rebuild())
         self.rebuild()
 
+    # --- rows ---------------------------------------------------------------------
+
+    def recipe_row(self, title, subtitle, summary, rows, extra=""):
+        """A row that opens to say what the recipe does, like a card on the site."""
+        row = Adw.ExpanderRow(title=GLib.markup_escape_text(title), subtitle=GLib.markup_escape_text(subtitle))
+        lines = [GLib.markup_escape_text(summary or "It does not say what it does in one line.")]
+        if rows:
+            lines.append("<small>" + "\n".join(f"<b>{GLib.markup_escape_text(k)}</b>  {GLib.markup_escape_text(v)}" for k, v in rows) + "</small>")
+        label = Gtk.Label(label="\n\n".join(lines), use_markup=True, wrap=True, xalign=0, selectable=True,
+                          margin_start=14, margin_end=14, margin_top=10, margin_bottom=10)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(label)
+        row.add_row(box)
+        row.inside = box
+        self.rows.append((row, " ".join([title, summary, extra] + [v for _k, v in rows]).lower()))
+        return row
+
+    def filter(self):
+        words = self.search.get_text().lower().split()
+        for row, hay in self.rows:
+            row.set_visible(all(w in hay for w in words))
+
+    # --- the two tabs -------------------------------------------------------------
+
     def rebuild(self):
-        page = Adw.PreferencesPage()
+        self.built = time.time()
+        self.rows = []
         used = mentor_recipes.used_load()
 
-        # what came from the site and was applied here
+        site = WidePage()
         group = Adw.PreferencesGroup(title="Used on this computer", description="Recipes from the site that Mentor applied")
         if not used:
             group.add(Adw.ActionRow(title="None yet", subtitle="A recipe you download from the site and follow is listed here"))
         for rid, entry in sorted(used.items(), key=lambda item: -float(item[1].get("applied", 0))):
-            row = Adw.ActionRow(title=GLib.markup_escape_text(entry.get("title", rid)))
+            title, summary, rows = details(entry.get("path", ""))
+            row = self.recipe_row(entry.get("title") or title, "", summary, rows, rid)
             self.say(row, entry)
-            if not entry.get("undone"):
-                row.add_suffix(button("Take it away", lambda rid=rid, entry=entry: ask(
-                    f"Take away the recipe “{entry.get('title', rid)}” from this computer. Its file is "
-                    f"{entry.get('path', '')}: follow its \"Take it away again\" section, with a preview first, and tell "
-                    f"me in plain words what you changed back. When it is really done, call recipe_used with taken_away set to {rid}.")))
-            for vote, label, tip in (("up", "\U0001F44D", "It worked"), ("down", "\U0001F44E", "It did not work")):
+            row.add_suffix(self.recipe_switch(not entry.get("undone"), entry.get("title") or rid, entry.get("path", ""), rid, row))
+            # an opening row shows each new button before the ones already there: added from the right
+            for vote, label, tip in (("down", "\U0001F44E", "It did not work"), ("up", "\U0001F44D", "It worked")):
                 row.add_suffix(button(label, lambda rid=rid, vote=vote, row=row: self.rate(rid, vote, row), tip=tip))
+            path_used = entry.get("path", "")
+            row.add_suffix(button("Improve", lambda path=path_used, title=entry.get("title") or title, rid=rid, row=row:
+                                  self.improve_copy(path, title, rid, row)))
             group.add(row)
-        page.add(group)
+        site.add(group)
 
-        # downloaded, and not applied
         waiting, known = [], {e.get("sha") for e in used.values()}
         downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or os.path.expanduser("~/Downloads")
         for folder in (SITE_FOLDER, downloads):
@@ -118,69 +204,161 @@ class RecipesWindow(Adw.ApplicationWindow):
                 sha = mentor_recipes.sha_of(path)
                 if sha and sha not in known:  # the same recipe in both folders is listed once
                     known.add(sha)
-                    waiting.append((name[:-3], path))
-        if waiting:
-            group = Adw.PreferencesGroup(title="Downloaded, not used yet")
-            for rid, path in waiting:
-                title = rid
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as f:
-                        title = next((l[2:].strip() for l in f if l.startswith("# ")), rid)
-                except OSError:
-                    pass
-                row = Adw.ActionRow(title=GLib.markup_escape_text(title), subtitle="Mentor looks at it with you before it changes anything")
-                row.add_suffix(button("Follow it", lambda path=path: ask(
-                    f"I want to use the recipe at {path}. Follow “Following a recipe made by someone else” in "
-                    "/etc/mentor/RECIPES.md from the first step: inspect it, give me the short report, and wait for my answer."),
-                    suggested=True))
-                group.add(row)
-            page.add(group)
-
-        # written here
-        mine = [(n, t, w) for n, t, w in mentor_recipes.listing()]
-        group = Adw.PreferencesGroup(title="Written here", description="Kept in Documents / Mentor recipes")
-        if not mine:
-            group.add(Adw.ActionRow(title="None yet", subtitle="After something works, Mentor offers to write down how it was done"))
-        for name, title, when in mine[:30]:
-            path = os.path.join(mentor_recipes.FOLDER, name)
-            row = Adw.ActionRow(title=GLib.markup_escape_text(title), subtitle=day(when))
-            row.add_suffix(button("Open", lambda path=path: open_file(path)))
-            row.add_suffix(button("Share", lambda path=path, title=title: ask(
-                f"I want to share my recipe “{title}” ({path}) on the recipes site. Look first whether the same one is "
-                "there, choose the category, show me exactly what would be posted, and wait for my yes.")))
+                    waiting.append(path)
+        group = Adw.PreferencesGroup(title="Downloaded, not used yet", description="Mentor looks at each with you before it changes anything")
+        if not waiting:
+            group.add(Adw.ActionRow(title="None", subtitle="Press Download on a recipe on the site, and it is here"))
+        for path in waiting:
+            title, summary, rows = details(path)
+            row = self.recipe_row(title, os.path.basename(os.path.dirname(path)), summary, rows)
+            row.add_suffix(button("Follow it", lambda path=path: ask(
+                f"I want to use the recipe at {path}. Follow \u201cFollowing a recipe made by someone else\u201d in "
+                "/etc/mentor/RECIPES.md from the first step: inspect it, give me the short report, and wait for my answer."),
+                suggested=True))
+            row.add_suffix(button("Improve", lambda path=path, title=title, row=row: self.improve_copy(path, title, None, row)))
             group.add(row)
-        page.add(group)
+        site.add(group)
+        self.site_bin.set_child(site)
 
-        # published by this Mentor: found on the site by its key, filled in when the list has come
-        self.shared = Adw.PreferencesGroup(title="Shared on the site", description="Recipes you posted. Only you can change them")
-        self.shared_wait = Adw.ActionRow(title="Looking at the site\u2026")
-        self.shared.add(self.shared_wait)
-        page.add(self.shared)
+        # the user's own recipes, one row each; the ones that are also on the site say so, with
+        # what can be done there (Update, Remove), when the site's list has come
+        mine_page = WidePage()
+        self.mine_group = Adw.PreferencesGroup(
+            title="My recipes", description="Kept in Documents / Mentor recipes. The ones on the site are public, and only you can change them")
+        self.mine_rows = {}  # title, in lower case -> (row, share button, update button)
+        mine = mentor_recipes.listing()
+        off = mentor_recipes.off_load()
+        self.mine_none = None
+        if not mine:
+            self.mine_none = Adw.ActionRow(title="None yet", subtitle="After something works, Mentor offers to write down how it was done")
+            self.mine_group.add(self.mine_none)
+        for name, title, when in mine:
+            path = os.path.join(mentor_recipes.FOLDER, name)
+            _t, summary, rows = details(path)
+            row = self.recipe_row(title, day(when), summary, rows)
+            row.day = day(when)
+            row.add_suffix(self.recipe_switch(name not in off, title, path, name, row))
+            # an opening row shows each new button before the ones already there: added from the right
+            update = button("Update", lambda: None)
+            update.set_visible(False)
+            row.add_suffix(update)
+            share = button("Share", lambda path=path, title=title: ask(
+                f"I want to share my recipe \u201c{title}\u201d ({path}) on the recipes site. Look first whether the same one is "
+                "there, choose the category, show me exactly what would be posted, and wait for my yes."))
+            row.add_suffix(share)
+            row.add_suffix(button("Improve", lambda path=path, title=title: ask(
+                f"I want to improve my recipe \u201c{title}\u201d ({path}). Read it, then ask me what I want to change or add, "
+                "and suggest what you think could be better (clearer steps, what it needs, how to check it, how to take it away, "
+                "anything that did not work when I tried it). Change that file, keeping the form of a recipe, and tell me in "
+                "plain words what changed. If it is also on the recipes site, tell me I can send the new version with "
+                "Update, in the Recipes app."), suggested=True))
+            row.add_suffix(button("Open", lambda path=path: open_file(path)))
+            # (the switch is added first, so that it is the last on the right)
+            self.mine_group.add(row)
+            self.mine_rows.setdefault(title.strip().lower(), (row, share, update))
+        mine_page.add(self.mine_group)
+        self.mine_bin.set_child(mine_page)
         later(self.fetch_shared, self.show_shared)
-
-        self.view.set_content(page)
+        self.filter()
 
     def fetch_shared(self):
         import mentor_hub
         return mentor_hub.mine(mentor_hub.get_index())
 
     def show_shared(self, result):
-        group = self.shared
-        group.remove(self.shared_wait)
-        if isinstance(result, Exception):
-            group.add(Adw.ActionRow(title="The site cannot be reached just now", subtitle=GLib.markup_escape_text(str(result)[:120])))
-            return
-        if not result:
-            group.add(Adw.ActionRow(title="None yet", subtitle="When you share a recipe and it passes the site's check, it is listed here"))
+        """Mark the user's recipes that are on the site, in the same list. One that is on the site but
+        no longer on this computer gets a row of its own."""
+        if isinstance(result, Exception) or not result:
             return
         for entry in result:
             rid, title = entry["id"], entry.get("title") or entry["id"]
             votes = f"{entry.get('up', 0)} up, {entry.get('down', 0)} down" if (entry.get("up") or entry.get("down")) else "not rated yet"
-            row = Adw.ActionRow(title=GLib.markup_escape_text(title),
-                                subtitle=GLib.markup_escape_text(votes + (", updated " + entry["updated"] if entry.get("updated") else "")))
-            row.add_suffix(button("Update", lambda rid=rid, title=title, row=row: self.update(rid, title, row), suggested=True))
-            row.add_suffix(button("Remove", lambda rid=rid, title=title, row=row: self.withdraw(rid, title, row)))
-            group.add(row)
+            said = "On the site, " + votes + (", updated " + entry["updated"] if entry.get("updated") else "")
+            found = self.mine_rows.get(title.strip().lower())
+            if found:
+                row, share, update = found
+                row.set_subtitle(GLib.markup_escape_text(f"{row.day} \u00b7 {said}"))
+                share.set_visible(False)
+            else:
+                setup = entry.get("setup") or {}
+                made = ", ".join(x for x in (f"GNOME {setup['gnome']}" if setup.get("gnome") else "",
+                                             f"kernel {setup['kernel']}" if setup.get("kernel") else "") if x)
+                rows = [(k, v) for k, v in (("Made on", made), ("Written by", entry.get("model") or ""),
+                                            ("Category", entry.get("category") or "")) if v]
+                row = self.recipe_row(title, said + " (not on this computer)", entry.get("summary") or "", rows, rid)
+                update = button("Update", lambda: None)
+                row.add_suffix(update)
+                if self.mine_none is not None:
+                    self.mine_group.remove(self.mine_none)
+                    self.mine_none = None
+                self.mine_group.add(row)
+            update.set_visible(True)
+            update.add_css_class("suggested-action")
+            update.connect("clicked", lambda _b, rid=rid, title=title, row=row: self.update(rid, title, row))
+            remove = Gtk.Button(label="Remove it from the site", halign=Gtk.Align.START, margin_start=14, margin_bottom=12)
+            remove.add_css_class("destructive-action")
+            remove.connect("clicked", lambda _b, rid=rid, title=title, row=row: self.withdraw(rid, title, row))
+            row.inside.append(remove)
+        self.filter()
+
+    def recipe_switch(self, on, title, path, key, row):
+        """On: what the recipe built is on this computer. Off: the assistant takes it away, with the recipe's own
+        "Take it away again" section; on again, it puts it back with its steps. Both with the usual preview, and
+        the password where one is needed. The switch shows what was last done, not what is asked."""
+        switch = Gtk.Switch(active=on, valign=Gtk.Align.CENTER, tooltip_text="On: in use on this computer. Off: taken away")
+
+        def flipped(widget, _param):
+            if widget.get_active() == on:
+                return
+            switch.set_sensitive(False)
+            if widget.get_active():
+                row.set_subtitle("Mentor is putting it back, in the chat")
+                ask(f"Switch the recipe \u201c{title}\u201d back on. Its file is {path}. It was switched off, not removed: "
+                    "turn on again what was turned off (enable the extension, start the service, set the setting back). "
+                    "Only if something it needs is gone, apply that part of its steps again, with a preview first. Keep "
+                    "it short: do not search the system or read Mentor's own files for this. Tell me in one or two "
+                    f"sentences what you switched on, then call recipe_used with put_back set to {key}.")
+            else:
+                row.set_subtitle("Mentor is switching it off, in the chat")
+                ask(f"Switch the recipe \u201c{title}\u201d off. Its file is {path}. Switching off is not removing: turn off "
+                    "what it added (disable the extension, stop the service, set the setting back) and keep every file, "
+                    "so that it can be switched on again in a moment. Do not delete anything. If it cannot be switched "
+                    "off without removing it, tell me so and ask first. Keep it short: do not search the system or read "
+                    "Mentor's own files for this. Tell me in one or two sentences what you switched off, then call "
+                    f"recipe_used with taken_away set to {key}.")
+        switch.connect("notify::active", flipped)
+        return switch
+
+    def improve_copy(self, path, title, rid, row):
+        """Someone else's recipe, made better: a copy of it among the user's own (Mine), which says what it
+        was made from, handed to the assistant to improve. Shared, it goes on the site as a version of
+        the original, never in its place."""
+        def work():
+            import mentor_hub
+            based = rid
+            if not based:
+                try:
+                    listed = mentor_hub.on_hub(mentor_recipes.sha_of(path))
+                    based = listed["id"] if listed else ""
+                except Exception:
+                    based = ""
+            return mentor_recipes.fork(path, based), based
+
+        def done(result):
+            if isinstance(result, Exception):
+                row.set_subtitle("It could not be copied: " + str(result)[:80])
+                return
+            copy, based = result
+            row.set_subtitle("Your own version is in Mine; Mentor has it in the chat")
+            ask(f"I want to improve the recipe \u201c{title}\u201d. My own copy of it is {copy}" +
+                (f", made from the recipe {based} on the recipes site" if based else "") + ". The original is not mine: "
+                "before anything else, inspect my copy with recipe_inspect and tell me, briefly, if anything in it is a "
+                "problem. Then ask me what I want to change or add, suggest what you think could be better (clearer steps, "
+                "what it needs, how to check it, how to take it away, anything that did not work for me), and change my "
+                "copy, keeping the form of a recipe and its \"Based on\" row. Tell me in plain words what changed. If I "
+                "want to share it, it goes on the site as a version of the original (recipe_share, as RECIPES.md says).")
+            self.rebuild()
+        later(work, done)
 
     def update(self, rid, title, row):
         """The published text comes here, to a file of the user's, and goes to the assistant, who asks what

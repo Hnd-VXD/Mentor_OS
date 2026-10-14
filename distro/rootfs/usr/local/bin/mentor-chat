@@ -30,6 +30,7 @@ import shutil
 import sys
 import time
 import uuid
+import datetime
 
 import gi
 
@@ -236,6 +237,18 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
 .agent-card.said { border-radius: 14px; padding: 10px 14px; }
 .bubble { padding: 9px 14px; border-radius: 14px; }
 .bubble.user { background: var(--accent-bg-color); color: var(--accent-fg-color); }
+.history-card { padding: 10px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08); }
+.history-card.mine { background: rgba(53, 132, 228, 0.16); border-color: rgba(53, 132, 228, 0.35); }
+.steps-header { font-size: 0.85em; min-height: 0; padding: 2px 10px; border-radius: 10px;
+                background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
+.steps { padding: 12px 16px; border-radius: 14px; background: rgba(20, 22, 27, 0.86);
+         border: 1px solid rgba(255, 255, 255, 0.14); }
+.steps .steps-header { background: none; padding: 0 0 4px 0; font-size: 1em; font-weight: 700; color: #ffffff; }
+.steps .steps-header:disabled { color: #ffffff; }
+@keyframes gear-turn { from { -gtk-icon-transform: rotate(0turn); } to { -gtk-icon-transform: rotate(1turn); } }
+.gear { color: #7fb2ff; }
+.gear.turning { animation: gear-turn 2s linear infinite; }
 .tool-row { font-size: 0.9em; padding: 4px 10px; border-radius: 10px;
             background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
 .chat-error { color: #ff8a75; }
@@ -267,24 +280,143 @@ dropdown.model > button, menubutton.model > button { min-height: 34px; padding: 
                            background: rgba(20, 22, 27, 0.86); color: #ffffff;
                            border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: none; }
 tabbar.agent-tabs, tabbar.agent-tabs .box { background: none; box-shadow: none; border: none; }
+tabbar.agent-tabs tab.working button.tab-close-button { opacity: 0; }
 tabbar.agent-tabs tab { min-height: 34px; border-radius: 12px; background: rgba(20, 22, 27, 0.7); color: #ffffff; }
 tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
 """
 
 
-def to_markup(text):
-    """The little Markdown the agent is asked to use, as Pango markup."""
-    out = GLib.markup_escape_text(text, -1)
-    out = re.sub(r"```\w*\n(.*?)```", r"<tt>\1</tt>", out, flags=re.S)
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$")
+TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+
+
+def _inline(line):
+    """One line of text, escaped, with `code`, **bold** and headings."""
+    out = GLib.markup_escape_text(line, -1)
     out = re.sub(r"`([^`\n]+)`", r"<tt>\1</tt>", out)
     out = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", out)
-    out = re.sub(r"(?m)^#{1,6} +(.+)$", r"<b>\1</b>", out)
-    out = re.sub(r"(?m)^(\s*)[-*] +", "\\1\u2022 ", out)
-    try:
-        Pango.parse_markup(out, -1, "\0")
-    except GLib.Error:
-        return GLib.markup_escape_text(text, -1)
+    out = re.sub(r"^#{1,6} +(.+)$", r"<b>\1</b>", out)
+    out = re.sub(r"^(\s*)[-*] +", "\\1\u2022 ", out)
+    out = re.sub(r"^&gt; ?(.+)$", r"<i>\1</i>", out)  # a quoted line (a recipe's one-line summary)
     return out
+
+
+def _table_row(line):
+    """A row of a Markdown table as a line: "<b>Name</b>  value" for two columns, cells with dots for more."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    cells = [c for c in cells if c]
+    if not cells:
+        return None  # an empty header row ("| | |")
+    if len(cells) == 2:
+        return f"<b>{_inline(cells[0])}</b>  {_inline(cells[1])}"
+    return "  \u00b7  ".join(_inline(c) for c in cells)
+
+
+def _render(lines):
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        fence = FENCE.match(line)
+        if fence:
+            mark, lang = fence.group(1), fence.group(2).lower()
+            j = i + 1
+            # the block ends at a fence of the same kind and at least as long: a recipe (with its own
+            # ``` blocks) shown inside ```` ends at the ````, not at its first ```
+            while j < len(lines):
+                close = FENCE.match(lines[j])
+                if close and close.group(1)[0] == mark[0] and len(close.group(1)) >= len(mark) and not close.group(2):
+                    break
+                j += 1
+            inner = lines[i + 1:j]
+            if lang in ("markdown", "md"):
+                out.append(_render(inner))  # a recipe or a page shown as it reads, not as its source
+            else:
+                out.append("<tt>" + GLib.markup_escape_text("\n".join(inner), -1) + "</tt>")
+            i = j + 1
+            continue
+        if line.lstrip().startswith("|") and line.rstrip().endswith("|"):
+            if not TABLE_RULE.match(line):
+                row = _table_row(line)
+                if row is not None:
+                    out.append(row)
+            i += 1
+            continue
+        out.append(_inline(line))
+        i += 1
+    return "\n".join(out)
+
+
+def to_markup(text):
+    """The Markdown the agents write, as Pango markup: code blocks fenced with any number of
+    backticks (a Markdown block is shown formatted), tables as lines, headings and **bold**,
+    `code`, and bullets."""
+    try:
+        out = _render(text.split("\n"))
+        Pango.parse_markup(out, -1, "\0")
+        return out
+    except (GLib.Error, Exception):
+        return GLib.markup_escape_text(text, -1)
+
+
+HISTORY_LINES = 3  # lines of an entry shown in History before "Show more"
+
+
+def history_card(entry, when, open_in_chat=None):
+    """One entry of History as a card: who, when, in which conversation, its first lines, and "Show more".
+    A question at the end of an answer stays in view, highlighted, as in the chat."""
+    text = str(entry.get("text", ""))
+    text = text if len(text) <= 6000 else text[:5999] + "\u2026"
+    user = bool(entry.get("user"))
+    who = Gtk.Label(xalign=0, use_markup=True, ellipsize=Pango.EllipsizeMode.END, label=(
+        f"<b>{'You' if user else 'Mentor'}</b>  {time.strftime('%H:%M', when)}"
+        + (f"  \u00b7  {GLib.markup_escape_text(str(entry.get('title')), -1)}" if entry.get("title") else "")))
+    who.add_css_class("caption")
+    who.add_css_class("dim-label")
+    lines = text.rstrip().split("\n")
+    blank = max((i for i, line in enumerate(lines) if not line.strip()), default=-1)
+    tail = "\n".join(lines[blank + 1:]).strip()
+    question = tail if not user and blank >= 0 and "?" in tail and len(lines) - blank - 1 <= 6 else ""
+    body = "\n".join(lines[:blank]).rstrip() if question else text.rstrip()
+    body_lines = body.split("\n")
+    long = len(body_lines) > HISTORY_LINES or len(body) > 320
+
+    def shown(full):
+        part = body if full or not long else "\n".join(body_lines[:HISTORY_LINES])[:320].rstrip() + "\u2026"
+        markup = GLib.markup_escape_text(part, -1) if user else to_markup(part)
+        if question:
+            markup += "\n\n<span foreground=\"#7fc4ff\" weight=\"bold\">" + to_markup(question) + "</span>"
+        return markup
+    said = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True, use_markup=True)
+    said.set_markup(shown(False))
+    card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    card.add_css_class("history-card")
+    if user:
+        card.add_css_class("mine")
+    card.append(who)
+    card.append(said)
+    foot = Gtk.Box(spacing=6)
+    if long:
+        more = Gtk.Button(label="Show more", halign=Gtk.Align.START)
+        more.add_css_class("flat")
+        more.add_css_class("steps-header")
+        opened = {"all": False}
+
+        def toggle(*_):
+            opened["all"] = not opened["all"]
+            said.set_markup(shown(opened["all"]))
+            more.set_label("Show less" if opened["all"] else "Show more")
+        more.connect("clicked", toggle)
+        foot.append(more)
+    if open_in_chat and entry.get("c"):
+        reopen = Gtk.Button(label="Open in chat", halign=Gtk.Align.START)
+        reopen.add_css_class("flat")
+        reopen.add_css_class("steps-header")
+        reopen.set_tooltip_text("The whole conversation, in a tab, to look at again or go on with")
+        reopen.connect("clicked", lambda *_: open_in_chat(entry))
+        foot.append(reopen)
+    if foot.get_first_child():
+        card.append(foot)
+    return card
 
 
 def told_when(moment):
@@ -354,6 +486,17 @@ def note_request(sandbox, text):
         pass
     if mentor_security:
         mentor_security.new_request(sandbox)  # what was read for the last request no longer counts
+
+
+def note_model(sandbox, name):
+    """Say which model a conversation runs on ("Claude Haiku 5.5"), for the recipes written in it:
+    mentor_recipes.stamp_setup puts it in their "Written by" row (RECIPES.md)."""
+    try:
+        os.makedirs(REQUESTS, exist_ok=True)
+        with open(os.path.join(REQUESTS, re.sub(r"[^A-Za-z0-9._-]", "_", sandbox) + ".model"), "w", encoding="utf-8") as f:
+            f.write(name)
+    except OSError:
+        pass
 
 
 def note_reading(sandbox, name, arguments):
@@ -501,6 +644,8 @@ def describe_tool(name, arguments):
 
 
 # The user's words of being pleased with what was done (English and Greek): the moment to offer a recipe.
+# A change the user has not said works is offered as a recipe only after this long without more changes.
+OFFER_QUIET_HOURS = 3
 PLEASED = re.compile(r"(?i)\b(it\s+works?|works?\s+(now|great|fine|perfect)|worked|perfect|great|awesome|excellent|"
                      r"thanks?|thank\s+you|nice|good\s+job|that'?s\s+it|fixed|done|exactly)\b|"
                      r"\u03b4\u03bf\u03c5\u03bb\u03b5\u03cd|\u03c4\u03ad\u03bb\u03b5\u03b9|\u03b5\u03c5\u03c7\u03b1\u03c1\u03b9\u03c3\u03c4|"
@@ -552,6 +697,7 @@ class Conversation(Gtk.Box):
         # Down the left side, a tick for each thing asked: where one is in the conversation,
         # what was asked there and when, and the way back to it.
         self.ticks = []  # (the tick, its popover, the message it leads to)
+        self.steps = None  # the card holding this turn's steps (tool calls), while they come
         self.timeline = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.timeline_scroller = Gtk.ScrolledWindow(
             child=self.timeline, halign=Gtk.Align.START, valign=Gtk.Align.CENTER, margin_start=12,
@@ -777,6 +923,7 @@ class Conversation(Gtk.Box):
             popover.unparent()
             self.timeline.remove(tick)
         self.ticks = []
+        self.steps = None
         self.current_tick = None
         self.timeline_scroller.set_visible(False)
         self.welcome = Gtk.Box(vexpand=True)
@@ -801,7 +948,7 @@ class Conversation(Gtk.Box):
         self.entry.grab_focus()
 
     def saved(self, title):
-        return {"title": title, "sessions": self.sessions, "sandbox": self.sandbox,
+        return {"title": title, "sessions": self.sessions, "sandbox": self.sandbox, "offered_after": self.offered_after,
                 "workspace": self.workspace, "history": self.history[-MAX_SAVED_ITEMS:]}
 
     def restore(self, saved):
@@ -810,6 +957,7 @@ class Conversation(Gtk.Box):
         if saved.get("session_id"):  # saved before there was more than one engine
             self.sessions.setdefault("claude", saved["session_id"])
         self.sandbox = saved.get("sandbox") or self.sandbox
+        self.offered_after = saved.get("offered_after") or ""
         self.workspace = saved.get("workspace") or 0
         for item in saved.get("history", []):
             if "tool" in item:
@@ -832,6 +980,8 @@ class Conversation(Gtk.Box):
 
     def set_busy(self, busy):
         self.busy = busy
+        if not busy:
+            self.told_busy = False  # the next time it is closed while working, it says so again
         self.entry.set_sensitive(not busy)
         self.action.set_icon_name("media-playback-stop-symbolic" if busy else "go-up-symbolic")
         self.action.set_tooltip_text("Stop" if busy else "Send")
@@ -945,6 +1095,7 @@ class Conversation(Gtk.Box):
 
     def add_text(self, text, user=False, error=False, when=None):
         """`when` is for a message shown again from the history: the time it was sent, 0 if unknown."""
+        self.end_steps()  # the user's words, or the answer: the steps before them fold; later ones get a card of their own
         label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                           halign=Gtk.Align.END if user else Gtk.Align.START)
         if user:
@@ -974,7 +1125,44 @@ class Conversation(Gtk.Box):
                 item["time"] = moment
             self.add_tick(label, item)
         self.history.append(item)
-        return self.add(label)
+        if user or error:
+            return self.add(label)
+        # What the user is asked, at the end of an answer, is highlighted, and never folded away:
+        # the last paragraph, when it is short and asks something.
+        lines = text.rstrip().split("\n")
+        blank = max((i for i, line in enumerate(lines) if not line.strip()), default=-1)
+        tail = "\n".join(lines[blank + 1:]).strip()
+        question = tail if blank >= 0 and "?" in tail and len(lines) - blank - 1 <= 6 else ""
+        body = "\n".join(lines[:blank]).rstrip() if question else text
+
+        def shown(part):
+            markup = to_markup(part)
+            if question:
+                markup += "\n\n<span foreground=\"#7fc4ff\" weight=\"bold\">" + to_markup(question) + "</span>"
+            return markup
+        long = body.count("\n") + 1 > self.LONG_ANSWER
+        if not long:
+            if question:
+                label.set_markup(shown(body))
+            return self.add(label)
+        # a long answer: its first lines, and "Show more" (the whole of it is still selectable and quotable)
+        short = "\n".join(body.split("\n")[:self.LONG_ANSWER]) + "\n\u2026"
+        label.set_markup(shown(short))
+        more = Gtk.Button(label="Show more", halign=Gtk.Align.START)
+        more.add_css_class("flat")
+        more.add_css_class("steps-header")
+        opened = {"all": False}
+
+        def toggle(*_):
+            opened["all"] = not opened["all"]
+            label.set_markup(shown(body if opened["all"] else short))
+            more.set_label("Show less" if opened["all"] else "Show more")
+        more.connect("clicked", toggle)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, halign=Gtk.Align.START)
+        box.append(label)
+        box.append(more)
+        self.add(box)
+        return label
 
     def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
@@ -1021,11 +1209,17 @@ class Conversation(Gtk.Box):
             return card
         return self.add(card)
 
-    def offer_recipe(self):
-        """After a turn that went well: when something was built here that took some doing, say
-        so with a green card and offer to write it down as a recipe (RECIPES.md). Never twice
-        for the same work, and never for a recipe that was only followed."""
-        if not (mentor_journal and mentor_recipes and mentor_settings) or not self.got_result or self.trouble:
+    def offer_recipe(self, later=False):
+        """Offer to write down what was built here as a recipe (RECIPES.md), with a green card, but only
+        once it is known to work: right after the user says so ("it works", "thanks"), or, when they say
+        nothing, a few hours after the last change, when it has had time to be tried (a log out, a
+        restart). Never for work that is still going on, never twice for the same work, and never for a
+        recipe of someone else's that was only followed. `later` is the check made from time to time."""
+        if not (mentor_journal and mentor_recipes and mentor_settings):
+            return
+        if not later and (not self.got_result or self.trouble):
+            return
+        if later and (self.busy or not self.history):
             return
         try:
             if not mentor_settings.get("offer_recipes"):
@@ -1039,14 +1233,21 @@ class Conversation(Gtk.Box):
         done = [e for e in mine if e.get("kind") == "change" and e.get("ok", True)
                 and not str(e.get("tool", "")).startswith("recipe_")
                 and e.get("tool") not in ("change_undo", "file_restore", "suggestions_restore")]
-        # Anything that was changed and worked is worth a recipe: one flag in one file is the
-        # most reusable kind. Never twice for the same work (offered_after); "Don't suggest this" ends it.
         if not done:
             return
+        if later:
+            try:
+                last = max(datetime.datetime.strptime(str(e["time"]), "%Y-%m-%dT%H:%M:%S%z").timestamp() for e in mine)
+            except (KeyError, ValueError):
+                return
+            if time.time() - last < OFFER_QUIET_HOURS * 3600:
+                return  # still being worked on, or not tried yet
+        elif not self.positive:
+            return  # not known to work yet: asked again later (Window.offer_later)
         self.offered_after = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         self.add_notice(
-            "idea", "That worked. Want to keep how it was done?",
-            "I can write down how this was built, step by step, so you can use it again or give it to other "
+            "idea", "Is it working now? Want to keep how it was done?" if later else "That worked. Want to keep how it was done?",
+            ("If what we built a while ago works for you, " if later else "") + "I can write down how this was built, step by step, so you can use it again or give it to other "
             "Mentor users. It takes a minute, and I show you what it says before anything is kept.",
             "Write a recipe of what we just built in this conversation. Follow /etc/mentor/RECIPES.md: get the "
             "material with recipe_material, keep only what ended up working, show me in a few plain sentences what "
@@ -1156,8 +1357,9 @@ class Conversation(Gtk.Box):
         """A recipe from the site was followed in this turn and something was changed: remember it
         as used here (the Recipes app lists those) and ask how it went, with a card. Wherever the
         file is (the agent fetched it, or the user downloaded it with the browser): which recipe
-        of the site it is, is told by its checksum, not by its name or its folder."""
-        if not (mentor_journal and mentor_recipes) or not self.got_result or self.trouble:
+        of the site it is, is told by its checksum, not by its name or its folder. What was changed
+        is in the journal, whatever the engine said at the end of the turn (an error, no result)."""
+        if not (mentor_journal and mentor_recipes):
             return
         try:
             state = mentor_recipes._load(self.sandbox)
@@ -1169,28 +1371,35 @@ class Conversation(Gtk.Box):
                    and not str(e.get("tool", "")).startswith("recipe_") and e.get("tool") not in ("change_undo", "file_restore")]
         if not changed:
             return
-        # The recipe of someone else's that was inspected most recently in this conversation.
-        mine = [(float(v.get("when", 0)), path, v) for path, v in state.items()
-                if isinstance(v, dict) and not v.get("own") and v.get("checked")]
+        # The recipes of someone else's that were inspected in this conversation, newest first. Not every
+        # file that was inspected is one: an agent may have looked at an instruction file the same way,
+        # so the newest that the site lists is the one that was followed.
+        mine = sorted(((float(v.get("when", 0)), path, v) for path, v in state.items()
+                       if isinstance(v, dict) and not v.get("own") and v.get("checked") and v.get("checked") not in self.rating_asked),
+                      reverse=True)
         if not mine:
             return
-        _when, path, v = max(mine)
-        sha = v.get("checked")
-        if sha in self.rating_asked:
-            return
-        self.rating_asked.add(sha)
 
         def work():
             try:
                 import mentor_hub
-                listed = mentor_hub.on_hub(sha)
+                listed = path = sha = None
+                for _when, path, v in mine:
+                    sha = v.get("checked")
+                    listed = mentor_hub.on_hub(sha)
+                    if listed:
+                        break
                 if not listed:
                     try:  # published a moment ago: the list kept here may be older than it
-                        listed = next((r for r in mentor_hub.get_index(True)["recipes"] if str(r.get("sha256", "")).lower() == sha), None)
+                        fresh = {str(r.get("sha256", "")).lower(): r for r in mentor_hub.get_index(True)["recipes"]}
+                        path, v = next(((p, v) for _w, p, v in mine if v.get("checked") in fresh), (None, None))
+                        sha = v.get("checked") if v else None
+                        listed = fresh.get(sha) if sha else None
                     except Exception:
                         listed = None
                 if not listed:
                     return  # not a recipe of the site (a file from somewhere else): nothing to rate
+                self.rating_asked.add(sha)
                 rid, title, kept = str(listed["id"]), str(listed.get("title") or listed["id"]), path
                 try:  # a copy in Mentor's own folder, so that taking it away still works when the download is gone
                     folder = os.path.join(mentor_recipes.FOLDER, "from the site")
@@ -1291,7 +1500,73 @@ class Conversation(Gtk.Box):
         row.append(text)
         if not described:
             self.tool_icons[tool_id] = icon
-        self.add(row)
+        self.add_step(row, restored=described)
+
+    STEPS_SHOWN = 3      # while the agent works, the last few steps are seen; all of them on asking
+    LONG_ANSWER = 15     # lines of an answer shown before "Show more"
+
+    def add_step(self, row, restored=False):
+        """All the steps of one answer in one card: while the agent works it shows the last few, as they
+        come, with a button to see all of them; when the answer is there it folds down to that button."""
+        if self.steps is None:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, halign=Gtk.Align.START)
+            card.add_css_class("steps")
+            header = Gtk.Button(halign=Gtk.Align.START, visible=False)
+            header.add_css_class("flat")
+            header.add_css_class("steps-header")
+            gear = Gtk.Image(icon_name="emblem-system-symbolic")
+            gear.add_css_class("gear")
+            gear.add_css_class("turning")
+            words = Gtk.Label()
+            inside = Gtk.Box(spacing=8)
+            inside.append(gear)
+            inside.append(words)
+            header.set_child(inside)
+            rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            card.append(header)
+            card.append(rows)
+            self.steps = {"card": card, "header": header, "words": words, "gear": gear, "rows": rows, "all": [],
+                          "open": False, "done": False,
+                          "start": time.time(), "end": None, "restored": restored}
+            steps = self.steps
+            # the time it has taken, counted on the card while the agent works
+            GLib.timeout_add_seconds(1, lambda: not steps["done"] and (self.show_steps(steps) or True))
+            header.connect("clicked", lambda *_: (steps.update(open=not steps["open"]), self.show_steps(steps)))
+            self.add(card)
+        self.steps["rows"].append(row)
+        self.steps["all"].append(row)
+        self.show_steps(self.steps)
+        GLib.idle_add(self.scroll_to_end)
+
+    def show_steps(self, steps):
+        rows, count = steps["all"], len(steps["all"])
+        folded = count > self.STEPS_SHOWN
+        for i, row in enumerate(rows):
+            row.set_visible(steps["open"] or (not steps["done"] and i >= count - self.STEPS_SHOWN) or not folded)
+        seconds = int((steps["end"] or time.time()) - steps["start"])
+        took = f"{seconds // 60}:{seconds % 60:02d}" if seconds >= 60 else f"{seconds} s"
+        if steps.get("restored"):  # shown again from a saved conversation: how long it took is not known
+            took = ""
+        word = "step" if count == 1 else "steps"
+        dot = "  \u00b7  "
+        steps["header"].set_visible(True)  # the card always says how many steps and how long; it opens when there are many
+        steps["header"].set_sensitive(folded)
+        if steps["open"]:
+            steps["words"].set_label(f"{count} {word}{dot}" + (f"{took}{dot}" if took else "") + "hide them")
+        elif steps["done"]:
+            steps["words"].set_label(f"{count} {word}{dot}" + (f"took {took}{dot}" if took else "") + "show them")
+        else:
+            steps["words"].set_label(f"{count} {word} so far{dot}{took}" + (f"{dot}show all" if folded else ""))
+
+    def end_steps(self):
+        """The answer is there: this turn's steps fold down to their button."""
+        if self.steps is not None:
+            self.steps["done"] = True
+            self.steps["gear"].remove_css_class("turning")
+            self.steps["gear"].set_from_icon_name("object-select-symbolic")
+            self.steps["end"] = self.steps["end"] or time.time()
+            self.show_steps(self.steps)
+            self.steps = None
 
     def on_action(self, _button):
         if self.busy:
@@ -1327,6 +1602,10 @@ class Conversation(Gtk.Box):
                 os.makedirs(os.path.dirname(WELCOMED_PATH), exist_ok=True)
                 open(WELCOMED_PATH, "w").close()
         self.add_text(shown or text, user=True)
+        if getattr(self, "reopened", ""):
+            prompt = ("This conversation is taken up again from History. What was said in it before (the start may "
+                      "be cut):\n\n" + self.reopened + "\n\n---\n\n" + prompt)
+            self.reopened = ""
         if self.quote:
             quoted = "\n".join("> " + line for line in self.quote.splitlines())
             prompt = f"About this, which you said earlier in this conversation:\n\n{quoted}\n\n{prompt}"
@@ -1423,6 +1702,7 @@ class Conversation(Gtk.Box):
         self.stray_output = []
         self.got_result = False
         note_request(self.sandbox, shown or text)
+        note_model(self.sandbox, self.window.model_name())
         self.process = self.window.spawn(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE,
                                          sandbox=self.sandbox, key=key, own_group=True, folder=folder)
         if not self.process:
@@ -1467,6 +1747,7 @@ class Conversation(Gtk.Box):
             self.sessions[self.engine] = event["session_id"]
         if kind == "system" and event.get("subtype") == "init" and event.get("model"):
             self.window.show_model(event["model"])
+            note_model(self.sandbox, self.window.model_name())  # now with its version
         elif kind == "system" and event.get("subtype") == "status" and self.spinner:
             self.status.set_text(str(event.get("text", "")))
             self.status.set_visible(True)
@@ -1584,6 +1865,7 @@ class Conversation(Gtk.Box):
     def finish(self):
         """The CLI exited: the turn is over."""
         self.say_pending()
+        self.end_steps()
         if self.spinner:
             self.messages.remove(self.spinner)
             self.spinner = None
@@ -1656,6 +1938,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.tabs.connect("close-page", self.on_close_page)
         self.tabs.connect("notify::selected-page", self.on_selected)
         tab_bar = Adw.TabBar(view=self.tabs, autohide=True, expand_tabs=False, hexpand=True)
+        self.tab_bar = tab_bar
         tab_bar.add_css_class("agent-tabs")
 
         labels = [label for label, _, _, _ in MODELS]
@@ -1720,10 +2003,11 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.advice_button.add_css_class("model")
 
         top = Gtk.Box(spacing=8, margin_top=14, margin_start=16, margin_end=16)
+        top.append(self.tab_list)  # the conversations first, then a new one
         top.append(new_tab)
-        top.append(self.tab_list)
         top.append(tab_bar)
         top.append(self.advice_button)
+        self.top_parts = (new_tab, self.tab_list, tab_bar)  # what "Hide chat" takes away up there
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, vexpand=True)
         self.stack.add_named(self.tabs, "chat")
@@ -1808,6 +2092,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.advice_state_monitor = Gio.File.new_for_path(ADVICE_STATE_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
         self.advice_state_monitor.connect("changed", lambda *_: GLib.timeout_add(800, self.refresh_advice))
         self.refresh_advice()
+        # Work the user never said works is offered as a recipe once it has been quiet for hours.
+        GLib.timeout_add_seconds(120, lambda: self.offer_later() and False)
+        GLib.timeout_add_seconds(900, lambda: self.offer_later() or True)
         # A recipe that was used and never rated is asked about again, a long while after.
         GLib.timeout_add_seconds(90, self.ask_rating_again)
         GLib.timeout_add_seconds(6 * 3600, lambda: self.ask_rating_again() or True)
@@ -1825,8 +2112,8 @@ class DesktopWindow(Adw.ApplicationWindow):
     def on_right_click(self, _gesture, _n_press, x, y):
         menu = Gio.Menu()
         menu.append("Show chat" if self.chat_hidden else "Hide chat", "win.toggle-chat")
-        menu.append("Clear chat\u2026", "win.clear-chat")
-        menu.append("New conversation", "win.new-chat")
+        if not self.chat_hidden:  # a new conversation would not be seen while the chat is hidden
+            menu.append("New conversation", "win.new-chat")
         menu.append("History\u2026", "win.history")
         menu.append("Suggestions\u2026", "win.advice")
         menu.append("Mentor Settings\u2026", "win.mentor-settings")
@@ -1858,11 +2145,17 @@ class DesktopWindow(Adw.ApplicationWindow):
         dialog.present(self)
 
     def show_chat(self, shown=True):
-        """Hide what was said, leaving the bare wallpaper and the text box, or show it again."""
+        """Hide the assistant from the desktop, leaving the bare wallpaper (and the bell, when it has
+        something), or show it again: what was said, the timeline beside it, the text box, the
+        buttons and tabs at the top. Hidden, it is reached with Alt+Space, or the desktop's menu
+        (right click) has "Show chat". Nothing is taken out of the layout, so nothing moves."""
         self.chat_hidden = not shown
+        parts = list(getattr(self, "top_parts", ()))
         for conversation in self.conversations():
-            conversation.scroller.set_opacity(1 if shown else 0)
-            conversation.scroller.set_can_target(shown)
+            parts += [conversation.scroller, conversation.timeline_scroller, conversation.bottom_home]
+        for part in parts:
+            part.set_opacity(1 if shown else 0)
+            part.set_can_target(shown)
 
     def load_conversations(self):
         try:
@@ -1897,6 +2190,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             self.show_usage()
         self.tabs.set_selected_page(page)
         conversation.entry.grab_focus()
+        if getattr(self, "chat_hidden", False):  # a new one is hidden too, while the chat is
+            self.show_chat(False)
         return conversation
 
     def new_or_empty(self):
@@ -1973,6 +2268,41 @@ class DesktopWindow(Adw.ApplicationWindow):
             return [], 0
         return entries, end
 
+    def reopen(self, entry):
+        """A conversation from History, whole, in a tab: the open one if it is still there, else a tab made
+        again from what History kept of it, which goes on in the same conversation (its recipes, its tool
+        state). An engine does not remember a conversation whose tab was closed, so what was said comes
+        with the first new message (Conversation.send)."""
+        sandbox = str(entry.get("c") or "")
+        for conversation in self.conversations():
+            if conversation.sandbox == sandbox:
+                self.tabs.set_selected_page(self.tabs.get_page(conversation))
+                self.show_chat(True)
+                return
+        said = []
+        try:
+            with open(HISTORY_PATH, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        continue
+                    if item.get("c") == sandbox:
+                        said.append(item)
+        except OSError:
+            return
+        if not said:
+            return
+        conversation = self.new_conversation()
+        conversation.sandbox = sandbox
+        for item in said:
+            conversation.add_text(str(item.get("text", "")), user=bool(item.get("user")), when=item.get("t", 0))
+        transcript = "\n\n".join(("The user: " if item.get("user") else "You: ") + str(item.get("text", "")) for item in said)
+        conversation.reopened = transcript[-14000:]
+        self.name_tab(conversation, str(entry.get("title") or said[0].get("text", "")))
+        self.show_chat(True)
+        self.save_conversations()
+
     def show_history(self):
         dialog = Adw.Dialog(title="History", content_width=760, content_height=680)
         dialog.add_css_class("advice-details")
@@ -1996,22 +2326,7 @@ class DesktopWindow(Adw.ApplicationWindow):
                     heading = Gtk.Label(label=day, xalign=0, margin_top=10)
                     heading.add_css_class("heading")
                     rows.append(heading)
-                who = Gtk.Label(xalign=0, use_markup=True, label=(
-                    f"<b>{'You' if entry.get('user') else 'Mentor'}</b>  {time.strftime('%H:%M', when)}"
-                    + (f"  \u00b7  {GLib.markup_escape_text(str(entry.get('title')), -1)}" if entry.get("title") else "")))
-                who.add_css_class("caption")
-                who.add_css_class("dim-label")
-                text = str(entry.get("text", ""))
-                text = text if len(text) <= 1500 else text[:1499] + "\u2026"
-                said = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True)
-                if entry.get("user"):
-                    said.set_text(text)
-                else:
-                    said.set_markup(to_markup(text))
-                one = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-                one.append(who)
-                one.append(said)
-                rows.append(one)
+                rows.append(history_card(entry, when, lambda entry: (dialog.close(), self.reopen(entry))))
             if state["done"] and rows.get_first_child() is None:
                 rows.append(Gtk.Label(label="Nothing yet." if not search.get_text().strip() else "Nothing found.",
                                       margin_top=30))
@@ -2340,6 +2655,13 @@ class DesktopWindow(Adw.ApplicationWindow):
             conversation.attachment_bar.set_visible(False)
         conversation.entry.set_placeholder_text("Ask Mentor to do something\u2026")
 
+    def offer_later(self):
+        for conversation in self.conversations():
+            try:
+                conversation.offer_recipe(later=True)
+            except Exception:
+                pass
+
     def ask_rating_again(self):
         """A recipe from the site that was applied here and never rated: one card, in the open
         conversation if it is quiet. Not more than one at a time, and each only again after days."""
@@ -2367,9 +2689,44 @@ class DesktopWindow(Adw.ApplicationWindow):
         page = self.tabs.get_page(conversation) if conversation.get_parent() else None
         if page:
             page.set_loading(conversation.busy)
+            self.show_close(page, not conversation.busy)
+
+    def show_close(self, page, shown):
+        """The (x) of a conversation's tab: gone while the agent works in it, back when it is done or
+        stopped. libadwaita has no setting for one tab, so its tab is found (each knows its page) and its
+        close button made invisible and not clickable; on_close_page refuses as well (Ctrl+W, a middle click)."""
+        def walk(widget):
+            child = widget.get_first_child()
+            while child:
+                if child.get_name() == "AdwTab":
+                    try:
+                        mine = child.get_property("page") == page
+                    except TypeError:
+                        mine = False
+                    if mine:
+                        (child.remove_css_class if shown else child.add_css_class)("working")
+                        button = child.get_first_child()
+                        while button:
+                            if button.has_css_class("tab-close-button"):
+                                button.set_can_target(shown)
+                            button = button.get_next_sibling()
+                else:
+                    walk(child)
+                child = child.get_next_sibling()
+        if getattr(self, "tab_bar", None):
+            walk(self.tab_bar)
 
     def on_close_page(self, tabs, page):
         closed = page.get_child()
+        # A conversation the agent is still working in is not closed under it: it is shown, with a
+        # word on how to stop it (the stop button), and closes only once the work is done or stopped.
+        if closed.busy:
+            tabs.close_page_finish(page, False)
+            tabs.set_selected_page(page)
+            if not getattr(closed, "told_busy", False):
+                closed.told_busy = True
+                closed.add_note("Mentor is still working here. Press the stop button first, or wait until it is done, then close it.")
+            return Gdk.EVENT_STOP
         closed.stop()
         closed.process = None  # what it may still say is no longer listened to
         tabs.close_page_finish(page, True)
@@ -2404,6 +2761,19 @@ class DesktopWindow(Adw.ApplicationWindow):
         if MODELS[index][1] in USAGE_ASKED:
             self.ask_usage(MODELS[index][1])
         self.check_sign_in()
+
+    def model_name(self):
+        """The chosen model in words, with its version and where it runs: "Claude Haiku 5.5",
+        "GLM 5.3 (NVIDIA)". What a recipe says it was written by."""
+        name = self.shown_name(self.model_index)
+        provider = MODELS[self.model_index][1]
+        if provider == "nvidia":
+            name += " (NVIDIA)"
+        elif provider == "codex" and not name.lower().startswith(("chatgpt", "gpt")):
+            name = "ChatGPT " + name
+        elif provider == "gemini" and not name.lower().startswith("gemini"):
+            name = "Gemini " + name
+        return name
 
     def shown_name(self, index, short=False):
         """A model's name for the button, or (short) for its provider's submenu. Claude's names
@@ -3016,6 +3386,9 @@ class AssistantApp(Adw.Application):
             conversation = window.for_request()
             for path in arguments[1:]:
                 conversation.attach(path)
+        elif arguments[:1] == ["--as"] and len(arguments) > 2:
+            # the long instructions go to the agent; the user sees, here and in History, the short words
+            window.for_request().send(" ".join(arguments[2:]), shown=arguments[1])
         else:
             window.for_request().send(" ".join(arguments))
         self.shell("Show")

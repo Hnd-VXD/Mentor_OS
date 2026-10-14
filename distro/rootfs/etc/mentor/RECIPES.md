@@ -13,7 +13,7 @@ This is for the agent, written so that a small model can follow it. A user asks 
 
 ## When to offer one
 
-- **The system offers it by itself.** A green card in the chat, "That worked. Want to keep how it was done?", with "Write it down". It comes at the end of a turn in which the journal shows that something was changed here and it worked (one change is enough: a single flag in a single file is the most reusable kind). Once for the same work; never in a conversation that only followed someone else's recipe. "Don't suggest this" on the card, or the switch "Offer to write down what I built" in Mentor Settings (More choices), turns it off. Pressing the button sends you a request to write it (see below); you do not have to offer anything yourself.
+- **The system offers it by itself.** A green card in the chat, "That worked. Want to keep how it was done?", with "Write it down". It comes only once the work is known to work: at the end of a turn in which the user said so ("it works", "thanks", `PLEASED`) and the journal shows something was changed here (one change is enough), or, when they say nothing, three hours after the last change in that conversation (`OFFER_QUIET_HOURS`, checked every quarter of an hour and after a log in), asking "Is it working now?". Never while work is still going on (each new change starts the three hours again). Once for the same work; never in a conversation that only followed someone else's recipe. "Don't suggest this" on the card, or the switch "Offer to write down what I built" in Mentor Settings (More choices), turns it off. Pressing the button sends you a request to write it (see below); you do not have to offer anything yourself.
 - **When they ask in their own words**, always, whatever it was and whether or not the card came.
 - Not for what is only a setting with one value, or a package installed: those are a sentence, not a recipe.
 
@@ -70,7 +70,7 @@ that is named differently), and what must not be changed.
 ```
 
 **4a. The setup is written by the tool, not by you.** `recipe_save` replaces the "Made on" row with this system's real GNOME,
-kernel and the date, so it is always true (a recipe built here and saved here was made on this system). Do not invent it. If you
+kernel and the date, so it is always true (a recipe built here and saved here was made on this system), and adds a "Written by" row with the model you run on, with its version ("Claude Haiku 5.5", "GLM 5.3 (NVIDIA)"), as the assistant noted it (`requests/NAME.model`). Do not write either row yourself: a "Written by" in the text is replaced, or taken out when the model is not known. The recipes site shows it under "Show what is inside". Do not invent it. If you
 adapted a recipe from another setup, say so under "Notes for the agent": what you changed, and for which GNOME.
 
 **5. Make it safe to share.**
@@ -188,6 +188,24 @@ already there at start-up are not.
   "Take it away again" section of the recipe's file with the usual preview, and say in plain words what was put back.
 - **In the bell.** A recipe that at least two Mentors rated up, and not much down, is brought up as news ("A recipe people
   found useful"), one at a time, not again for a month. Pressing it hands you the request to fetch, inspect and report.
+
+### Switching a recipe off and on
+
+Every recipe that changed something here has a switch in the Recipes app. **Off is not removing**: turn off what it
+added (disable the extension, stop the service, set the setting back) and keep every file, so that **On** brings it back in a
+moment. Never delete anything to switch a recipe off; if it cannot be switched off without removing it, say so and ask. Do
+not search the system or read Mentor's own files for this: the recipe file says what it added. When done, `recipe_used` with
+`taken_away` (off) or `put_back` (on), the recipe's id or, for one of the user's own, its file name. Removing for good is a
+different request ("take it away", "uninstall"): that is the recipe's "Take it away again" section.
+
+### Improving someone else's recipe (a fork)
+
+In the Recipes app, a recipe that was downloaded or used has **Improve**. It makes a copy among the user's own (Documents/Mentor
+recipes, `...-my-version.md`, `mentor_recipes.fork`) with a "Based on" row naming the recipe of the site it was made from, and
+hands it to you. The copy is still someone else's text until it is changed: `recipe_inspect` it first and say if anything in it
+is a problem. Then ask what the user wants changed, suggest improvements, change the copy, and keep the "Based on" row. Shared
+with `recipe_share`, it goes on the site as a version of the original, shown on the same page and saying what it was made
+from; the site refuses it if it is the same as the original (nothing was improved). Never share a copy that was not changed.
 
 ### Updating or removing one the user posted
 
