@@ -336,8 +336,27 @@ const SERVICE = `
     <method name="Status">
       <arg type="s" direction="out" name="json"/>
     </method>
+    <method name="Windows">
+      <arg type="s" direction="out" name="json"/>
+    </method>
+    <method name="FocusWindow">
+      <arg type="t" direction="in" name="id"/>
+      <arg type="b" direction="out" name="done"/>
+    </method>
+    <method name="CloseWindow">
+      <arg type="t" direction="in" name="id"/>
+      <arg type="b" direction="out" name="done"/>
+    </method>
   </interface>
 </node>`;
+
+// The user's own windows: normal windows and dialogs of every app but Mentor's assistant.
+function userWindows() {
+    return global.get_window_actors().map(actor => actor.meta_window).filter(window =>
+        window && !window.skip_taskbar &&
+        [Meta.WindowType.NORMAL, Meta.WindowType.DIALOG, Meta.WindowType.MODAL_DIALOG].includes(window.get_window_type()) &&
+        window.get_wm_class() !== ASSISTANT && window.get_gtk_application_id() !== ASSISTANT);
+}
 
 class ShellService {
     constructor(desktop, status) {
@@ -378,6 +397,39 @@ class ShellService {
     // Which parts of Mentor in the shell are working (see `mentor doctor`, /etc/mentor/DESKTOP.md).
     Status() {
         return JSON.stringify(this._status());
+    }
+
+    // The windows the user has open, in words: the agent's way to know that an app it opened is
+    // really there (a picture of the screen does not reach every model). Mentor's own are left out.
+    Windows() {
+        const tracker = Shell.WindowTracker.get_default();
+        const focused = global.display.get_focus_window();
+        return JSON.stringify(userWindows().map(window => ({
+            id: window.get_id(),
+            title: window.get_title() ?? '',
+            app: tracker.get_window_app(window)?.get_id() ?? '',
+            name: tracker.get_window_app(window)?.get_name() ?? '',
+            focused: window === focused,
+            minimized: window.minimized,
+            workspace: window.get_workspace()?.index() ?? -1,
+        })));
+    }
+
+    FocusWindow(id) {
+        const window = userWindows().find(w => w.get_id() === Number(id));
+        if (!window)
+            return false;
+        Main.activateWindow(window);
+        return true;
+    }
+
+    // As the window's own close button: the app may still ask about unsaved work.
+    CloseWindow(id) {
+        const window = userWindows().find(w => w.get_id() === Number(id));
+        if (!window)
+            return false;
+        window.delete(global.get_current_time());
+        return true;
     }
 
     destroy() {

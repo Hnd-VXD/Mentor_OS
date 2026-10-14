@@ -61,10 +61,10 @@ vm\                   your own disk, created on the first start
 
 ## What is in it
 
-- **The assistant is the desktop.** Click it or press Super+A and type what you want. It has tools for packages, settings, services, files and the desktop itself, and asks before it changes the system.
+- **The assistant is the desktop.** Click it or press Super+A and type what you want. It has tools for packages, settings, services, files, sound, the network, open windows and the desktop itself, and asks before it changes the system. An app it opens is confirmed by name from the shell, not guessed from a screenshot.
 - **Safe changes.** System changes are made in a sandbox and applied when they work. A start after a change that does not reach the desktop is undone by itself. Restore points of the whole disk are kept on Windows.
 - **Ask without leaving what you are doing.** Alt+Space (or Super+Z) lifts the assistant's text box over the program you are in. The assistant gets your words with a picture of your screen and answers in a small bubble above the box. A click anywhere else puts the box back on the desktop.
-- **Conversations.** Tabs, one conversation for each workspace, a timeline down the side, quoting an answer, files attached by dropping or pasting.
+- **Conversations.** Tabs, one conversation for each workspace, a timeline down the side, quoting an answer, files attached by dropping or pasting. Type three letters of an installed app and it is offered with its icon: Tab puts it in your message, and the assistant knows exactly which app you mean.
 - **The model's menu** shows the limits of your Claude, ChatGPT or Gemini plan where the account tells them, and the effort setting.
 - **Suggestions.** A bell on the desktop holds what the system noticed by itself: waiting updates, a filling disk, failed services, news from Arch and GNOME, new applications and projects. No model is used until you send one to the chat.
 - **Warnings in the chat.** What cannot wait shows in the chat as a card: yellow for a warning, red for a problem, with a button that hands it to the assistant. Mentor checks itself this way too, after every login.

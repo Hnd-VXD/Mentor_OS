@@ -36,7 +36,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 try:  # what the engines read from outside is noted for the tools (mentor_security.py)
     sys.path.insert(0, "/usr/local/lib/mentor")
@@ -266,12 +266,19 @@ dialog.advice-details headerbar, dialog.advice-details toolbarview { background:
 .tick-button { min-height: 0; min-width: 0; padding: 4px 8px 4px 0; background: none; border: none;
                box-shadow: none; outline: none; }
 .tick { min-height: 2px; border-radius: 1px; background: #ffffff; }
-entry.ask { min-height: 50px; padding: 0 20px; border-radius: 26px; font-size: 1.05em;
-            background: rgba(20, 22, 27, 0.86); color: #ffffff; caret-color: #ffffff;
-            border: 1px solid rgba(255, 255, 255, 0.14); outline: none;
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
-entry.ask:focus-within { border-color: #1793d1; }
-entry.ask > text > placeholder { color: rgba(255, 255, 255, 0.6); }
+.ask { min-height: 50px; padding: 0 20px; border-radius: 26px; font-size: 1.05em;
+       background: rgba(20, 22, 27, 0.86); color: #ffffff;
+       border: 1px solid rgba(255, 255, 255, 0.14); outline: none;
+       box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); }
+.ask:focus-within { border-color: #1793d1; }
+.ask:disabled { opacity: 0.6; }
+.ask scrolledwindow, .ask textview, .ask textview text { background: none; color: #ffffff; caret-color: #ffffff; }
+.ask .placeholder { color: rgba(255, 255, 255, 0.6); }
+.suggest { padding: 4px; border-radius: 14px; background: rgba(20, 22, 27, 0.92); color: #ffffff; }
+.suggest row { padding: 4px 10px; border-radius: 10px; background: none; color: #ffffff; }
+.suggest row:selected { background: rgba(53, 132, 228, 0.45); }
+.suggest .hint { font-size: 0.8em; color: rgba(255, 255, 255, 0.6); }
+.app-inline { font-weight: bold; }
 .subject { padding: 4px 4px 4px 12px; border-radius: 12px; background: rgba(20, 22, 27, 0.86); color: #ffffff; }
 .attachment { padding: 2px 2px 2px 12px; border-radius: 99px; background: rgba(20, 22, 27, 0.86); color: #ffffff; }
 .attachment-note { font-size: 0.85em; padding: 2px 10px; border-radius: 99px;
@@ -657,6 +664,141 @@ ASKED_OVER = ("\n\n(Asked with the text box over the program I am using. The att
               "bubble over my program.)")
 
 
+class AskBox(Gtk.Box):
+    """The text box at the bottom: a text view that can hold the icon of an application in the
+    line (a one-line Gtk.Entry holds text only), with what the rest of the chat used of Gtk.Entry:
+    get_text, set_text, get_position, set_position, set_placeholder_text, grab_focus,
+    grab_focus_without_selecting and the signals "activate" (Enter) and "changed". Positions are
+    counted in the text without the icons. Shift+Enter starts a new line."""
+    __gsignals__ = {"activate": (GObject.SignalFlags.RUN_LAST, None, ()),
+                    "changed": (GObject.SignalFlags.RUN_LAST, None, ())}
+    PICKED = "\ufffc"  # what an icon is in the buffer's slice
+
+    def __init__(self, placeholder_text=""):
+        super().__init__(hexpand=True)
+        self.add_css_class("ask")
+        self.view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False, hexpand=True,
+                                 top_margin=14, bottom_margin=14, valign=Gtk.Align.CENTER)
+        self.buffer = self.view.get_buffer()
+        self.tag = self.buffer.create_tag("app", foreground="#7fc4ff", weight=Pango.Weight.BOLD)
+        self.picked = []  # [(anchor, name, desktop id)] of the apps in the text, each icon just before its name
+        scroller = Gtk.ScrolledWindow(child=self.view, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                      propagate_natural_height=True, max_content_height=140, hexpand=True)
+        self.placeholder = Gtk.Label(label=placeholder_text, xalign=0, can_target=False, valign=Gtk.Align.CENTER,
+                                     ellipsize=Pango.EllipsizeMode.END)
+        self.placeholder.add_css_class("placeholder")
+        overlay = Gtk.Overlay(child=scroller, hexpand=True)
+        overlay.add_overlay(self.placeholder)
+        self.append(overlay)
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.view.add_controller(keys)
+        self.buffer.connect("changed", self.on_changed)
+
+    def on_key(self, _controller, keyval, _keycode, state):
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not state & Gdk.ModifierType.SHIFT_MASK:
+            self.emit("activate")
+            return True
+        return False
+
+    def on_changed(self, _buffer):
+        # An icon whose name was edited away, or a name whose icon was taken out, is a plain word again.
+        for item in list(self.picked):
+            anchor, name, _ = item
+            if anchor.get_deleted():
+                self.picked.remove(item)
+                self.untag_after(None, name)
+                continue
+            after = self.buffer.get_iter_at_child_anchor(anchor)
+            after.forward_char()
+            end = after.copy()
+            end.forward_chars(len(name))
+            if self.buffer.get_text(after, end, False) != name:
+                self.picked.remove(item)
+                start = self.buffer.get_iter_at_child_anchor(anchor)
+                self.buffer.remove_tag(self.tag, start, self.buffer.get_end_iter())
+                GLib.idle_add(self.drop_icon, anchor)
+        self.placeholder.set_visible(self.buffer.get_char_count() == 0)
+        self.emit("changed")
+
+    def drop_icon(self, anchor):
+        if not anchor.get_deleted():
+            start = self.buffer.get_iter_at_child_anchor(anchor)
+            stop = start.copy()
+            stop.forward_char()
+            self.buffer.delete(start, stop)
+        return GLib.SOURCE_REMOVE
+
+    def untag_after(self, _anchor, name):
+        """A name left without its icon is shown as plain words."""
+        text = self.buffer.get_slice(self.buffer.get_start_iter(), self.buffer.get_end_iter(), True)
+        at = text.find(name)
+        while at >= 0:
+            if at == 0 or text[at - 1] != self.PICKED:
+                self.buffer.remove_tag(self.tag, self.buffer.get_iter_at_offset(at),
+                                       self.buffer.get_iter_at_offset(at + len(name)))
+            at = text.find(name, at + len(name))
+
+    def slice(self):
+        return self.buffer.get_slice(self.buffer.get_start_iter(), self.buffer.get_end_iter(), True)
+
+    def to_buffer(self, position):
+        """The buffer offset of a position counted without the icons."""
+        offset = seen = 0
+        for char in self.slice():
+            if seen == position and char != self.PICKED:
+                break
+            offset += 1
+            if char != self.PICKED:
+                seen += 1
+        return offset
+
+    def get_text(self):
+        return self.slice().replace(self.PICKED, "")
+
+    def set_text(self, text):
+        self.picked = []
+        self.buffer.set_text(text)
+
+    def get_position(self):
+        cursor = self.buffer.get_iter_at_mark(self.buffer.get_insert()).get_offset()
+        return len(self.slice()[:cursor].replace(self.PICKED, ""))
+
+    def set_position(self, position):
+        self.buffer.place_cursor(self.buffer.get_iter_at_offset(self.to_buffer(position)))
+
+    def set_placeholder_text(self, text):
+        self.placeholder.set_label(text)
+
+    def grab_focus(self):
+        return self.view.grab_focus()
+
+    def grab_focus_without_selecting(self):
+        return self.view.grab_focus()
+
+    def put_app(self, start, end, name, app_id, icon):
+        """Put an application in place of the text between two positions: its icon, then its name."""
+        begin = self.buffer.get_iter_at_offset(self.to_buffer(start))
+        stop = self.buffer.get_iter_at_offset(self.to_buffer(end))
+        self.buffer.delete(begin, stop)
+        anchor = self.buffer.create_child_anchor(begin)  # begin now stands after the icon
+        image = Gtk.Image(gicon=icon, pixel_size=18) if icon else Gtk.Image(icon_name="application-x-executable",
+                                                                             pixel_size=18)
+        image.set_margin_end(4)
+        self.view.add_child_at_anchor(image, anchor)
+        self.picked.append((anchor, name, app_id))
+        self.buffer.insert_with_tags(begin, name, self.tag)
+        if begin.is_end() or not begin.get_char().isspace():  # ready for the next word
+            self.buffer.insert(begin, " ")
+        else:
+            begin.forward_char()
+        self.buffer.place_cursor(begin)
+
+    def apps(self):
+        """name -> desktop id of the apps in the text."""
+        return {name: app_id for anchor, name, app_id in self.picked if not anchor.get_deleted()}
+
+
 class Conversation(Gtk.Box):
     """One tab: a conversation with the agent, with its own history and its own running turn."""
 
@@ -711,8 +853,7 @@ class Conversation(Gtk.Box):
         wave.connect("leave", lambda *_: self.swell(None))
         self.timeline.add_controller(wave)
 
-        self.entry = Gtk.Entry(hexpand=True, placeholder_text="Ask Mentor to do something\u2026")
-        self.entry.add_css_class("ask")
+        self.entry = AskBox(placeholder_text="Ask Mentor to do something\u2026")
         self.entry.connect("activate", lambda *_: self.send(self.entry.get_text()))
         self.action = Gtk.Button(valign=Gtk.Align.CENTER)
         self.action.add_css_class("circular")
@@ -744,6 +885,15 @@ class Conversation(Gtk.Box):
         paste.connect("key-pressed", self.on_entry_key)
         self.entry.add_controller(paste)
 
+        # Installed apps whose name starts with the word being typed: Tab puts the name in.
+        self.suggest = Gtk.ListBox(visible=False, halign=Gtk.Align.START, margin_start=52, focusable=False,
+                                   selection_mode=Gtk.SelectionMode.SINGLE)
+        self.suggest.add_css_class("suggest")
+        self.suggest.connect("row-activated", lambda _list, row: self.use_suggestion(row))
+        self.suggest_word = ""
+        self.picked = {}  # name -> desktop id of the apps picked from the list, while they are in the text box
+        self.entry.connect("changed", lambda *_: GLib.idle_add(self.update_suggestions))
+
         # Shown while the next message is about one application.
         self.subject_icon = Gtk.Image(pixel_size=20)
         self.subject_label = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END)
@@ -772,6 +922,7 @@ class Conversation(Gtk.Box):
         bottom.append(self.subject_bar)
         bottom.append(self.quote_bar)
         bottom.append(self.attachment_bar)
+        bottom.append(self.suggest)
         bottom.append(bar)
         body = Gtk.Overlay(child=self.scroller, vexpand=True)
         body.add_overlay(self.timeline_scroller)
@@ -881,8 +1032,85 @@ class Conversation(Gtk.Box):
                 pass  # cancelled
         dialog.open_multiple(self.window, None, chosen)
 
+    def update_suggestions(self):
+        """Offer the installed apps that match the word before the cursor (apps_matching)."""
+        self.show_picked()
+        text = self.entry.get_text()
+        word, apps = apps_matching(text[:self.entry.get_position()]) if self.entry.get_sensitive() else ("", [])
+        self.suggest_word = word
+        while row := self.suggest.get_first_child():
+            self.suggest.remove(row)
+        for name, icon, app_id in apps:
+            line = Gtk.Box(spacing=8)
+            line.append(Gtk.Image(gicon=icon, pixel_size=18) if icon else Gtk.Image(icon_name="application-x-executable", pixel_size=18))
+            line.append(Gtk.Label(label=name, xalign=0))
+            hint = Gtk.Label(label="Tab", visible=False)
+            hint.add_css_class("hint")
+            line.append(hint)
+            row = Gtk.ListBoxRow(child=line, focusable=False)
+            row.app_name, row.app_id, row.app_icon, row.hint = name, app_id, icon, hint
+            self.suggest.append(row)
+        self.suggest.set_visible(bool(apps))
+        if apps:
+            self.pick_suggestion(0)
+        return GLib.SOURCE_REMOVE
+
+    def pick_suggestion(self, index):
+        row = self.suggest.get_row_at_index(index)
+        if row is None:
+            return
+        self.suggest.select_row(row)
+        child = self.suggest.get_first_child()
+        while child:
+            child.hint.set_visible(child is row)
+            child = child.get_next_sibling()
+
+    def use_suggestion(self, row=None):
+        """Put the app's name in place of the word being typed."""
+        row = row or self.suggest.get_selected_row()
+        if row is None or not self.suggest_word:
+            return
+        text, cursor = self.entry.get_text(), self.entry.get_position()
+        start = cursor - len(self.suggest_word)
+        if start < 0 or text[start:cursor] != self.suggest_word:
+            return
+        self.entry.put_app(start, cursor, row.app_name, row.app_id, row.app_icon)
+        self.entry.grab_focus_without_selecting()
+        self.suggest.set_visible(False)
+
+    def show_picked(self):
+        """The picked apps are those still in the text box, icon and name (AskBox)."""
+        self.picked = self.entry.apps()
+
+    def picked_note(self, picked):
+        """What the agent is told of the apps the user picked by name: exactly which ones."""
+        lines = []
+        for name, app_id in picked.items():
+            try:
+                info = Gio.DesktopAppInfo.new(app_id)
+            except TypeError:
+                info = None
+            lines.append(f'- "{name}": the installed application with desktop file '
+                         f'{info.get_filename() if info else app_id}' +
+                         (f", command: {info.get_commandline()}" if info and info.get_commandline() else ""))
+        return ("\n\nThe user picked these by name from the applications installed here; when the message names "
+                "them it means exactly these:\n" + "\n".join(lines))
+
     def on_entry_key(self, _controller, keyval, _keycode, state):
-        """Ctrl+V with a picture or copied files in the clipboard attaches them; text pastes as usual."""
+        """Tab, the arrows and Esc while installed apps are offered (update_suggestions).
+        Ctrl+V with a picture or copied files in the clipboard attaches them; text pastes as usual."""
+        if self.suggest.get_visible() and not state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK):
+            if keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab):
+                self.use_suggestion()
+                return True
+            if keyval in (Gdk.KEY_Down, Gdk.KEY_Up):
+                row = self.suggest.get_selected_row()
+                index = (row.get_index() if row else -1) + (1 if keyval == Gdk.KEY_Down else -1)
+                self.pick_suggestion(max(0, index))
+                return True
+            if keyval == Gdk.KEY_Escape:
+                self.suggest.set_visible(False)
+                return True
         if keyval not in (Gdk.KEY_v, Gdk.KEY_V) or not state & Gdk.ModifierType.CONTROL_MASK:
             return False
         clipboard = self.entry.get_clipboard()
@@ -964,9 +1192,12 @@ class Conversation(Gtk.Box):
                 self.add_tool(None, item["tool"], item.get("detail", ""), described=True, failed=item.get("failed"))
             elif "note" in item:
                 self.add_note(item["note"])
+            elif "took" in item:  # how long the steps before it took, kept when they ended (end_steps)
+                if self.steps is not None:
+                    self.steps["took"] = item["took"]
             else:
                 self.add_text(item.get("text", ""), user=item.get("user", False), error=item.get("error", False),
-                              when=item.get("time") or 0)
+                              when=item.get("time") or 0, apps=item.get("apps"))
 
     def stop(self):
         """Stop the engine at work, with whatever it started: Codex and Claude Code are
@@ -1093,8 +1324,9 @@ class Conversation(Gtk.Box):
             self.current_tick = at
             self.swell(None)
 
-    def add_text(self, text, user=False, error=False, when=None):
-        """`when` is for a message shown again from the history: the time it was sent, 0 if unknown."""
+    def add_text(self, text, user=False, error=False, when=None, apps=None):
+        """`when` is for a message shown again from the history: the time it was sent, 0 if unknown.
+        `apps`: name -> desktop id of the apps the user picked for this message (show_picked)."""
         self.end_steps()  # the user's words, or the answer: the steps before them fold; later ones get a card of their own
         label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
                           halign=Gtk.Align.END if user else Gtk.Align.START)
@@ -1118,15 +1350,21 @@ class Conversation(Gtk.Box):
         if error:
             label.add_css_class("chat-error")
         item = {"text": text, "user": user, "error": error}
+        bubble = label
+        if user and apps:
+            item["apps"] = dict(apps)
+            bubble = words_with_apps(text, apps)
+            bubble.add_css_class("bubble")
+            bubble.add_css_class("user")
         if when is None and not error:
             self.window.note(self, text, user)
         if user:
             if moment := time.time() if when is None else when:
                 item["time"] = moment
-            self.add_tick(label, item)
+            self.add_tick(bubble, item)
         self.history.append(item)
         if user or error:
-            return self.add(label)
+            return self.add(bubble)
         # What the user is asked, at the end of an answer, is highlighted, and never folded away:
         # the last paragraph, when it is short and asks something.
         lines = text.rstrip().split("\n")
@@ -1544,9 +1782,9 @@ class Conversation(Gtk.Box):
         for i, row in enumerate(rows):
             row.set_visible(steps["open"] or (not steps["done"] and i >= count - self.STEPS_SHOWN) or not folded)
         seconds = int((steps["end"] or time.time()) - steps["start"])
-        took = f"{seconds // 60}:{seconds % 60:02d}" if seconds >= 60 else f"{seconds} s"
-        if steps.get("restored"):  # shown again from a saved conversation: how long it took is not known
-            took = ""
+        if steps.get("restored"):  # shown again from a saved conversation: the time kept with it, if any
+            seconds = steps.get("took")
+        took = "" if seconds is None else f"{seconds // 60}:{seconds % 60:02d}" if seconds >= 60 else f"{seconds} s"
         word = "step" if count == 1 else "steps"
         dot = "  \u00b7  "
         steps["header"].set_visible(True)  # the card always says how many steps and how long; it opens when there are many
@@ -1565,6 +1803,8 @@ class Conversation(Gtk.Box):
             self.steps["gear"].remove_css_class("turning")
             self.steps["gear"].set_from_icon_name("object-select-symbolic")
             self.steps["end"] = self.steps["end"] or time.time()
+            if not self.steps.get("restored"):  # kept, so that the card says it again after a restart
+                self.history.append({"took": int(self.steps["end"] - self.steps["start"])})
             self.show_steps(self.steps)
             self.steps = None
 
@@ -1580,6 +1820,8 @@ class Conversation(Gtk.Box):
         if self.busy or not (text or self.attachments):
             return
         text = text or "Look at this."
+        picked = {name: app_id for name, app_id in self.entry.apps().items() if name in text}
+        self.picked = {}
         self.entry.set_text("")
         prompt = text
         self.positive = bool(PLEASED.search(text)) and shown is None  # their own words, not a card's request
@@ -1601,7 +1843,9 @@ class Conversation(Gtk.Box):
             if self.first_run:  # from here on this is no longer a new system
                 os.makedirs(os.path.dirname(WELCOMED_PATH), exist_ok=True)
                 open(WELCOMED_PATH, "w").close()
-        self.add_text(shown or text, user=True)
+        self.add_text(shown or text, user=True, apps=picked if shown is None else None)
+        if picked:
+            prompt += self.picked_note(picked)
         if getattr(self, "reopened", ""):
             prompt = ("This conversation is taken up again from History. What was said in it before (the start may "
                       "be cut):\n\n" + self.reopened + "\n\n---\n\n" + prompt)
@@ -1647,6 +1891,9 @@ class Conversation(Gtk.Box):
                 "sandbox_mode": "read-only", "approval_policy": "never",
                 "mcp_servers.mentor.command": MCP_SERVER,
                 "mcp_servers.mentor.default_tools_approval_mode": "approve",
+                # Its own limit is 60 s, and a tool that asks for the password or shows a change
+                # waits for the user: given up on, the call was made again and asked a second time.
+                "mcp_servers.mentor.tool_timeout_sec": 7200,
                 "developer_instructions": f"{guide}\n\n{SYSTEM_PROMPT}{ATTACHED['codex']}",
             }
             if effort:
@@ -1892,6 +2139,74 @@ class Conversation(Gtk.Box):
             self.window.ask_say(re.sub(r"[*`#]", "", said))
             return
         self.window.on_finished(self)
+
+
+SUGGEST_FROM = 3  # letters typed before installed apps are offered
+SUGGEST_MOST = 5
+SUGGEST_WORD = re.compile(r"[\w][\w+.'-]*$")
+_apps = {"list": None, "monitor": None}
+
+
+def installed_apps():
+    """[(name, icon, desktop id)] of the applications shown in the app grid, kept until one is added or removed."""
+    if _apps["monitor"] is None:
+        _apps["monitor"] = Gio.AppInfoMonitor.get()
+        _apps["monitor"].connect("changed", lambda *_: _apps.update(list=None))
+    if _apps["list"] is None:
+        seen = {}
+        for app in Gio.AppInfo.get_all():
+            name = (app.get_display_name() or "").strip()
+            if app.should_show() and name and name.lower() not in seen:
+                seen[name.lower()] = (name, app.get_icon(), app.get_id())
+        _apps["list"] = sorted(seen.values(), key=lambda item: item[0].lower())
+    return _apps["list"]
+
+
+def apps_matching(before):
+    """The word being typed at the end of `before` and the apps whose name has a word starting
+    with it (names starting with it first). Nothing under SUGGEST_FROM letters, or when the
+    text already ends with the app's whole name."""
+    found = SUGGEST_WORD.search(before)
+    if not found or len(found.group()) < SUGGEST_FROM:
+        return "", []
+    word = found.group().lower()
+    first, inside = [], []
+    for app in installed_apps():
+        lower = app[0].lower()
+        if before.lower().endswith(lower):
+            return "", []
+        if lower.startswith(word):
+            first.append(app)
+        elif any(part.startswith(word) for part in re.split(r"[\s\-_.:()]+", lower)):
+            inside.append(app)
+    return found.group(), (first + inside)[:SUGGEST_MOST]
+
+
+def words_with_apps(text, apps):
+    """A message of the user's with the apps they picked drawn in it: each picked name with its
+    icon in front, the other words as they were, wrapping like text."""
+    box = Adw.WrapBox(child_spacing=5, line_spacing=3, halign=Gtk.Align.END)
+    names = sorted(apps, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(name) for name in names)) if names else None
+    at = 0
+    for found in (pattern.finditer(text) if pattern else ()):
+        for word in text[at:found.start()].split():
+            box.append(Gtk.Label(label=word))
+        piece = Gtk.Box(spacing=4)
+        piece.add_css_class("app-inline")
+        icon = None
+        try:
+            icon = Gio.DesktopAppInfo.new(apps[found.group()]).get_icon() if apps[found.group()] else None
+        except TypeError:
+            pass
+        piece.append(Gtk.Image(gicon=icon, pixel_size=16) if icon else
+                     Gtk.Image(icon_name="application-x-executable", pixel_size=16))
+        piece.append(Gtk.Label(label=found.group()))
+        box.append(piece)
+        at = found.end()
+    for word in text[at:].split():
+        box.append(Gtk.Label(label=word))
+    return box
 
 
 def card(*children, **properties):

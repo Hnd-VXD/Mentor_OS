@@ -4,6 +4,7 @@ Runs as the logged-in user. Unprivileged work happens here directly; anything
 that needs root goes through pkexec to the helpers in this directory, which
 makes GNOME show the approval dialog.
 """
+import ast
 import hashlib
 import json
 import os
@@ -561,14 +562,80 @@ def wallpaper_set(a):
     return 0, f"wallpaper is now {path}"
 
 
+APP_FOLDERS = ("~/.local/share/applications", "~/.local/share/flatpak/exports/share/applications",
+               "/var/lib/flatpak/exports/share/applications", "/usr/local/share/applications", "/usr/share/applications")
+
+
+def _app_command(name):
+    """The program line of an application's desktop file, without its %-codes: ["gnome-text-editor"]."""
+    for folder in APP_FOLDERS:
+        path = os.path.join(os.path.expanduser(folder), name + ".desktop")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                section = ""
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("["):
+                        section = line
+                    elif section == "[Desktop Entry]" and line.startswith("Exec="):
+                        return [part for part in shlex.split(line[5:]) if not re.fullmatch(r"%[a-zA-Z]", part)]
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def app_open(a):
     name = a["app"].removesuffix(".desktop")
-    try:
-        subprocess.Popen(["gtk-launch", name, *a.get("arguments", [])], start_new_session=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError as e:
-        return 1, str(e)
-    return 0, f"opened {name}"
+    arguments = [str(item) for item in a.get("arguments") or []]
+    # gtk-launch takes files and web addresses only: an option such as --new-window was opened as a
+    # file of that name, and the app started with no window while the tool said "opened". Options
+    # go to the app's own program instead.
+    if any(item.startswith("-") or not ("://" in item or os.path.exists(os.path.expanduser(item)))
+           for item in arguments):  # options, or words such as a Settings panel's name
+        command = _app_command(name)
+        if not command:
+            return 1, f"no installed application {name}.desktop was found"
+        argv = command + arguments
+    else:
+        argv = ["gtk-launch", name, *arguments]
+    # In a scope of its own, as GNOME starts apps: in the agent's, the app went when the agent's turn
+    # ended or was stopped. --scope keeps the launcher a child of this, so its exit code is still seen.
+    argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *argv]
+    before = {w["id"] for w in (_shell_windows() or [])}
+    with tempfile.TemporaryFile() as said:  # a file, not a pipe: an app that goes on running never fills it up
+        try:
+            started = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=said)
+        except OSError as e:
+            return 1, str(e)
+        try:  # a launcher that hands over to a running app ends at once; one that fails says why
+            code = started.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            code = 0
+        said.seek(0)
+        complaint = said.read(2000).decode(errors="replace").strip()
+    if code:
+        return code, f"{name} did not start: {complaint or f'exit code {code}'}"
+    started_as = " ".join(argv[argv.index("--") + 1:])
+    # Whether a window came, in words: a picture of the screen does not reach every model, and the
+    # agent that could not tell went on opening the app again and again.
+    if _shell_windows() is None:
+        return 0, (f"started {started_as}. Whether a window really opened is seen with screen_capture; say it is "
+                   "open only if it is there.")
+    for _ in range(16):
+        new = [w for w in _shell_windows() or [] if w["id"] not in before]
+        if new:
+            return 0, ("Done: it is open. New window: " + "; ".join(_window_line(w) for w in new)
+                       + ". Do not open it again.")
+        time.sleep(0.5)
+    ours = [w for w in _shell_windows() or [] if name.lower() in (w["app"] or "").lower()]
+    if ours:
+        return 0, ("No new window came, but the app was open already: " + "; ".join(_window_line(w) for w in ours)
+                   + ". It may have answered in a window it had (focus it with `windows`), or it opens a new "
+                   "window or page only with an option of its own (`--help` with run_command shows them).")
+    program = (_app_command(name) or [name])[0]
+    return 1, (f"started {started_as}, but no window of it appeared within 8 seconds. `{program} --help` "
+               "(with run_command) shows its options; or tell the user it did not open.")
 
 
 def terminal_run(a):
@@ -741,8 +808,131 @@ def desktop_layout(a):
     return code, out or f"desktop layout is now: {layout}"
 
 
+def _shell_windows():
+    """The user's windows as the shell knows them: [{id, title, app, name, focused, minimized,
+    workspace}], or None when the shell cannot say (Mentor's extension older than this, before
+    the next login)."""
+    code, out = _run(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path",
+                      "/org/mentor/Shell", "--method", "org.mentor.Shell.Windows"], timeout=15)
+    if code:
+        return None
+    try:  # ('[...]',)
+        return json.loads(ast.literal_eval(out.strip())[0])
+    except (ValueError, SyntaxError, IndexError, TypeError):
+        return None
+
+
+def _window_line(w):
+    return (f"{w['id']}: {w['name'] or w['app'] or '?'} \u2014 \u201c{w['title']}\u201d"
+            + (" (in front)" if w.get("focused") else "") + (" (minimized)" if w.get("minimized") else ""))
+
+
+def windows(a):
+    action = a.get("action", "list")
+    found = _shell_windows()
+    if found is None:
+        return 1, ("the shell cannot list windows yet: Mentor's part of the shell is from before this tool, and is "
+                   "renewed at the next login (session_logout). Use screen_capture meanwhile.")
+    if action == "list":
+        return 0, "\n".join(_window_line(w) for w in found) or "No windows are open (only Mentor's desktop)."
+    if action in ("focus", "close"):
+        try:
+            wanted = int(a["id"])
+        except (KeyError, ValueError, TypeError):
+            return 1, "`id`: the number of the window, as `windows` with action list shows it"
+        method = "FocusWindow" if action == "focus" else "CloseWindow"
+        code, out = _run(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path",
+                          "/org/mentor/Shell", "--method", f"org.mentor.Shell.{method}", f"uint64 {wanted}"], timeout=15)
+        if code or "true" not in out:
+            return 1, f"no window {wanted} (it may have closed): {out.strip()}"
+        return 0, f"{'brought to the front' if action == 'focus' else 'asked to close'}: window {wanted}"
+    return 1, "action is one of list, focus, close"
+
+
+def _desktop_programs():
+    """program -> desktop file, for the installed applications that open a window."""
+    found = {}
+    for folder in reversed(APP_FOLDERS):  # the user's own last, so that they win
+        folder = os.path.expanduser(folder)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".desktop"):
+                continue
+            entry, section = {}, ""
+            try:
+                with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("["):
+                            section = line
+                        elif section == "[Desktop Entry]" and "=" in line:
+                            key, _, value = line.partition("=")
+                            entry.setdefault(key.strip(), value.strip())
+                words = shlex.split(entry.get("Exec", ""))
+            except (OSError, ValueError):
+                continue
+            if entry.get("Type") != "Application" or entry.get("Terminal", "").lower() == "true" or not words:
+                continue
+            program = os.path.basename(words[0])
+            if program not in ("flatpak", "env", "sh", "bash", "python3", "python", "gjs"):
+                found[program] = name
+    return found
+
+
+_WRAPPERS = {"nohup", "setsid", "exec", "env", "command", "stdbuf", "nice", "timeout", "sudo", "systemd-run", "dbus-launch"}
+_ONLY_LOOKING = {"--help", "-h", "--help-all", "--version", "-v", "-V", "--headless"}
+
+
+def _starts_an_app(command):
+    """(program, desktop file) when the command starts an application with a window, else None."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return None
+    programs = None
+    start, wrapped = True, False
+    for i, word in enumerate(words):
+        if word in (";", "&", "&&", "||", "|", "(", ")", "\n"):
+            start = True
+            continue
+        if not start:
+            continue
+        if re.fullmatch(r"[A-Za-z_]\w*=.*", word) or word in _WRAPPERS:
+            wrapped = wrapped or word in _WRAPPERS
+            continue
+        if wrapped and (word.startswith("-") or re.fullmatch(r"[\d.]+[smhd]?", word)):
+            continue  # the wrapper's own options: setsid -f, timeout 5, nice -n 5
+        start = wrapped = False
+        if programs is None:
+            programs = _desktop_programs()
+        program = os.path.basename(word)
+        if program in programs:
+            rest = []
+            for after in words[i + 1:]:
+                if after in (";", "&&", "||", "|"):
+                    break
+                rest.append(after)
+            if not _ONLY_LOOKING & set(rest):
+                return program, programs[program]
+    return None
+
+
 def run_command(a):
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
+    app = _starts_an_app(a["command"])
+    if app:
+        # A window started here kept the command waiting until the user closed it, and closing it
+        # looked to the agent as if it had not opened: it started it again, and again.
+        _noted["declined"] = True
+        return 1, (f"Not run: {app[0]} is an application with a window. Started from run_command it keeps the "
+                   "command waiting until its window is closed, and goes when your turn ends. Open it with "
+                   f"app_open {app[1]}, its options in `arguments` (for example --new-window); then look once "
+                   f"with screen_capture. `{app[0]} --help` is fine here.")
     return _run(["bash", "-c", a["command"]], timeout=int(a.get("timeout_seconds", 120)))
 
 
@@ -1130,6 +1320,233 @@ def journal_read(a):
     return 0, _clip(mentor_journal.readable(found, left_out))
 
 
+# --- tools made from what the agent kept doing by hand (run_command), and from Linux's own interfaces ---
+
+SHELL_SOURCE = "~/.cache/mentor/shell-source"
+# Run apart, so that loading the shell's libraries never touches this process.
+_SHELL_DUMP = r"""
+import ctypes, glob, os, sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio
+out = sys.argv[1]
+for lib in sorted(glob.glob("/usr/lib/gnome-shell/lib*.so")):
+    try:
+        ctypes.CDLL(lib)  # its resources register themselves as it loads
+    except OSError:
+        pass
+for path in sorted(glob.glob("/usr/share/gnome-shell/*.gresource")):
+    try:
+        Gio.Resource.load(path)._register()
+    except Exception:
+        pass
+count = 0
+def walk(folder):
+    global count
+    try:
+        names = Gio.resources_enumerate_children(folder, Gio.ResourceLookupFlags.NONE)
+    except Exception:
+        return
+    for name in names:
+        full = folder + name
+        if name.endswith("/"):
+            walk(full)
+            continue
+        try:
+            data = Gio.resources_lookup_data(full, Gio.ResourceLookupFlags.NONE).get_data()
+        except Exception:
+            continue
+        target = os.path.join(out, full.lstrip("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(data)
+        count += 1
+for root in ("/org/gnome/shell/", "/org/gnome/Shell/"):
+    walk(root)
+print(count)
+"""
+
+
+def _shell_source_folder():
+    """The shell's own code, taken out of its libraries once for each version. (folder, error)."""
+    code, version = _run(["gnome-shell", "--version"], timeout=30)
+    version = re.sub(r"[^\w.]+", "-", version.strip()) if code == 0 else "unknown"
+    folder = os.path.join(os.path.expanduser(SHELL_SOURCE), version)
+    if os.path.isfile(os.path.join(folder, ".complete")):
+        return folder, ""
+    os.makedirs(folder, exist_ok=True)
+    code, out = _run(["python3", "-c", _SHELL_DUMP, folder], timeout=300)
+    if code != 0 or not out.strip().isdigit() or int(out.strip()) == 0:
+        return None, f"the shell's code could not be taken out of its libraries: {out.strip()[-600:]}"
+    open(os.path.join(folder, ".complete"), "w").close()
+    return folder, ""
+
+
+def shell_source(a):
+    folder, error = _shell_source_folder()
+    if not folder:
+        return 1, error
+    action = a.get("action", "list")
+    files = []
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            if not name.startswith("."):
+                files.append(os.path.relpath(os.path.join(root, name), folder).replace(os.sep, "/"))
+    files.sort()
+    if action == "list":
+        prefix = str(a.get("path") or "").strip("/")
+        shown = [f for f in files if f.startswith(prefix)]
+        return 0, _clip(f"{len(shown)} files of GNOME Shell's own code (resource:///<path>):\n" + "\n".join(shown))
+    if action == "search":
+        try:
+            pattern = re.compile(a["pattern"])
+        except (KeyError, re.error) as e:
+            return 1, f"a regular expression is needed in `pattern`: {e}"
+        prefix = str(a.get("path") or "").strip("/")
+        found = []
+        for name in files:
+            if not name.startswith(prefix) or not name.endswith((".js", ".css", ".ui", ".xml", ".json")):
+                continue
+            with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
+                for number, line in enumerate(f, 1):
+                    if pattern.search(line):
+                        found.append(f"{name}:{number}: {line.rstrip()[:200]}")
+                        if len(found) >= 300:
+                            break
+            if len(found) >= 300:
+                found.append("[stopped at 300 lines: search with a narrower pattern or path]")
+                break
+        return 0, _clip("\n".join(found) or "nothing matches")
+    if action == "read":
+        name = str(a.get("path") or "").strip("/").removeprefix("resource:").strip("/")
+        if name not in files:
+            close = [f for f in files if f.endswith("/" + name)] if name else []
+            if len(close) == 1:  # a short name that fits one file: that one
+                name = close[0]
+            else:
+                close = close or ([f for f in files if f.endswith(name.split("/")[-1])] if name else [])
+                return 1, f"no such file: {name}" + (f". Did you mean: {', '.join(close[:5])}" if close else "")
+        with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        start = max(1, int(a.get("start_line") or 1))
+        count = max(1, min(int(a.get("lines") or 250), 1000))
+        part = lines[start - 1:start - 1 + count]
+        text = "".join(f"{start + i:5}  {line}" for i, line in enumerate(part))
+        return 0, _clip(f"{name}, lines {start}-{start + len(part) - 1} of {len(lines)}:\n{text}")
+    return 1, "action is one of list, search, read"
+
+
+PEEK_FOLDER = "~/.cache/mentor/peek"
+
+
+def package_peek(a):
+    """The files in a package, or one of them, installed or not: from the package itself."""
+    name = str(a["package"]).strip()
+    if not re.fullmatch(r"[a-z0-9@._+-]+", name):
+        return 1, "not a package name"
+    path = str(a.get("path") or "").strip()
+    if _run(["pacman", "-Qq", name], timeout=30)[0] == 0:  # installed: its files are here
+        code, listed = _run(["pacman", "-Qlq", name], timeout=60)
+        if not path:
+            return code, f"{name} is installed; its files:\n{listed}"
+        target = path if path.startswith("/") else "/" + path
+        if target not in listed.split("\n"):
+            return 1, f"{target} is not a file of {name}"
+        try:
+            with open(target, encoding="utf-8", errors="replace") as f:
+                return 0, _clip(f.read())
+        except OSError as e:
+            return 1, str(e)
+    code, url = _run(["pacman", "-Sp", name], timeout=60)
+    url = url.strip().splitlines()[-1] if url.strip() else ""
+    if code != 0 or not url.startswith(("http://", "https://", "file://")):
+        return 1, f"{name} is not in the package lists: {url}"
+    folder = os.path.expanduser(PEEK_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+    archive = os.path.join(folder, os.path.basename(url))
+    if not os.path.isfile(archive):
+        code, out = _run(["curl", "-fsSL", "--max-filesize", "300000000", "-o", archive + ".part", url], timeout=600)
+        if code != 0:
+            return 1, f"could not download {url}: {out}"
+        os.replace(archive + ".part", archive)
+    if not path:
+        code, listed = _run(["bsdtar", "-tf", archive], timeout=120)
+        listed = "\n".join(line for line in listed.splitlines() if not line.startswith(".") and not line.endswith("/"))
+        return code, _clip(f"{name} (not installed; from {url}); its files:\n{listed}")
+    code, out = _run(["bsdtar", "-xOf", archive, path.lstrip("/")], timeout=120)
+    return code, out if code == 0 else f"{path} is not in {name}: {out}"
+
+
+_READING = re.compile(r"(^|\.)(Get|List|Introspect|Ping|Query|Has|Is|Can|Lookup|Find|Describe)[A-Z]?\w*$")
+
+
+def dbus(a):
+    bus = "--system" if a.get("bus") == "system" else "--session"
+    action = a.get("action", "list")
+    if action == "list":
+        code, out = _run(["busctl", "--user" if bus == "--session" else "--system", "list", "--no-legend",
+                          "--no-pager", "--acquired"], timeout=30)
+        names = sorted({line.split()[0] for line in out.splitlines() if line and not line.startswith(":")})
+        return code, "\n".join(names)
+    service, path = str(a.get("service") or ""), str(a.get("object_path") or "/")
+    if not service:
+        return 1, "`service` is needed, e.g. org.gnome.SessionManager"
+    if action == "introspect":
+        return _run(["gdbus", "introspect", bus, "--dest", service, "--object-path", path]
+                    + (["--recurse"] if a.get("recurse") else []), timeout=60)
+    if action == "call":
+        method = str(a.get("method") or "")
+        if "." not in method:
+            return 1, "`method` is the interface and the method: org.gnome.SessionManager.Inhibit"
+        if not _READING.search(method):
+            _noted["changed"] = True
+        return _run(["gdbus", "call", bus, "--dest", service, "--object-path", path, "--method", method,
+                     "--timeout", "60", *[str(x) for x in a.get("arguments") or []]], timeout=90)
+    return 1, "action is one of list, introspect, call"
+
+
+_SOUND_TARGET = {"speaker": "@DEFAULT_AUDIO_SINK@", "microphone": "@DEFAULT_AUDIO_SOURCE@"}
+
+
+def sound(a):
+    action = a.get("action", "status")
+    target = _SOUND_TARGET.get(a.get("device") or "speaker", "@DEFAULT_AUDIO_SINK@")
+    if action == "status":
+        parts = [_run(["wpctl", "status"], timeout=30)[1]]
+        for device, node in _SOUND_TARGET.items():
+            parts.append(f"{device}: {_run(['wpctl', 'get-volume', node], timeout=30)[1].strip()}")
+        return 0, _clip("\n".join(parts))
+    if action == "volume":
+        value = str(a.get("value") or "").replace(" ", "")
+        level = re.fullmatch(r"(\d{1,3})%([+-]?)", value)
+        if not level or int(level.group(1)) > 100:
+            return 1, "value: a level from 0% to 100% such as 40%, or a step such as 5%+ or 5%-"
+        _run(["wpctl", "set-volume", "-l", "1.0", target, value], timeout=30)
+        return _run(["wpctl", "get-volume", target], timeout=30)
+    if action == "mute":
+        value = {"true": "1", "false": "0", "toggle": "toggle"}.get(str(a.get("value", "toggle")).lower(), "toggle")
+        _run(["wpctl", "set-mute", target, value], timeout=30)
+        return _run(["wpctl", "get-volume", target], timeout=30)
+    if action == "output":
+        value = str(a.get("value") or "")
+        if not value.isdigit():
+            return 1, "value: the id of the device, as `sound` with action status lists them"
+        code, out = _run(["wpctl", "set-default", value], timeout=30)
+        return code, out or f"device {value} is now the default"
+    return 1, "action is one of status, volume, mute, output"
+
+
+def network_status(a):
+    parts = []
+    for title, argv in (("Connection", ["nmcli", "general", "status"]),
+                        ("Devices", ["nmcli", "device", "status"]),
+                        ("Active connections", ["nmcli", "connection", "show", "--active"]),
+                        ("Wi-Fi nearby", ["nmcli", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"])):
+        code, out = _run(argv, timeout=60)
+        parts.append(f"## {title}\n{out.strip() or '(nothing)'}")
+    return 0, _clip("\n\n".join(parts))
+
+
 def _schema(properties=None, required=()):
     return {"type": "object", "properties": properties or {}, "required": list(required)}
 
@@ -1336,9 +1753,17 @@ TOOLS = {
         "Set the desktop wallpaper to an image file. Wallpapers that come with the system are under "
         "/usr/share/backgrounds; one the user gave you or that you downloaded should be kept in ~/Pictures.",
         _schema({"path": _STR}, ["path"]), wallpaper_set),
+    "windows": (
+        "The windows open on the user's screen, in words: `action` list (each with its number, app and "
+        "title; which is in front), focus (`id`: bring it to the front) or close (`id`: as its own close "
+        "button, so the app may still ask about unsaved work). Mentor's own windows are not listed. Use this "
+        "to know what is open, rather than a screen_capture.",
+        _schema({"action": {"type": "string", "enum": ["list", "focus", "close"]}, "id": {"type": "integer"}},
+                ["action"]), windows),
     "app_open": (
         "Open an installed application for the user, by desktop file name (chromium.desktop). `arguments` are "
-        "the files or URLs to open in it. Use this when the user wants something opened or shown in an app.",
+        "the files or URLs to open in it; options or words of the app's own program (--new-window, or "
+        "wifi for org.gnome.Settings.desktop) may be given too, and then the program is run with them. Use this when the user wants something opened or shown in an app.",
         _schema({"app": _STR, "arguments": {"type": "array", "items": _STR}}, ["app"]), app_open),
     "terminal_run": (
         "Run a bash command in a new Console window on the user's screen, so they watch it happen; returns "
@@ -1482,6 +1907,45 @@ TOOLS = {
         _schema({"id": _STR, "vote": {"type": "string", "enum": ["up", "down"]}}, ["id", "vote"]), recipe_rate),
     "recipe_list": (
         "The recipes kept on this computer, newest first.", _schema(), recipe_list),
+    "shell_source": (
+        "GNOME Shell's own code (its JavaScript, styles and interface files, built into its libraries), "
+        "to read how the shell does a thing before writing an extension or a widget for this version: "
+        "`action` list (files, under `path`), search (`pattern`, a regular expression; `path` narrows it) or "
+        "read (`path` as listed, `start_line`, `lines`). A path ui/quickSettings.js is "
+        "resource:///org/gnome/shell/ui/quickSettings.js in an extension. Use this, not commands that load the "
+        "shell's libraries.",
+        _schema({"action": {"type": "string", "enum": ["list", "search", "read"]}, "path": _STR, "pattern": _STR,
+                 "start_line": {"type": "integer"}, "lines": {"type": "integer"}}, ["action"]), shell_source),
+    "package_peek": (
+        "The files in an Arch package, or the text of one of them, without installing it: from the system "
+        "when it is installed, else from the package downloaded into ~/.cache/mentor/peek. For learning from "
+        "how something is made (another extension, a program's own settings files) before writing one.",
+        _schema({"package": _STR, "path": _STR}, ["package"]), package_peek),
+    "dbus": (
+        "Talk to the services of the desktop (session bus) or of the system (system bus): `action` list "
+        "(the services there), introspect (`service`, `object_path`: its methods, properties and signals) or "
+        "call (`method` as interface.Method, `arguments` each in GVariant text: 'text', 42, true, "
+        "\"uint32 12\"). What a call holds only while its caller lives (an inhibit cookie) ends when the call "
+        "returns; for something lasting, write an extension or a service. A call that changes something is "
+        "written in the journal.",
+        _schema({"action": {"type": "string", "enum": ["list", "introspect", "call"]},
+                 "bus": {"type": "string", "enum": ["session", "system"], "default": "session"},
+                 "service": _STR, "object_path": _STR, "method": _STR, "recurse": {"type": "boolean"},
+                 "arguments": {"type": "array", "items": _STR}}, ["action"]), dbus),
+    "sound": (
+        "Sound: `action` status (the devices with their ids, and the volume of the speaker and the "
+        "microphone), volume (`value` 40%, or a step 5%+ / 5%-; at most 100%), mute (`value` true, false or "
+        "toggle) or output (`value` the id of the device to use from now on). `device` is speaker (default) "
+        "or microphone.",
+        _schema({"action": {"type": "string", "enum": ["status", "volume", "mute", "output"]},
+                 "device": {"type": "string", "enum": ["speaker", "microphone"]}, "value": _STR}, ["action"]),
+        sound),
+    "network_status": (
+        "The network: whether this computer is online, its devices, the connections in use and the Wi-Fi "
+        "networks nearby. Changes nothing. To join a Wi-Fi network that needs a password, open its Settings "
+        "panel for the user (app_open org.gnome.Settings.desktop with the argument wifi): never ask for a "
+        "password in the chat.",
+        _schema(), network_status),
     "journal_read": (
         "The journal of what was changed on this system through these tools, by you and by every model before "
         "you: under each request of the user's, the changes made for it, when, and the way back where there is "
@@ -1549,6 +2013,11 @@ JOURNAL = {
                                       f"desktop_layout {'normal' if a['layout'] == 'taskbar' else 'taskbar'}"),
     "suggestions_restore": lambda a, out: f"brought back suggestions that were turned away: {a['what']}",
     "run_root_command": lambda a, out: f"as root: {a['command']}",
+    "dbus": lambda a, out: (f"D-Bus call on the {a.get('bus') or 'session'} bus: {a.get('service')} "
+                            f"{a.get('object_path') or '/'} {a.get('method')} {' '.join(map(str, a.get('arguments') or []))}"
+                            if a.get("action") == "call" and _noted.get("changed") else None),
+    "sound": lambda a, out: (f"sound: {a['action']} of the {a.get('device') or 'speaker'} -> {a.get('value', 'toggle')}"
+                             if a.get("action") in ("volume", "mute", "output") else None),
     "recipe_share": lambda a, out: f"posted the recipe {os.path.basename(a['path'])} to the recipes site" if out.startswith("Posted") else None,
     "recipe_fetch": lambda a, out: f"downloaded the recipe {a['id']} from the recipes site" if out.startswith("Downloaded") else None,
     "recipe_used": lambda a, out: None if out.startswith("That recipe") else (

@@ -28,9 +28,10 @@ import sys
 import gi
 
 gi.require_version("Polkit", "1.0")
-from gi.repository import GLib, Polkit
+from gi.repository import Gio, GLib, Polkit
 
 LIB = "/usr/local/lib/mentor"
+CHAT = b"/usr/local/bin/mentor-chat"
 # helper -> the polkit action that guards it (the same pairs as in org.mentor.policy).
 DOORS = {"mentor-helper": "org.mentor.manage", "mentor-sandbox": "org.mentor.sandbox",
          "mentor-root-shell": "org.mentor.root-shell", "mentor-write-file": "org.mentor.write-file",
@@ -88,8 +89,71 @@ def said(action, args, explain, exact):
 
 
 def answer(out, code, text=""):
-    out.write(text.encode() + b"\n\0exit " + str(code).encode() + b"\n")
-    out.flush()
+    try:
+        out.write(text.encode() + b"\n\0exit " + str(code).encode() + b"\n")
+        out.flush()
+    except OSError:
+        pass  # the caller is gone
+
+
+def asker(pid, uid):
+    """Who polkit is told is asking: the Mentor chat window the caller runs under, when there is
+    one, else the caller itself. polkit keeps a password "for a few minutes" (auth_admin_keep) for
+    the one that asked, and every message in the chat starts a new engine with new tool processes:
+    kept for the caller alone, the password was asked again at every step of one change."""
+    seen = pid
+    for _ in range(16):
+        try:
+            if os.stat(f"/proc/{seen}").st_uid != uid:
+                break
+            with open(f"/proc/{seen}/cmdline", "rb") as f:
+                if CHAT in f.read().split(b"\0")[:2]:
+                    return seen
+            with open(f"/proc/{seen}/stat") as f:
+                seen = int(f.read().rpartition(")")[2].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if seen <= 1:
+            break
+    return pid
+
+
+def approved(connection, subject, action, details):
+    """Ask polkit, and take the question back when the caller goes away while the password
+    dialog is open (the user pressed Stop, the engine gave up on the tool): a dialog left behind
+    was a second dialog for whatever came next, and its yes ran something nobody waited for.
+    Returns (authorized?, dismissed?, error text)."""
+    loop, cancel, outcome = GLib.MainLoop(), Gio.Cancellable(), {}
+
+    def done(authority, result):
+        try:
+            outcome["result"] = authority.check_authorization_finish(result)
+        except GLib.Error as e:
+            outcome["error"] = e.message
+        loop.quit()
+
+    def hangup(*_):
+        try:
+            gone = connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except BlockingIOError:
+            return True
+        except OSError:
+            gone = True
+        if gone:
+            outcome["gone"] = True
+            cancel.cancel()
+        return False  # nothing more is sent: one look is enough
+
+    GLib.io_add_watch(connection.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, hangup)
+    Polkit.Authority.get_sync(None).check_authorization(
+        subject, action, details, Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, cancel, done)
+    loop.run()
+    if outcome.get("gone"):
+        return False, True, "mentor: the caller went away before the password was given"
+    if "error" in outcome:
+        return False, False, f"mentor: could not ask for approval: {outcome['error']}"
+    result = outcome["result"]
+    return result.get_is_authorized(), result.get_dismissed(), "mentor: not approved"
 
 
 def main():
@@ -108,18 +172,15 @@ def main():
     except (ValueError, KeyError, TypeError) as e:
         return answer(out, 2, f"mentor: bad request: {e}")
 
-    # Who is asking is the program at the other end of the connection, as the kernel names it.
-    subject = Polkit.UnixProcess.new_for_owner(pid, 0, uid)
+    # Who is asking is the program at the other end of the connection, as the kernel names it,
+    # or the chat window it runs under (asker).
+    subject = Polkit.UnixProcess.new_for_owner(asker(pid, uid), 0, uid)
     details = Polkit.Details.new()
     details.insert("polkit.message", said(action, args, request.get("explain"), bool(request.get("exact"))))
-    try:
-        result = Polkit.Authority.get_sync(None).check_authorization_sync(
-            subject, DOORS[helper], details, Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
-    except GLib.Error as e:
-        return answer(out, 127, f"mentor: could not ask for approval: {e.message}")
-    if not result.get_is_authorized():
+    authorized, dismissed, why = approved(connection, subject, DOORS[helper], details)
+    if not authorized:
         # As pkexec tells them apart: 126 the user said no, 127 they may not say yes.
-        return answer(out, 126 if result.get_dismissed() else 127, "mentor: not approved")
+        return answer(out, 126 if dismissed else 127, why)
 
     done = subprocess.run([f"{LIB}/{helper}", action, json.dumps(args)], cwd="/",
                           env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/bin", "PKEXEC_UID": str(uid),
