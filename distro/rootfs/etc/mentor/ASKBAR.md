@@ -7,7 +7,7 @@ This is for the agent, written so that a small model can follow it. The assistan
 - **Alt+Space, or Super+Z**, anywhere: the assistant's text box comes up at the bottom of the screen, in front of the program they are in. Nothing is moved or minimised.
 - **You are sent a picture of the screen** as it was just before the box came up. It is attached like any file, and shown as a chip over the box, which they can remove.
 - They type and press Enter. A bubble above the box says "Mentor is looking…", then "Mentor is working…" while you use tools, then your answer.
-- **Esc, a click anywhere else, or the same key again** puts the box back on the desktop where it lives. The question and the answer are in the conversation there (Super+A), so a second question follows the first. An answer still to come when the box goes back is announced in the usual way, with a notification.
+- **Esc, a click anywhere else, or the same key again** puts the box back on the desktop where it lives. Not the box's own windows: the preview of its picture (a click on the chip: a window of its own, the box is too small for it) and the list of programs of "Open with…" (right click) leave it where it is (`ask_left`: windows transient for the box, and `hold_open` while the list is up), and it is in front again when they close. The question and the answer are in the conversation there (Super+A), so a second question follows the first. An answer still to come when the box goes back is announced in the usual way, with a notification.
 - With no engine connected yet, the key takes them to the desktop, where the card to connect one is.
 
 ## How to answer a question from over a program

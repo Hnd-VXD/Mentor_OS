@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor: the power button turns the system off (the launcher's proper shut down)
+Documentation=file:///etc/mentor/BOOT.md
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-power-button
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

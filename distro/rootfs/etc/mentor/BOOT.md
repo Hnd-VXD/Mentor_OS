@@ -83,6 +83,12 @@ mkinitcpio -P
   `mentor.script` has `@FRAMES@` where the number of spinner frames goes; the `sed` line fills it in. `mkinitcpio -P` puts the theme into the initramfs, which makes this a change to how the system starts: the next start is a trial. Needs the packages `plymouth` and `librsvg`.
 - If a new plymouth no longer has `/usr/share/plymouth/themes/spinner/throbber-*.png`, the loop copies nothing and `@FRAMES@` becomes 0, which breaks the script (a division by zero in `refresh`). Check `ls /usr/share/plymouth/themes/spinner/` first; if the frames are gone or renamed, use what is there, or remove the spinner lines from the script.
 
+## When Windows sleeps, and the launcher's shut down
+
+**Windows pauses the VM while the PC sleeps** (Modern Standby). On 2026-10-14 a sleep of 88 minutes (Windows' System log: Kernel-Power 506 "entering Modern Standby", 507 "exiting") left the kernel saying `rcu: ... kthread starved for 5280247 jiffies`, and every service with a systemd watchdog (journald, logind, udevd, hostnamed: 3 minutes) was killed as hung on waking. logind restarting broke the desktop: the login screen started over the running session, which lost its screen and keyboard (`Device already taken`), and the VM's window looked frozen. A pause is not a hang, so **no service is watched that way here**: `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf` and `/etc/systemd/user/service.d/…` set `WatchdogSec=0` for every service (`systemctl show -p WatchdogUSec systemd-logind` says 0). Tested by stopping the VM 4 minutes (QMP `stop`, `cont`): before, `systemd-hostnamed.service: Watchdog timeout`; after, nothing, and the session goes on.
+
+**The launcher's "shut it down properly"** presses the VM's power button (QMP `system_powerdown`). GNOME takes that button from logind while someone is logged in and does what `power-button-action` says; it was `suspend`, which a VM cannot do, so nothing happened and the launcher then said Mentor was still running. Now `mentor-power-button.service` (`/usr/local/lib/mentor/mentor-power-button`) reads every input device named "Power Button" itself and runs `systemctl poweroff` on a press, at the login screen, in a session, or in a stuck one; GNOME's `power-button-action` is `'nothing'` (dconf `00-mentor`) so the two do not both act. Off in about 2 seconds. If it does not: `systemctl status mentor-power-button` (it says "no power button found" when `/proc/bus/input/devices` has none).
+
 ## Making the safe start again from nothing
 
 For the user to run as root; you cannot write these.

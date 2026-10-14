@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Mentor's thumbs down, for rating an answer (mentor-chat, add_thumbs). Symbolic: drawn in the theme's colour. -->
+  <g transform="rotate(180 8 8)">
+    <path fill="#2e3436" d="M1 7h3v8H1z"/>
+    <path fill="#2e3436" d="M5.25 7.2 8.6 1.3c.95-.25 2.3.55 2 2.15L10.1 6.5h3.4c1 0 1.75.9 1.55 1.9l-1 5.2c-.15.8-.85 1.4-1.65 1.4h-7.15z"/>
+  </g>
+</svg>

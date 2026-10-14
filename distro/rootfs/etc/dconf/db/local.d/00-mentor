@@ -22,11 +22,27 @@ favorite-apps=['chromium.desktop','org.gnome.Nautilus.desktop', 'org.gnome.Conso
 # app grid (still on Super, then the grid button).
 [org/gnome/shell/keybindings]
 toggle-application-view=@as []
-# Windows keeps the Print Screen key for itself, so the VM never sees it.
-show-screenshot-ui=['Print', '<Shift><Super>s']
+# GNOME's own screenshot overlay is off: Mentor takes the picture and Gradia opens it (below).
+show-screenshot-ui=@as []
+screenshot=@as []
+screenshot-window=@as []
 
 [org/gnome/settings-daemon/plugins/media-keys]
-custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2/']
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-window/']
+
+# A screenshot: drag out an area (Esc cancels, a click is the whole screen), saved in
+# Pictures/Screenshots and opened in Gradia to draw on, copy or save (`mentor screenshot --area`).
+# Print Screen is Windows': its Snipping Tool takes it even while Mentor is full screen, and the
+# picture comes into Mentor's clipboard (Ctrl+V). Bound here too, both pickers came up at once.
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-2]
+name='Screenshot (second key)'
+command='/usr/local/bin/mentor screenshot --area'
+binding='<Shift><Super>s'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-window]
+name='Screenshot of the window in front'
+command='/usr/local/bin/mentor screenshot --window'
+binding='<Alt>Print'
 
 # Alt+Space and Super+Z bring up the ask bar over whatever is in front: a text box for the
 # assistant, which is sent a picture of the screen with the words (/etc/mentor/ASKBAR.md).
@@ -68,6 +84,8 @@ picture-uri='file:///usr/share/backgrounds/mentor/blue-waves.jpg'
 
 [org/gnome/settings-daemon/plugins/power]
 sleep-inactive-ac-type='nothing'
+# The power button is mentor-power-button's: it powers off (the launcher's proper shut down).
+power-button-action='nothing'
 
 # The default wallpaper; the others of ours are offered in Settings > Appearance.
 [org/gnome/desktop/background]

@@ -1,0 +1,57 @@
+#!/usr/bin/python3
+"""The power button turns Mentor off.
+
+The launcher's "shut it down properly" presses the VM's power button (QMP system_powerdown).
+GNOME takes that button from logind while someone is logged in, and does what its setting says
+(it was "suspend", which a VM cannot do: nothing happened). This reads the button itself, from
+every input device named "Power Button", and powers off, so it works at the login screen, in a
+session, and in a session that is stuck. GNOME's own setting is "nothing" (00-mentor in dconf),
+so the two do not both act. See /etc/mentor/BOOT.md.
+"""
+import os
+import select
+import struct
+import subprocess
+import sys
+import time
+
+EVENT = struct.Struct("llHHi")  # struct input_event: time (two longs), type, code, value
+EV_KEY, KEY_POWER = 1, 116
+
+
+def buttons():
+    found, name = [], ""
+    try:
+        with open("/proc/bus/input/devices") as f:
+            for line in f:
+                if line.startswith("N: Name="):
+                    name = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("H: Handlers=") and name == "Power Button":
+                    found += ["/dev/input/" + h for h in line.split("=", 1)[1].split() if h.startswith("event")]
+    except OSError:
+        pass
+    return found
+
+
+def main():
+    devices = []
+    for _ in range(30):  # the devices may come a moment after this starts
+        devices = [os.open(path, os.O_RDONLY) for path in buttons() if os.path.exists(path)]
+        if devices:
+            break
+        time.sleep(1)
+    if not devices:
+        print("no power button found", file=sys.stderr)
+        return 0
+    while True:
+        ready, _, _ = select.select(devices, [], [])
+        for fd in ready:
+            data = os.read(fd, EVENT.size * 64)
+            for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _s, _u, kind, code, value = EVENT.unpack_from(data, i)
+                if kind == EV_KEY and code == KEY_POWER and value == 1:
+                    print("power button pressed: powering off", flush=True)
+                    subprocess.run(["systemctl", "poweroff"])
+
+
+sys.exit(main())

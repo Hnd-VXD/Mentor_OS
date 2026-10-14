@@ -95,6 +95,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
 | `/usr/local/bin/mentor-chat` | the assistant: the window that is the desktop | yes | at login, or start it again | ASSISTANT.md, ENGINES.md |
+| `/usr/share/icons/hicolor/scalable/actions/mentor-thumb-up-symbolic.svg`, `mentor-thumb-down-symbolic.svg` | the thumbs in the Recipes app and in the "Did it work?" card | user | next start of the app | RECIPES.md |
 | `/usr/local/bin/mentor-agent` | the engine for the NVIDIA and OpenAI models | yes | next message | ENGINES.md |
 | `/etc/xdg/autostart/mentor-desktop.desktop` | starts mentor-chat at login | yes | login | ASSISTANT.md |
 | `/usr/local/bin/mentor-settings` | Mentor Settings: the window for the user's choices about safety, suggestions, warnings, and the journal to read | yes | next time it is opened | SETTINGS.md |
@@ -130,6 +131,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, journal, recipes, security, settings, ask, log, boot, …` | user | at once | TOOLS.md |
 | `/usr/local/bin/mentor-mcp` | gives the tools to Claude Code, Codex and the Antigravity CLI (MCP) | user | next message | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side | user | next message | TOOLS.md |
+| `/usr/local/lib/mentor/mentor_report.py` | `mentor tool-report`: where the tools fall short, from the journal | user | next run | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
 | `/usr/local/lib/mentor/mentor_security.py` | the safety checks; what was read from outside; what is said before a password | user | next message | SECURITY.md |
 | `/usr/local/lib/mentor/mentor-explain` | the window with the plain words, and the yellow warning, before a password | user | next call | SECURITY.md |
@@ -138,6 +140,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor_recipes.py` | the material for a recipe from the journal, the folder, and the check for secrets | user | next message | RECIPES.md |
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-sandbox`, `mentor-root-shell`, `mentor-write-file`, `mentor-apply`, `mentor-undo` | the doors to root, one for each password dialog and its words | user | next call | TOOLS.md |
+| `/usr/local/lib/mentor/mentor-power-button`, `/etc/systemd/system/mentor-power-button.service` | the power button powers off (the launcher's proper shut down) | root | at once | BOOT.md |
+| `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf`, `/etc/systemd/user/service.d/10-mentor-no-watchdog.conf` | no service is killed as hung after Windows slept | root | next start | BOOT.md |
 | `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
 | `/usr/local/lib/systemd/system/mentor-root.socket`, `mentor-root@.service` | where the tools reach it (`/run/mentor-root.sock`), one start for each request | user | `systemctl daemon-reload` | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
@@ -201,6 +205,7 @@ systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-b
 systemctl enable mentor-advisor.timer
 systemctl enable nftables.service          # the firewall
 systemctl enable mentor-root.socket        # who asks for the password, saying what for
+systemctl enable mentor-power-button.service  # the power button powers off
 systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
 
 # Where the root side writes its log

@@ -27,6 +27,8 @@ import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quick
 const TASKBAR = 'dash-to-panel@jderose9.github.com';
 const ASSISTANT = 'org.mentor.Chat';
 const ASSISTANT_COMMAND = '/usr/local/bin/mentor-chat';
+// The title of the assistant's text box over the windows (mentor-chat, toggle_ask); its desktop window is "Mentor".
+const ASK_TITLE = 'Ask Mentor';
 
 function ask(...args) {
     Gio.Subprocess.new([ASSISTANT_COMMAND, ...args], Gio.SubprocessFlags.NONE);
@@ -168,7 +170,7 @@ class DesktopLayer {
     _watch(window) {
         if (this._adopt(window))
             return;
-        const ids = ['notify::wm-class', 'notify::gtk-application-id'].map(signal =>
+        const ids = ['notify::wm-class', 'notify::gtk-application-id', 'notify::title'].map(signal =>
             window.connect(signal, () => {
                 if (this._adopt(window))
                     ids.forEach(id => window.disconnect(id));
@@ -206,11 +208,22 @@ class DesktopLayer {
         if (window === this._window || (type !== Meta.WindowType.NORMAL && type !== Meta.WindowType.DESKTOP))
             return true;
         // The assistant has one more window: its text box, lifted out of the desktop to be
-        // shown over whatever is in front (Alt+Space). The desktop is there already when
-        // that one comes, which is how the two are told apart.
-        if (this._window && type === Meta.WindowType.NORMAL) {
+        // shown over whatever is in front (Alt+Space), titled ASK_TITLE. Told apart by that
+        // title: telling it by "the desktop is there already" took the assistant itself, started
+        // again while its old window was still known here (an update), for the text box, and
+        // the desktop became a window that could be moved, always on top.
+        if (type === Meta.WindowType.NORMAL && window.get_title() === ASK_TITLE) {
             this._float(window);
             return true;
+        }
+        if (!window.get_title() && this._window && type === Meta.WindowType.NORMAL) {
+            // No title yet: which of the two it is shows a moment later (notify::title, _watch).
+            return false;
+        }
+        if (this._window && this._window !== window) {
+            // A new assistant window while one is known: the assistant was started again. The
+            // new one is the desktop; the old one, if it is still there, goes as it closes.
+            this._window = null;
         }
         this._window = window;
         // A desktop window sits under all others and stays out of the taskbar,
@@ -238,6 +251,19 @@ class DesktopLayer {
             });
             this._waits.add(id);
         });
+        // Nothing moves it, makes it smaller or hides it: put back at once. A dialog's header bar
+        // inside it (History) acts as the window's title bar, and once dragged the whole desktop
+        // aside and offered its window menu (Move, Hide, Always on Top); 2026-10-14.
+        for (const signal of ['position-changed', 'size-changed'])
+            window.connect(signal, () => this._keepPlace(window));
+        window.connect('notify::minimized', () => {
+            if (window === this._window && window.minimized)
+                window.unminimize();
+        });
+        window.connect('notify::above', () => {
+            if (window === this._window && window.above)
+                window.unmake_above();
+        });
         // It can only be moved once it has drawn itself for the first time.
         window.connect('shown', () => this._ready());
         if (window.get_compositor_private()?.visible)
@@ -260,6 +286,21 @@ class DesktopLayer {
         });
         if (this._showWhenReady)
             this.show();
+    }
+
+    // Back where it belongs, once whatever moved it is done (not while it is being dragged).
+    _keepPlace(window) {
+        if (window !== this._window || this._placing)
+            return;
+        const area = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+        const frame = window.get_frame_rect();
+        if (frame.x === area.x && frame.y === area.y && frame.width === area.width && frame.height === area.height)
+            return;
+        this._placing = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._placing = 0;
+            this._place();
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _place() {
@@ -316,6 +357,9 @@ class DesktopLayer {
         if (this._scaleLater)
             GLib.source_remove(this._scaleLater);
         this._scaleLater = 0;
+        if (this._placing)
+            GLib.source_remove(this._placing);
+        this._placing = 0;
         this._window = null;
     }
 }
@@ -326,6 +370,14 @@ const SERVICE = `
 <node>
   <interface name="org.mentor.Shell">
     <method name="Screenshot">
+      <arg type="s" direction="in" name="path"/>
+      <arg type="b" direction="out" name="written"/>
+    </method>
+    <method name="ScreenshotArea">
+      <arg type="s" direction="in" name="path"/>
+      <arg type="b" direction="out" name="written"/>
+    </method>
+    <method name="ScreenshotWindow">
       <arg type="s" direction="in" name="path"/>
       <arg type="b" direction="out" name="written"/>
     </method>
@@ -358,6 +410,67 @@ function userWindows() {
         window.get_wm_class() !== ASSISTANT && window.get_gtk_application_id() !== ASSISTANT);
 }
 
+// Mentor's own area picker, in place of GNOME's screenshot overlay: the screen dims a little, the
+// pointer is a cross, a box is dragged out. Esc or the right button cancels; a click without
+// dragging is the whole screen. Resolves to [x, y, width, height] in stage pixels, or null.
+function pickArea() {
+    return new Promise(resolve => {
+        const shade = new St.Widget({
+            reactive: true, can_focus: true, x: 0, y: 0, width: global.stage.width, height: global.stage.height,
+            style: 'background-color: rgba(0, 0, 0, 0.28);',
+        });
+        const box = new St.Widget({
+            visible: false,
+            style: 'border: 2px solid rgba(255, 255, 255, 0.95); background-color: rgba(255, 255, 255, 0.10);',
+        });
+        shade.add_child(box);
+        Main.uiGroup.add_child(shade);
+        shade.set_cursor_type?.(Clutter.CursorType.CROSSHAIR);
+        const grab = Main.pushModal(shade);
+        let start = null, finished = false;
+        const finish = area => {
+            if (finished)
+                return;
+            finished = true;
+            Main.popModal(grab);
+            shade.destroy();
+            resolve(area);
+        };
+        const span = ([x, y]) => [Math.min(start[0], x), Math.min(start[1], y), Math.abs(x - start[0]), Math.abs(y - start[1])];
+        shade.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() !== Clutter.BUTTON_PRIMARY)
+                finish(null);
+            else
+                start = event.get_coords();
+            return Clutter.EVENT_STOP;
+        });
+        shade.connect('motion-event', (_actor, event) => {
+            if (!start)
+                return Clutter.EVENT_PROPAGATE;
+            const [x, y, width, height] = span(event.get_coords());
+            box.set_position(x, y);
+            box.set_size(width, height);
+            box.show();
+            return Clutter.EVENT_STOP;
+        });
+        shade.connect('button-release-event', (_actor, event) => {
+            if (!start)
+                return Clutter.EVENT_STOP;
+            const [x, y, width, height] = span(event.get_coords());
+            finish(width < 4 || height < 4
+                ? [0, 0, global.stage.width, global.stage.height]
+                : [Math.round(x), Math.round(y), Math.round(width), Math.round(height)]);
+            return Clutter.EVENT_STOP;
+        });
+        shade.connect('key-press-event', (_actor, event) => {
+            if (event.get_key_symbol() === Clutter.KEY_Escape)
+                finish(null);
+            return Clutter.EVENT_STOP;
+        });
+        shade.grab_key_focus();
+    });
+}
+
 class ShellService {
     constructor(desktop, status) {
         this._desktop = desktop;
@@ -370,6 +483,40 @@ class ShellService {
         try {
             const stream = Gio.File.new_for_path(path).replace(null, false, Gio.FileCreateFlags.PRIVATE, null);
             await new Shell.Screenshot().screenshot(false, stream);
+            stream.close(null);
+            invocation.return_value(new GLib.Variant('(b)', [true]));
+        } catch (e) {
+            invocation.return_dbus_error('org.mentor.Shell.Error', e.message);
+        }
+    }
+
+    // An area the user drags out (mentor screenshot --area, Print Screen): false when cancelled.
+    async ScreenshotAreaAsync([path], invocation) {
+        try {
+            const area = await pickArea();
+            if (!area) {
+                invocation.return_value(new GLib.Variant('(b)', [false]));
+                return;
+            }
+            // The shade is gone: one frame without it before the picture is taken.
+            await new Promise(done => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+                done();
+                return GLib.SOURCE_REMOVE;
+            }));
+            const stream = Gio.File.new_for_path(path).replace(null, false, Gio.FileCreateFlags.PRIVATE, null);
+            await new Shell.Screenshot().screenshot_area(...area, stream);
+            stream.close(null);
+            invocation.return_value(new GLib.Variant('(b)', [true]));
+        } catch (e) {
+            invocation.return_dbus_error('org.mentor.Shell.Error', e.message);
+        }
+    }
+
+    // The window in front, with its frame (mentor screenshot --window).
+    async ScreenshotWindowAsync([path], invocation) {
+        try {
+            const stream = Gio.File.new_for_path(path).replace(null, false, Gio.FileCreateFlags.PRIVATE, null);
+            await new Shell.Screenshot().screenshot_window(true, false, stream);
             stream.close(null);
             invocation.return_value(new GLib.Variant('(b)', [true]));
         } catch (e) {
@@ -586,7 +733,8 @@ export default class MentorExtension extends Extension {
         return {
             shell: Config.PACKAGE_VERSION,
             parts: this._parts,
-            assistant_on_desktop: !!this._desktop?.window,
+            // a window known as the desktop, and one that really is one (not a window that can be moved)
+            assistant_on_desktop: this._desktop?.window?.get_window_type() === Meta.WindowType.DESKTOP,
             taskbar_panels: global.dashToPanel?.panels?.length ?? 0,
         };
     }
@@ -598,7 +746,17 @@ export default class MentorExtension extends Extension {
 
         this._part('desktop', () => {
             this._desktop = new DesktopLayer();
+            // No window menu for the desktop: a right click on a dialog inside it (History) offered
+            // Move, Hide, Always on Top and Close for the whole desktop (2026-10-14).
+            const injections = new InjectionManager();
+            const desktop = this._desktop;
+            injections.overrideMethod(Main.wm._windowMenuManager, 'showWindowMenuForWindow', original => function (window, ...rest) {
+                if (window && window === desktop.window)
+                    return;
+                original.call(this, window, ...rest);
+            });
             return () => {
+                injections.clear();
                 this._desktop.destroy();
                 this._desktop = null;
             };

@@ -24,6 +24,8 @@ import mentor_security
 import mentor_settings
 import mentor_tools
 
+DOCTOR_AGAIN = 30  # seconds before a part found broken is looked at again
+
 STATE_PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "watch.json")
 REMIND_AFTER = 3 * 24 * 3600
 MENTOR = "/usr/local/bin/mentor"
@@ -52,6 +54,13 @@ def findings():
                "would take. The journal (journal_read) says what was changed lately and for which request. Do not "
                "change anything before I agree.")
     broken = re.findall(r"(?m)^BROKEN\s+(.+)$", output(MENTOR, "doctor"))
+    if broken:
+        # Looked at again a little later: a part caught in a moment of change (the assistant being
+        # restarted by an update, the shell busy just after login) is not a broken part. On
+        # 2026-10-14 such a moment gave a red card for a desktop that was fine seconds later.
+        time.sleep(DOCTOR_AGAIN)
+        still = set(re.findall(r"(?m)^BROKEN\s+(.+)$", output(MENTOR, "doctor")))
+        broken = [line for line in broken if line in still]
     if broken:
         listed = "\n".join(broken[:10])
         yield ("doctor:" + ",".join(sorted(line.split(":")[0] for line in broken)), "problem",

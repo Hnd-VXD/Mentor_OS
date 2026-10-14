@@ -100,15 +100,22 @@ def cmd_keyring(args):
             plain = f.read(9) == b"[keyring]"
     except OSError:
         plain = False
-    if plain:
-        print("The login keyring has no password already: it opens by itself.")
-        return
     _out, session = call("/org/freedesktop/secrets", "org.freedesktop.Secret.Service", "OpenSession",
                          GLib.Variant("(sv)", ("plain", GLib.Variant("s", ""))), "(vo)")
-    password = getpass.getpass("Your password (the one you log in with; it is not shown): ")
 
     def secret(text):
         return (session, b"", text.encode(), "text/plain")
+    if plain:
+        if locked:  # no password, but not opened in this session: opened now
+            try:
+                bus.call_sync("org.freedesktop.secrets", "/org/freedesktop/secrets",
+                              "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface", "UnlockWithMasterPassword",
+                              GLib.Variant("(o(oayays))", (path, secret(""))), None, Gio.DBusCallFlags.NONE, 30000, None)
+            except GLib.Error:
+                pass
+        print("The login keyring has no password already: it opens by itself.")
+        return
+    password = getpass.getpass("Your password (the one you log in with; it is not shown): ")
     try:
         bus.call_sync("org.freedesktop.secrets", "/org/freedesktop/secrets",
                       "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface", "ChangeWithMasterPassword",
@@ -116,6 +123,12 @@ def cmd_keyring(args):
                       None, Gio.DBusCallFlags.NONE, 30000, None)
     except GLib.Error as e:
         sys.exit("That did not work: the password is not the keyring's (" + e.message.split(":")[-1].strip() + "). Nothing was changed.")
+    try:  # and open now, for this session too: the chat waits for it (mentor-chat, show_keyring)
+        bus.call_sync("org.freedesktop.secrets", "/org/freedesktop/secrets",
+                      "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface", "UnlockWithMasterPassword",
+                      GLib.Variant("(o(oayays))", (path, secret(""))), None, Gio.DBusCallFlags.NONE, 30000, None)
+    except GLib.Error:
+        pass  # it opens by itself at the next start anyway
     print("Done. The login keyring opens by itself again, and what was in it is kept.")
 
 
@@ -283,6 +296,29 @@ def differing():
     return found
 
 
+def cmd_screenshot(args):
+    """The shell takes the picture at once (no overlay, no permission asked), into Pictures/Screenshots,
+    and Gradia opens it to crop, draw on, copy or save. GNOME's own screenshot keys are off (00-mentor)."""
+    import time
+    folder = os.path.join(subprocess.run(["xdg-user-dir", "PICTURES"], capture_output=True, text=True).stdout.strip()
+                          or os.path.expanduser("~/Pictures"), "Screenshots")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, time.strftime("Screenshot from %Y-%m-%d %H-%M-%S.png"))
+    method = "ScreenshotWindow" if args.window else "ScreenshotArea" if args.area else "Screenshot"
+    done = subprocess.run(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/mentor/Shell",
+                           "--timeout", "600", "--method", f"org.mentor.Shell.{method}", path], capture_output=True, text=True)
+    if args.area and done.returncode == 0 and "false" in done.stdout:
+        return  # Esc: nothing taken, nothing opened
+    if done.returncode or not os.path.isfile(path):
+        sys.exit(f"the screenshot was not taken: {done.stderr.strip() or done.stdout.strip()}")
+    if args.no_open:
+        print(path)
+        return
+    # In a scope of its own, as GNOME starts apps: not ended with the key's command.
+    subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "gradia", path],
+                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def cmd_verify(args):
     """Compare every file Mentor added to the system with the copy kept from when it was built
     (/etc/mentor/source; see /etc/mentor/REBUILD.md)."""
@@ -387,6 +423,16 @@ p.set_defaults(func=lambda args: sys.exit(subprocess.run(
      "--method", "org.mentor.Shell.Toggle"], stdout=subprocess.DEVNULL).returncode))
 p = sub.add_parser("ask", help="bring the assistant's text box up over the program in front, with a picture of the screen for the agent")
 p.set_defaults(func=lambda args: sys.exit(subprocess.run(["/usr/local/bin/mentor-chat", "--ask"]).returncode))
+p = sub.add_parser("tool-report", help="where Mentor's tools fall short: raw commands by what they ran, the longest requests")
+p.add_argument("--days", type=int, default=14, help="how far back to look (default 14)")
+p.add_argument("--json", action="store_true", help="as data")
+p.set_defaults(func=lambda args: print(json.dumps(__import__("mentor_report").report(args.days), indent=2, ensure_ascii=False)
+                                       if args.json else __import__("mentor_report").text(__import__("mentor_report").report(args.days))))
+p = sub.add_parser("screenshot", help="take a picture of the screen (or of the window in front) and open it in Gradia")
+p.add_argument("--window", action="store_true", help="only the window in front")
+p.add_argument("--area", action="store_true", help="drag out an area first (Esc cancels; a click is the whole screen)")
+p.add_argument("--no-open", action="store_true", help="only save it, and print where")
+p.set_defaults(func=cmd_screenshot)
 p = sub.add_parser("changes", help="list the changes applied through the sandbox")
 p.set_defaults(func=lambda args: run_tool("change_list", {}))
 p = sub.add_parser("undo", help="undo one applied change")

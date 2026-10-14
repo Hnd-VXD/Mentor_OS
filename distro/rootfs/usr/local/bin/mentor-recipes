@@ -54,6 +54,14 @@ def later(work, done):
     threading.Thread(target=run, daemon=True).start()
 
 
+THUMBS = "/usr/share/icons/hicolor/scalable/actions/mentor-thumb-{}-symbolic.svg"
+
+
+def thumb(which, size=16):
+    """Mentor's own thumbs icon, up or down: symbolic, so drawn in the theme's colour (Adwaita has none)."""
+    return Gtk.Image(gicon=Gio.FileIcon.new(Gio.File.new_for_path(THUMBS.format(which))), pixel_size=size)
+
+
 def button(label, action, suggested=False, tip=None):
     made = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
     if suggested:
@@ -182,8 +190,10 @@ class RecipesWindow(Adw.ApplicationWindow):
             self.say(row, entry)
             row.add_suffix(self.recipe_switch(not entry.get("undone"), entry.get("title") or rid, entry.get("path", ""), rid, row))
             # an opening row shows each new button before the ones already there: added from the right
-            for vote, label, tip in (("down", "\U0001F44E", "It did not work"), ("up", "\U0001F44D", "It worked")):
-                row.add_suffix(button(label, lambda rid=rid, vote=vote, row=row: self.rate(rid, vote, row), tip=tip))
+            for vote, tip in (("down", "It did not work"), ("up", "It worked")):
+                rating = button("", lambda rid=rid, vote=vote, row=row: self.rate(rid, vote, row), tip=tip)
+                rating.set_child(thumb(vote))
+                row.add_suffix(rating)
             path_used = entry.get("path", "")
             row.add_suffix(button("Improve", lambda path=path_used, title=entry.get("title") or title, rid=rid, row=row:
                                   self.improve_copy(path, title, rid, row)))

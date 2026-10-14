@@ -49,6 +49,7 @@ using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
 using System.Net;
@@ -637,7 +638,8 @@ class LauncherException : Exception
 // The launcher's invisible window: the host end of everything the guest and the
 // user can ask of it while the VM runs.
 //  - shared clipboard: {"text": "..."} lines over one QEMU TCP chardev, both ways,
-//    and copied files as a stream of lines on the same; see ClipboardFiles
+//    and copied files as a stream of lines on the same; see ClipboardFiles; a picture
+//    (Windows' Snipping Tool, PrtScr) as {"image": "<base64 PNG>"}, to the guest only
 //  - window mode: {"fullscreen": true|false|"toggle"} lines from the guest over a
 //    second chardev; see VmWindow
 //  - how the start went: {"boot": "ok"|"trial"|"restoring"} on that chardev; see BootWatch
@@ -659,6 +661,8 @@ class HostBridge : Form
     bool? toldFullscreen;  // what the guest was last told of the window: for its Full Screen switch
     readonly ClipboardFiles files;
     string synced;  // the text both sides already agree on
+    string syncedImage;  // a fingerprint of the picture last sent, so that it is sent once
+    const int MaxImageBytes = 32 << 20;  // a PNG larger than this stays on the host
 
     // True once a start that never reported back was stopped from here.
     public bool TimedOut { get; private set; }
@@ -880,6 +884,16 @@ class HostBridge : Form
             files.Send(paths);
             return;
         }
+        // A picture (Windows' own PrtScr / Snipping Tool, which Windows keeps even while Mentor is
+        // full screen) goes over as a PNG: a paste inside Mentor finds it.
+        Image picture = null;
+        try { if (Clipboard.ContainsImage()) picture = Clipboard.GetImage(); }
+        catch (ExternalException) { return; }
+        if (picture != null)
+        {
+            using (picture) SendImage(picture);
+            return;
+        }
         string text;
         try { text = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
         catch (ExternalException) { return; }  // another program holds the clipboard open
@@ -887,6 +901,32 @@ class HostBridge : Form
         byte[] line = Encoding.UTF8.GetBytes(json.Serialize(new Dictionary<string, string> { { "text", text } }) + "\n");
         if (line.Length > MaxBytes) return;
         synced = text;
+        lock (sendLock)
+        {
+            if (clipboard == null) return;
+            try { clipboard.Write(line, 0, line.Length); }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
+    void SendImage(Image picture)
+    {
+        byte[] png;
+        using (var stream = new MemoryStream())
+        {
+            try { picture.Save(stream, ImageFormat.Png); }
+            catch (ExternalException) { return; }
+            png = stream.ToArray();
+        }
+        if (png.Length == 0 || png.Length > MaxImageBytes) return;
+        string print;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            print = Convert.ToBase64String(sha.ComputeHash(png));
+        if (print == syncedImage) return;
+        syncedImage = print;
+        // Written by hand: base64 needs no escaping, and the serializer has a length limit.
+        byte[] line = Encoding.ASCII.GetBytes("{\"image\": \"" + Convert.ToBase64String(png) + "\"}\n");
         lock (sendLock)
         {
             if (clipboard == null) return;

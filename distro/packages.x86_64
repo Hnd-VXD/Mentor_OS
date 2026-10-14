@@ -44,12 +44,15 @@ gnome-shell-extension-appindicator
 gnome-control-center
 gnome-console
 gnome-text-editor
+# Opens the screenshots Mentor takes, to crop, draw on, copy or save (mentor screenshot)
+gradia
 gnome-system-monitor
 gnome-tweaks
 gnome-backgrounds
 gnome-keyring
 nautilus
 loupe
+sushi
 xdg-user-dirs
 xdg-desktop-portal-gnome
 mesa
