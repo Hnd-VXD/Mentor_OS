@@ -227,6 +227,48 @@ def submit(recipe_text, category="", new_category=None):
     return _answer(*_request("/.netlify/functions/submit", body))
 
 
+def mine(index=None):
+    """The recipes on the site that this Mentor published: the list says whose each one is (the
+    fingerprint of the key that posted it). Without a key yet, there are none, and none is made."""
+    if not has_key():
+        return []
+    me = key_id()
+    return [r for r in (index or get_index(True)).get("recipes", []) if r.get("author") == me]
+
+
+def update(recipe_id, recipe_text):
+    """Give a recipe this Mentor published a new text. The site checks that the key is the one that
+    published it, and puts the new text through the same rules as a new recipe."""
+    if len(recipe_text.encode("utf-8")) > MAX_RECIPE:
+        raise HubError("the recipe is too long to share")
+    fields = [recipe_id, hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()]
+    body = _signed("update", fields, {"action": "update", "id": recipe_id, "recipe": recipe_text})
+    return _answer(*_request("/.netlify/functions/manage", body))
+
+
+def withdraw(recipe_id):
+    """Take a recipe this Mentor published off the site. Only the key that published it can."""
+    body = _signed("withdraw", [recipe_id], {"action": "withdraw", "id": recipe_id})
+    return _answer(*_request("/.netlify/functions/manage", body))
+
+
+def own_copy(recipe_id):
+    """Download one's own published recipe into Documents/Mentor recipes to work on it, without the
+    site's header. Returns the path. An existing file of the same name is not overwritten."""
+    text, _sha = fetch(recipe_id)
+    if text.startswith("---\n") and "\n---" in text[4:]:
+        text = text[text.find("\n---", 4) + 4:].lstrip("\n")
+    os.makedirs(mentor_recipes.FOLDER, exist_ok=True)
+    path = os.path.join(mentor_recipes.FOLDER, recipe_id + ".md")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            if f.read() != text:
+                path = os.path.join(mentor_recipes.FOLDER, recipe_id + " (as on the site).md")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    return path
+
+
 def rate(recipe_id, sha256, vote):
     """Say that a recipe of the site worked ("up") or did not ("down") here. One vote for each key
     and recipe: a later one replaces the earlier one."""

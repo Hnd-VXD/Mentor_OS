@@ -935,6 +935,98 @@ def recipe_share(a):
                "site's automatic check, usually within a few minutes; if it does not appear, it did not pass.")
 
 
+def recipe_update(a):
+    """Post a new text for a recipe this Mentor published. Two steps, like recipe_share: the first shows
+    exactly what would replace what is on the site; the second, after the user has seen it and answered,
+    sends it."""
+    rid = str(a.get("id") or "")
+    path = _in_recipes(a.get("path") or "")
+    if not path:
+        return 1, "Give the path of the new text, a file in Documents/Mentor recipes."
+    try:
+        entry = next((r for r in mentor_hub.mine() if r.get("id") == rid), None)
+    except mentor_hub.HubError as e:
+        return 1, str(e)
+    if not entry:
+        return 1, f"{rid} is not a recipe this Mentor published on the site, so it cannot be changed from here."
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    leaks = mentor_recipes.scan(text)
+    if leaks:
+        return 1, "Not sent: it still has things in it that must not be shared: " + ", ".join(sorted({w for w, _x in leaks})) + "."
+    report, counts, _sha = mentor_recipes.inspect(path)
+    if counts.get("high"):
+        return 1, "Not sent: the rules find serious things in it, and the site would not take it."
+    if "## Steps" not in text or "## Check that it works" not in text:
+        return 1, "Not sent: it is not in the form of a recipe (it needs \"## Steps\" and \"## Check that it works\")."
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    state_path, now = _share_state_path(), time.time()
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            shown = json.load(f)
+    except (OSError, ValueError):
+        shown = {}
+    key = "update:" + rid + ":" + sha
+    if not a.get("confirmed"):
+        shown[key] = now
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(shown, f)
+        return 0, (f"NOT SENT YET. This would replace \u201c{entry.get('title', rid)}\u201d on {mentor_hub.HUB}, publicly. "
+                   "Show the user what changed (in plain words, and the new text if they want it), and ask if they want "
+                   "the site updated. Only after they answer yes, in a new message, call this again with confirmed true."
+                   "\n\n----- THE NEW TEXT -----\n" + _clip(text))
+    try:
+        answered = os.path.getmtime(mentor_journal._request_path(os.environ.get("MENTOR_SANDBOX") or "default")) > float(shown.get(key, 0))
+    except OSError:
+        answered = False
+    if not shown.get(key) or not answered:
+        return 1, "Not sent: the user has not seen this exact text and answered. Call this without confirmed first."
+    try:
+        done = mentor_hub.update(rid, text)
+    except mentor_hub.HubError as e:
+        return 1, f"Not sent: {e}"
+    return 0, "Sent: " + done.get("note", "queued") + " If the new text does not pass the site's check, the old one stays."
+
+
+def recipe_withdraw(a):
+    """Take a recipe this Mentor published off the site. Two steps: say what would happen, then do it
+    after the user's yes in a new message."""
+    rid = str(a.get("id") or "")
+    try:
+        entry = next((r for r in mentor_hub.mine() if r.get("id") == rid), None)
+    except mentor_hub.HubError as e:
+        return 1, str(e)
+    if not entry:
+        return 1, f"{rid} is not a recipe this Mentor published on the site, so it cannot be taken off from here."
+    state_path, now = _share_state_path(), time.time()
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            shown = json.load(f)
+    except (OSError, ValueError):
+        shown = {}
+    key = "withdraw:" + rid
+    if not a.get("confirmed"):
+        shown[key] = now
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(shown, f)
+        return 0, (f"NOT DONE YET. \u201c{entry.get('title', rid)}\u201d would be taken off the site: people would no longer find "
+                   "it. The copy on this computer stays, and copies other people already downloaded stay with them. Ask the "
+                   "user; only after a yes in a new message, call this again with confirmed true.")
+    try:
+        answered = os.path.getmtime(mentor_journal._request_path(os.environ.get("MENTOR_SANDBOX") or "default")) > float(shown.get(key, 0))
+    except OSError:
+        answered = False
+    if not shown.get(key) or not answered:
+        return 1, "Not done: the user has not answered since they were asked. Call this without confirmed first."
+    try:
+        done = mentor_hub.withdraw(rid)
+    except mentor_hub.HubError as e:
+        return 1, f"Not done: {e}"
+    return 0, "Sent: " + done.get("note", "queued")
+
+
 def recipe_fetch(a):
     """Download a recipe from the site into Documents/Mentor recipes/from the site/, checked against its checksum."""
     try:
@@ -1358,6 +1450,15 @@ TOOLS = {
         "Tell the recipes site that a recipe on it looks harmful to you after reading it (what the rules find is "
         "reported by recipe_inspect itself). `why` is a short reason without anything of the user's.",
         _schema({"id": _STR, "why": _STR}, ["id"]), recipe_report),
+    "recipe_update": (
+        "Replace a recipe this Mentor published on the recipes site with a new text (a file in Documents/Mentor recipes). "
+        "Two steps: without `confirmed` it shows what would be sent; after the user has seen it and said yes in a new "
+        "message, call it again with `confirmed` true. Only recipes this Mentor published can be updated.",
+        _schema({"id": _STR, "path": _STR, "confirmed": {"type": "boolean"}}, ["id", "path"]), recipe_update),
+    "recipe_withdraw": (
+        "Take a recipe this Mentor published off the recipes site. Two steps, like recipe_update: ask, then after a yes "
+        "in a new message call it again with `confirmed` true.",
+        _schema({"id": _STR, "confirmed": {"type": "boolean"}}, ["id"]), recipe_withdraw),
     "recipe_used": (
         "The recipes from the recipes site that were applied on this computer, when, whether they were taken away, "
         "and what the user rated each. Use it when they ask which recipes they have used, or want to undo one. After "
@@ -1440,6 +1541,8 @@ JOURNAL = {
     "recipe_share": lambda a, out: f"posted the recipe {os.path.basename(a['path'])} to the recipes site" if out.startswith("Posted") else None,
     "recipe_fetch": lambda a, out: f"downloaded the recipe {a['id']} from the recipes site" if out.startswith("Downloaded") else None,
     "recipe_used": lambda a, out: f"noted that the recipe {a['taken_away']} was taken away" if a.get("taken_away") and not out.startswith("That recipe") else None,
+    "recipe_update": lambda a, out: f"sent a new text of the recipe {a['id']} to the recipes site" if out.startswith("Sent") else None,
+    "recipe_withdraw": lambda a, out: f"asked the recipes site to take off the recipe {a['id']}" if out.startswith("Sent") else None,
     "recipe_rate": lambda a, out: f"rated the recipe {a['id']} {a['vote']} on the recipes site" if out.startswith("Rated") else None,
     "recipe_report": lambda a, out: f"told the recipes site that {a['id']} looks harmful" if out.startswith("The site has been told") else None,
     "recipe_save": lambda a, out: None if out.startswith("Not saved") else

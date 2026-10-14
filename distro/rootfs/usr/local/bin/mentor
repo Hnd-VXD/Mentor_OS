@@ -52,6 +52,26 @@ def run_tool(name, arguments):
     print(text)
 
 
+def _supported_scales(size):
+    """The scales the shell allows for the screen's mode of this size ("2880x1659"), as it gives them
+    (1.3333333730697632, not 1.33: it takes back only its own numbers). [] when it cannot be asked."""
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        state = bus.call_sync("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+                              "org.gnome.Mutter.DisplayConfig", "GetCurrentState", None, None,
+                              Gio.DBusCallFlags.NONE, 5000, None).unpack()
+    except Exception:
+        return []
+    for monitor in state[1]:
+        for mode_id, width, height, _rate, _preferred, scales, props in monitor[1]:
+            if (size and f"{width}x{height}" == size) or (not size and props.get("is-current")):
+                return sorted(set(scales))
+    return []
+
+
 def cmd_scale(args):
     """Scale the desktop the way the host's screen is scaled, so that it is drawn sharp.
 
@@ -97,9 +117,20 @@ def cmd_scale(args):
             modes = subprocess.run(["gdctl", "show", "--modes"], capture_output=True, text=True).stdout
             if found := re.search(rf"\b{re.escape(asked)}@[\d.]+", modes):
                 mode = ["--mode", found.group(0)]
-    # A scale the resolution cannot take (2 with an odd height, say) is refused; then the
-    # nearest whole one, and failing that it stays as it is.
-    for candidate in dict.fromkeys((wanted, float(round(wanted)))):
+    # Not every scale fits every resolution (2 does not fit an odd height, as when the window is
+    # maximized at 2880x1659): the shell says which ones the mode takes. The largest of them that
+    # is not more than wanted is used, so a maximized window on a 200% screen gets 150%, not 100%.
+    # Without that list: the wanted one, then the nearest whole one.
+    target = mode[1].split("@")[0] if mode else (current.group(1) if current else "")
+    allowed = _supported_scales(target)
+    if allowed:
+        # quarter steps first (125%, 150%...), as Settings offers them: thirds draw text less sharp
+        allowed = [s for s in allowed if abs(s * 4 - round(s * 4)) < 0.01] or allowed
+        fits = [s for s in allowed if s <= wanted + 0.01]
+        candidates = [max(fits) if fits else min(allowed, key=lambda s: abs(s - wanted))]
+    else:
+        candidates = list(dict.fromkeys((wanted, float(round(wanted)))))
+    for candidate in candidates:
         if not mode and abs(float(scale.group(1)) - candidate) < 0.01:
             return
         keep = []
@@ -107,7 +138,7 @@ def cmd_scale(args):
             keep = ["--persistent"]
             open("/run/mentor/scale-kept", "w").close()
         if subprocess.run(["gdctl", "set", *keep, "--logical-monitor", "--primary",
-                           "--monitor", monitor.group(1), *mode, "--scale", f"{candidate:g}"],
+                           "--monitor", monitor.group(1), *mode, "--scale", repr(candidate)],
                           capture_output=True).returncode == 0:
             return
 

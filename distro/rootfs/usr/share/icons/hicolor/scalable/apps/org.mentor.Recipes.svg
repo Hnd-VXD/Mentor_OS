@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- The Recipes app: a recipe card written like code, with a bookmark. Drawn for Mentor. -->
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f58"/>
+      <stop offset="1" stop-color="#1f2233"/>
+    </linearGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9ecf5"/>
+    </linearGradient>
+    <linearGradient id="glyph" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b7bff"/>
+      <stop offset="1" stop-color="#35d3ff"/>
+    </linearGradient>
+  </defs>
+  <!-- the tile -->
+  <rect x="8" y="10" width="112" height="110" rx="24" fill="#14161f" opacity="0.35"/>
+  <rect x="8" y="8" width="112" height="108" rx="24" fill="url(#base)"/>
+  <!-- the card, with a folded corner -->
+  <path d="M30 22 h50 l18 18 v62 a6 6 0 0 1 -6 6 h-62 a6 6 0 0 1 -6 -6 v-74 a6 6 0 0 1 6 -6 z" fill="url(#page)"/>
+  <path d="M80 22 v12 a6 6 0 0 0 6 6 h12 z" fill="#c9cfe0"/>
+  <!-- the bookmark -->
+  <path d="M34 22 h12 v20 l-6 -5 l-6 5 z" fill="#f05a3c"/>
+  <!-- </> -->
+  <g fill="none" stroke="url(#glyph)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 58 l-11 11 l11 11"/>
+    <path d="M80 58 l11 11 l-11 11"/>
+    <path d="M69 54 l-10 30"/>
+  </g>
+  <!-- lines of steps -->
+  <g stroke-linecap="round" stroke-width="4">
+    <path d="M37 95 h24" stroke="#3fe3a0"/>
+    <path d="M67 95 h24" stroke="#c9cfe0"/>
+  </g>
+</svg>

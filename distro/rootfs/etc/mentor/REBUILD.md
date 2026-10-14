@@ -100,6 +100,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor-settings` | Mentor Settings: the window for the user's choices about safety, suggestions, warnings, and the journal to read | yes | next time it is opened | SETTINGS.md |
 | `/usr/local/bin/mentor-recipes` | the Recipes app: used recipes (thumbs, take away), written here (open, share), downloaded and not used, and a button to the site | user | next start | RECIPES.md |
 | `/usr/share/applications/org.mentor.Recipes.desktop` | puts the Recipes app in the application grid | yes | at once | RECIPES.md |
+| `/usr/share/icons/hicolor/scalable/apps/org.mentor.Recipes.svg` | the Recipes app's icon (a recipe card with `</>` and a bookmark); `gtk-update-icon-cache -f /usr/share/icons/hicolor` after changing it | yes | at once | RECIPES.md |
 | `/usr/share/applications/org.mentor.Settings.desktop` | puts it in the application grid | yes | at once | SETTINGS.md |
 | `/usr/local/lib/mentor/mentor_settings.py` | reads and writes the file of those choices (`~/.config/mentor/settings.json`) | user | next call | SETTINGS.md |
 | `/usr/share/applications/org.mentor.Chat.desktop` | gives the assistant its name and icon | yes | login | ASSISTANT.md |
