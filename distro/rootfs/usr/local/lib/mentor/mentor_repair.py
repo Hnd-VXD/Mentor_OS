@@ -82,6 +82,11 @@ EMERGENCY_PROMPT = (
 )
 EMERGENCY_OPENING = ("The desktop froze and I pressed the emergency key. Find out what is happening right now and "
                      "tell me, before changing anything.")
+# Both: on 2026-10-15 Gemini, its sandbox approval refused, went reading Mentor's tool code instead.
+STOP_RULE = ("\n\nIf an approval is refused, cancelled or fails (a wrong password), stop there: say so in one line and "
+             "ask what they want. Do not try another way, and do not read Mentor's own code or tool files to find out why.")
+PROMPT += STOP_RULE
+EMERGENCY_PROMPT += STOP_RULE
 if EMERGENCY:
     PROMPT = EMERGENCY_PROMPT
 
