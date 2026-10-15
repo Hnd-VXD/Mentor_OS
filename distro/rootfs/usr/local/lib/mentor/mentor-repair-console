@@ -1,11 +1,13 @@
 #!/bin/sh
 # The repair console: logs in the user the desktop logs in by itself (or the first ordinary
-# user), on the first console. Run by mentor-repair-console.service.
+# user), on the first console (mentor-repair-console.service), or on the one named, tty3 for the
+# emergency key (mentor-emergency-console.service).
+tty=${1:-tty1}
 user=$(sed -n 's/^ *AutomaticLogin *= *//p' /etc/gdm/custom.conf 2>/dev/null | head -1)
 id "$user" >/dev/null 2>&1 || user=$(id -nu 1000 2>/dev/null)
 # Larger letters than the console's own, where the kernel has them: the window is a whole screen.
-setfont -d 2>/dev/null || true
+[ "$tty" = tty1 ] && setfont -d 2>/dev/null || true  # not on tty3: the emergency console keeps the usual size
 if [ -n "$user" ]; then
-    exec /usr/bin/agetty --autologin "$user" --noclear tty1 linux
+    exec /usr/bin/agetty --autologin "$user" --noclear "$tty" linux
 fi
-exec /usr/bin/agetty --noclear tty1 linux
+exec /usr/bin/agetty --noclear "$tty" linux

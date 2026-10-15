@@ -20,6 +20,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
 | `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
+| `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall |
 | `ASKBAR.md` | the assistant's text box lifted over the program in front (Alt+Space, Super+Z), with a picture of the screen for the agent |
 | `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
@@ -141,6 +142,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor_core.py` | the root side: checks each request against the rules, does it, writes the log | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-helper`, `mentor-sandbox`, `mentor-root-shell`, `mentor-write-file`, `mentor-apply`, `mentor-undo` | the doors to root, one for each password dialog and its words | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-power-button`, `/etc/systemd/system/mentor-power-button.service` | the power button powers off (the launcher's proper shut down) | root | at once | BOOT.md |
+| `/usr/local/lib/mentor/mentor-sentinel`, `/etc/systemd/system/mentor-sentinel.service`, `/etc/systemd/user/session.slice.d/50-mentor-desktop-first.conf` | the watch on freezes (it acts too: lowers a busy app, closes the largest when memory runs out), and the desktop's processor share | root | at once (the share: at the next login) | FREEZES.md |
+| `/usr/local/lib/mentor/mentor-emergency-key`, `/etc/systemd/system/mentor-emergency-key.service`, `/usr/local/lib/systemd/system/mentor-emergency-console.service`, `/usr/local/lib/mentor/mentor-emergency-console` (needs the `kmscon` package) | Ctrl+Alt+Backspace: the agent on tty3 beside a frozen desktop, at the window's size | root | at once | FREEZES.md |
 | `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf`, `/etc/systemd/user/service.d/10-mentor-no-watchdog.conf` | no service is killed as hung after Windows slept | root | next start | BOOT.md |
 | `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
 | `/usr/local/lib/systemd/system/mentor-root.socket`, `mentor-root@.service` | where the tools reach it (`/run/mentor-root.sock`), one start for each request | user | `systemctl daemon-reload` | TOOLS.md |
@@ -206,6 +209,8 @@ systemctl enable mentor-advisor.timer
 systemctl enable nftables.service          # the firewall
 systemctl enable mentor-root.socket        # who asks for the password, saying what for
 systemctl enable mentor-power-button.service  # the power button powers off
+systemctl enable mentor-sentinel.service      # the watch on freezes
+systemctl enable mentor-emergency-key.service # Ctrl+Alt+Backspace
 systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
 
 # Where the root side writes its log

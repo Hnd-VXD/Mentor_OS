@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+"""Mentor's emergency key (/etc/mentor/FREEZES.md, stage 4): Ctrl+Alt+Backspace, read straight
+from the keyboards as root, below GNOME, so that it works while the desktop is frozen. It opens
+the emergency console on tty3 (mentor-emergency-console.service: the user logged in there, with
+the agent, told that the desktop froze) and switches the screen to it. The desktop session keeps
+running behind it; /desktop there, or Ctrl+Alt+F2, goes back.
+
+Reads every /dev/input/event* that has a Backspace key, as struct input_event (24 bytes on a
+64-bit kernel: time, type, code, value), without grabbing it: GNOME gets the same keys as ever.
+Looks for new keyboards every RESCAN seconds (the launcher's window may come and go).
+"""
+import os
+import select
+import struct
+import subprocess
+import time
+
+EVENT = struct.Struct("llHHi")
+EV_KEY = 1
+KEY_BACKSPACE, KEY_LEFTCTRL, KEY_RIGHTCTRL, KEY_LEFTALT, KEY_RIGHTALT = 14, 29, 97, 56, 100
+CONSOLE = "mentor-emergency-console.service"
+VT = 3
+FLAG = "/run/mentor/emergency"   # what the console reads to know it was opened by the key
+RESCAN = 5
+AGAIN = 5                        # seconds before the key works again
+
+
+def keyboards():
+    """Paths of the input devices that have a Backspace key."""
+    found = []
+    for name in sorted(os.listdir("/dev/input")):
+        if not name.startswith("event"):
+            continue
+        try:
+            with open(f"/sys/class/input/{name}/device/capabilities/key") as f:
+                words = f.read().split()
+        except OSError:
+            continue
+        # The bitmap is printed as unsigned longs (64 bits here), most significant first, each
+        # without leading zeros.
+        bits = 0
+        for word in words:
+            bits = (bits << 64) | int(word, 16)
+        if bits >> KEY_BACKSPACE & 1:
+            found.append(f"/dev/input/{name}")
+    return found
+
+
+def open_console():
+    os.makedirs(os.path.dirname(FLAG), exist_ok=True)
+    with open(FLAG, "w") as f:
+        f.write(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+    # A fresh one each time: what is left of an earlier one is a bare command line.
+    subprocess.run(["systemctl", "restart", CONSOLE], timeout=30)
+    time.sleep(0.5)
+    subprocess.run(["chvt", str(VT)], timeout=10)
+    print("the emergency key was pressed: the console is open", flush=True)
+
+
+def main():
+    devices = {}       # fd: path
+    held = set()
+    last_scan = 0.0
+    last_open = 0.0
+    while True:
+        now = time.monotonic()
+        if now - last_scan >= RESCAN:
+            last_scan = now
+            wanted = set(keyboards())
+            for fd, path in list(devices.items()):
+                if path not in wanted:
+                    os.close(fd)
+                    del devices[fd]
+            for path in wanted - set(devices.values()):
+                try:
+                    devices[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = path
+                except OSError:
+                    pass
+        ready = select.select(list(devices), [], [], RESCAN)[0] if devices else (time.sleep(RESCAN) or [])
+        for fd in ready:
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except OSError:  # unplugged
+                os.close(fd)
+                devices.pop(fd, None)
+                continue
+            for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _sec, _usec, kind, code, value = EVENT.unpack_from(data, offset)
+                if kind != EV_KEY:
+                    continue
+                if value == 0:
+                    held.discard(code)
+                    continue
+                held.add(code)
+                if (value == 1 and code == KEY_BACKSPACE and held & {KEY_LEFTCTRL, KEY_RIGHTCTRL}
+                        and held & {KEY_LEFTALT, KEY_RIGHTALT} and time.monotonic() - last_open >= AGAIN):
+                    last_open = time.monotonic()
+                    try:
+                        open_console()
+                    except (OSError, subprocess.SubprocessError) as e:
+                        print(f"could not open the console: {e}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -62,7 +62,7 @@ The program is `/usr/local/lib/mentor/mentor_boot.py`, run as `/usr/local/lib/me
 
 ## The start-up picture
 
-- The theme is `/usr/share/plymouth/themes/mentor/`: `mentor.plymouth`, `mentor.script`, `logo-1.png` (the emblem), `logo-2.png` (shown while going back), `hint.png`, and `throbber-0.png` … (the stock spinner's frames). `/etc/plymouth/plymouthd.conf` selects it (`Theme=mentor`, `ShowDelay=0`). The kernel parameters `quiet splash` show it; the initramfs has the `plymouth` hook (`/etc/mkinitcpio.conf.d/mentor.conf`: `HOOKS=(base systemd plymouth modconf keyboard block filesystems fsck)`).
+- The theme is `/usr/share/plymouth/themes/mentor/`: `mentor.plymouth`, `mentor.script`, `logo-1.png` (the emblem), `logo-2.png` (shown while going back), `hint.png` (two lines drawn from `hint.svg` at build time: Ctrl + Alt + F, full screen; Ctrl + Alt + Backspace, help if it gets stuck, the emergency console of FREEZES.md), and `throbber-0.png` … (the stock spinner's frames). `/etc/plymouth/plymouthd.conf` selects it (`Theme=mentor`, `ShowDelay=0`). The kernel parameters `quiet splash` show it; the initramfs has the `plymouth` hook (`/etc/mkinitcpio.conf.d/mentor.conf`: `HOOKS=(base systemd plymouth modconf keyboard block filesystems fsck)`).
 - The second emblem is shown when the script is sent the message `mentor-fallback` (`plymouth display-message --text=mentor-fallback`, from `mentor_boot.py`).
 - To make it again, in the sandbox, from the parts kept in `/etc/mentor/source/build/splash/`:
 

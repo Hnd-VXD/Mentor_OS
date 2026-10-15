@@ -48,7 +48,8 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-explain "$dest"/usr/local/lib/mentor/mentor-write-file \
         "$dest"/usr/local/lib/mentor/mentor-apply "$dest"/usr/local/lib/mentor/mentor-undo \
         "$dest"/usr/local/lib/mentor/mentor-rootd "$dest"/usr/local/lib/mentor/mentor-firewall-watch \
-        "$dest"/usr/local/lib/mentor/mentor-recipe-watch "$dest"/usr/local/lib/mentor/mentor-power-button
+        "$dest"/usr/local/lib/mentor/mentor-recipe-watch "$dest"/usr/local/lib/mentor/mentor-power-button \
+        "$dest"/usr/local/lib/mentor/mentor-sentinel "$dest"/usr/local/lib/mentor/mentor-emergency-key \n        "$dest"/usr/local/lib/mentor/mentor-emergency-console
 
     # A copy of everything of ours as it was built, and what each file's contents should be:
     # what the agent checks the system against (mentor verify) and makes a lost part again

@@ -1,0 +1,17 @@
+[Unit]
+Description=Mentor: a watch on the desktop from outside it (notices a freeze, says what was behind it)
+Documentation=file:///etc/mentor/FREEZES.md
+After=systemd-logind.service
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-sentinel
+Restart=always
+RestartSec=5
+# It has to run when everything else is slow.
+Nice=-5
+CPUWeight=1000
+# and when memory has run out: it is the one that frees it
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

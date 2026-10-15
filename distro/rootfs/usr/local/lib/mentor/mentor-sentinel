@@ -1,0 +1,426 @@
+#!/usr/bin/python3
+"""Mentor's watch on the desktop from outside it: notices when the desktop stops answering,
+finds what was behind it, acts when it goes on (a busy app is given less of the processor; when
+memory has run out, the largest app is closed), and tells the user afterwards in one sentence
+(/etc/mentor/FREEZES.md). A GNOME Shell that stays dead is only reported: the user chose so;
+the emergency key (mentor-emergency-key) is their way out of it.
+
+A system service, as root, outside the desktop session: everything of Mentor's that runs inside
+the session freezes with it. Root may not talk on the user's session bus, so a small child
+running as the logged-in user asks GNOME Shell for its Status every INTERVAL seconds (answered
+by the shell's own main loop, which is what stops when the desktop freezes) and says on a pipe
+when each question went out and when the answer came. This side meanwhile reads, as root, how
+much processor time every process used and the kernel's stall counters (/proc/pressure).
+
+A stall is the shell taking longer than SLOW to answer. When one ends that lasted REPORT
+seconds or more, it is written to LOG and the user gets a yellow card (not more than one each
+QUIET seconds), unless the whole computer was paused: the host asleep, or the VM stopped, which
+shows as this program's own sleep lasting as long as the stall.
+"""
+import json
+import os
+import pwd
+import re
+import select
+import subprocess
+import sys
+import time
+
+INTERVAL = 2.0     # seconds between questions to the shell
+SLOW = 1.0         # an answer later than this is a stall
+REPORT = 5.0       # a stall at least this long is told to the user
+QUIET = 600        # seconds after a card before the next one
+LOG = "/var/log/mentor/freezes.jsonl"
+KEEP = 500         # stalls kept in LOG
+TICK = 0.5         # how often this side looks
+LOWER_AFTER = 15   # seconds of a stall before a busy app is given less of the processor
+MEMORY_AFTER = 10  # seconds of a stall with memory exhausted before the largest app is closed
+MEMORY_LOW = 0.03  # memory is exhausted below this share available (or the kernel stalls on it)
+DEAD_SHELL = 60    # seconds without an answer: GNOME Shell is called dead (reported, not restarted)
+
+PINGER = r"""
+import sys, time
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+while True:
+    start = time.monotonic()
+    print("ask", start, flush=True)
+    try:
+        bus.call_sync("org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "Status", None, None,
+                      Gio.DBusCallFlags.NONE, 120000, None)
+        print("answer", start, time.monotonic(), flush=True)
+    except GLib.Error as e:
+        print("error", start, time.monotonic(), e.message.replace("\n", " ")[:120], flush=True)
+    time.sleep(max(0.0, %(interval)s - (time.monotonic() - start)))
+""" % {"interval": INTERVAL}
+
+
+def desktop_user():
+    """(uid, gid, name) of the user with a graphical session, or None."""
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[0].isdigit():
+            kind = subprocess.run(["loginctl", "show-session", fields[0], "-p", "Type", "--value"],
+                                  capture_output=True, text=True).stdout.strip()
+            if kind in ("wayland", "x11"):
+                user = pwd.getpwnam(fields[2])
+                return user.pw_uid, user.pw_gid, user.pw_name
+    return None
+
+
+def as_user(user, argv):
+    uid, gid, name = user
+    return ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups", "env", f"HOME={pwd.getpwuid(uid).pw_dir}",
+            f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}", f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            "PATH=/usr/local/bin:/usr/bin", *argv]
+
+
+def cpu_times():
+    """{pid: processor seconds so far} of every process."""
+    tick = os.sysconf("SC_CLK_TCK")
+    times = {}
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    fields = f.read().rsplit(")", 1)[1].split()
+                times[int(pid)] = (int(fields[11]) + int(fields[12])) / tick
+            except (OSError, IndexError, ValueError):
+                pass
+    return times
+
+
+def pressure():
+    """{kind: microseconds some task stalled on it so far} from /proc/pressure."""
+    found = {}
+    for kind in ("cpu", "memory", "io"):
+        try:
+            with open(f"/proc/pressure/{kind}") as f:
+                found[kind] = int(re.search(r"some .*total=(\d+)", f.read()).group(1))
+        except (OSError, AttributeError):
+            pass
+    return found
+
+
+def app_name(pid):
+    """What the user would call the program a process belongs to: the app's name from its
+    .desktop file where its cgroup names one (app-gnome-org.gnome.Settings-1234.scope)."""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            group = f.read()
+        with open(f"/proc/{pid}/comm") as f:
+            comm = f.read().strip()
+    except OSError:
+        return None, None
+    if "org.gnome.Shell@" in group or comm == "gnome-shell":
+        return "GNOME Shell", "gnome-shell"
+    found = re.search(r"/app-(?:gnome-|flatpak-)?(.+?)-\d+\.(?:scope|service)", group)
+    if found:
+        app = found.group(1).encode().decode("unicode_escape")
+        if app in ("mentor-desktop", "mentor-chat"):
+            return "Mentor's assistant", comm
+        for folder in ("/usr/share/applications", "/usr/local/share/applications",
+                       "/var/lib/flatpak/exports/share/applications"):
+            try:
+                with open(os.path.join(folder, app + ".desktop")) as f:
+                    name = re.search(r"(?m)^Name=(.+)$", f.read())
+                if name:
+                    return name.group(1).strip(), comm
+            except OSError:
+                pass
+        return app, comm
+    return comm, comm
+
+
+class Stall:
+    def __init__(self, start):
+        self.start = start
+        self.overslept = 0.0   # how much longer this program's own sleeps took than asked: the VM paused
+        self.used = {}         # pid: processor seconds used during it
+        self.pressure_at = pressure()
+        self.actions = []      # what was done about it, in words for the user
+        self.lowered = False
+        self.closed = False
+        self.closed_name = None
+        self.memory_at = (time.monotonic(), memory_full())
+
+
+def memory_full():
+    """Microseconds all tasks together were stalled on memory so far (the kernel's "full" line)."""
+    try:
+        with open("/proc/pressure/memory") as f:
+            return int(re.search(r"full .*total=(\d+)", f.read()).group(1))
+    except (OSError, AttributeError):
+        return 0
+
+
+def memory_available():
+    """The share of memory available, 0..1."""
+    try:
+        with open("/proc/meminfo") as f:
+            info = dict(re.findall(r"(\w+):\s+(\d+)", f.read()))
+        return int(info["MemAvailable"]) / int(info["MemTotal"])
+    except (OSError, KeyError, ValueError, ZeroDivisionError):
+        return 1.0
+
+
+def app_group(pid, user):
+    """The cgroup folder of the app a process belongs to, when it is one of the user's apps
+    (user@UID.service/app.slice/...), and not GNOME Shell, the session or Mentor's assistant."""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            path = f.read().strip().split("::", 1)[-1]
+    except OSError:
+        return None
+    if f"/user@{user[0]}.service/app.slice/" not in path:
+        return None
+    unit = path.rsplit("/", 1)[-1]
+    if "mentor" in unit or not unit.endswith((".scope", ".service")):
+        return None
+    return "/sys/fs/cgroup" + path
+
+
+def group_pids(group):
+    try:
+        with open(os.path.join(group, "cgroup.procs")) as f:
+            return [int(pid) for pid in f.read().split()]
+    except (OSError, ValueError):
+        return []
+
+
+def group_memory(group):
+    try:
+        with open(os.path.join(group, "memory.current")) as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return 0
+
+
+def lower(stall, user, ours):
+    """The app that used the processor most in this stall gets far less of it: niced, and its
+    share among the apps cut to a tenth of the default. For as long as it runs; nothing kept."""
+    by_group = {}
+    for pid, used in stall.used.items():
+        group = None if pid in ours else app_group(pid, user)
+        if group:
+            by_group[group] = by_group.get(group, 0.0) + used
+    if not by_group:
+        return
+    group, used = max(by_group.items(), key=lambda item: item[1])
+    if used < 0.5 * (time.monotonic() - stall.start):
+        return
+    pids = group_pids(group)
+    name = app_name(pids[0])[0] if pids else None
+    for pid in pids:
+        try:
+            os.setpriority(os.PRIO_PROCESS, pid, 15)
+        except OSError:
+            pass
+    # Through the user's systemd, which switches the processor controller on for the apps when no
+    # app has a share of its own yet; written straight into the cgroup if that does not answer.
+    try:
+        done = subprocess.run(as_user(user, ["systemctl", "--user", "set-property", "--runtime",
+                                             group.rsplit("/", 1)[-1], "CPUWeight=10"]),
+                              capture_output=True, timeout=10).returncode == 0
+    except subprocess.TimeoutExpired:
+        done = False
+    if not done:
+        try:
+            with open(os.path.join(group, "cpu.weight"), "w") as f:
+                f.write("10")
+        except OSError:
+            pass
+    stall.lowered = True
+    stall.actions.append(f"I gave {name or 'it'} less of the processor")
+    print(f"lowered {group}", flush=True)
+
+
+def close_largest(stall, user):
+    """Memory has run out and the desktop is stuck: the app using the most memory is closed,
+    all of it at once (cgroup.kill). Never GNOME Shell, the session, Mentor, or the system."""
+    groups = {}
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            group = app_group(int(pid), user)
+            if group:
+                groups[group] = group_memory(group)
+    if not groups:
+        return
+    group = max(groups, key=groups.get)
+    pids = group_pids(group)
+    name = app_name(pids[0])[0] if pids else None
+    try:
+        with open(os.path.join(group, "cgroup.kill"), "w") as f:
+            f.write("1")
+    except OSError:
+        return
+    stall.closed = True
+    stall.closed_name = name
+    stall.actions.append(f"I closed {name or 'the largest program'} ({groups[group] >> 20} MB) to free memory")
+    print(f"closed {group} ({groups[group] >> 20} MB)", flush=True)
+
+
+def act(stall, user, ours, now):
+    """While a stall goes on: the steps, each once."""
+    age = now - stall.start
+    if not stall.closed and age >= MEMORY_AFTER:
+        since, full_at = stall.memory_at
+        stuck = (memory_full() - full_at) / 1e6 >= 0.3 * (now - since)  # all waiting on memory 30% of the time
+        if memory_available() < MEMORY_LOW or stuck:
+            close_largest(stall, user)
+    if not stall.lowered and not stall.closed and age >= LOWER_AFTER:
+        lower(stall, user, ours)
+
+
+def explain(stall, end, ours=()):
+    """(entry for LOG, sentence for the user). `ours`: this watch's own processes, never the cause."""
+    took = end - stall.start
+    stalled = {kind: (value - stall.pressure_at.get(kind, value)) / 1e6 for kind, value in pressure().items()}
+    by_app = {}
+    for pid, used in stall.used.items():
+        if pid in ours:
+            continue
+        name, comm = app_name(pid)
+        if name:
+            by_app.setdefault(name, [0.0, comm])[0] += used
+    top = sorted(by_app.items(), key=lambda item: -item[1][0])
+    others = [(name, used) for name, (used, _comm) in top if name != "GNOME Shell"]
+    culprit, culprit_cpu = (others[0] if others else (None, 0.0))
+    if culprit_cpu < max(1.0, 0.1 * took):  # what used almost nothing caused nothing
+        culprit, culprit_cpu = None, 0.0
+    if stall.overslept >= 0.7 * took:
+        kind = "paused"
+    elif stall.closed:  # memory had run out, and the watch closed the largest app for it
+        kind, culprit = "memory", stall.closed_name or culprit
+    elif stalled.get("memory", 0) >= 0.25 * took:
+        kind = "memory"
+    elif stalled.get("io", 0) >= 0.5 * took:
+        kind = "disk"
+    elif culprit and culprit_cpu >= 0.5 * took:
+        kind = "processor"
+    else:
+        kind = "graphics"
+    seconds = round(took)
+    who = culprit or "a program"
+    calm = ("The desktop did not answer for {s} seconds while {w} was working; the processor and memory were calm, "
+            "so it was most likely the graphics." if culprit else
+            "The desktop did not answer for {s} seconds, while the processor, memory and disk were calm: most "
+            "likely the graphics.").format(s=seconds, w=culprit)
+    sentence = {
+        "memory": f"The system ran short of memory ({who} used the most), and the desktop did not answer for {seconds} seconds.",
+        "disk": f"The disk was very busy ({who} the most), and the desktop did not answer for {seconds} seconds.",
+        "processor": f"{who} kept the processor busy, and the desktop did not answer for {seconds} seconds.",
+        "graphics": calm,
+        "paused": "",
+    }[kind]
+    if stall.actions:
+        sentence += " " + "; ".join(stall.actions) + "."
+    if took >= DEAD_SHELL:
+        sentence += " If it happens again, Ctrl+Alt+Backspace brings you to Mentor even while the desktop is frozen."
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - (time.monotonic() - stall.start))),
+             "seconds": round(took, 1), "kind": kind, "culprit": culprit,
+             "processor_seconds": {name: round(used, 1) for name, (used, _c) in top[:6]},
+             "stalled_seconds": {k: round(v, 1) for k, v in stalled.items()},
+             "paused_seconds": round(stall.overslept, 1), "actions": stall.actions,
+             "shell_dead": took >= DEAD_SHELL}
+    return entry, sentence
+
+
+def record(entry):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    try:
+        with open(LOG) as f:
+            lines = f.readlines()[-(KEEP - 1):]
+    except OSError:
+        lines = []
+    lines.append(json.dumps(entry) + "\n")
+    with open(LOG + ".new", "w") as f:
+        f.writelines(lines)
+    os.chmod(LOG + ".new", 0o644)
+    os.replace(LOG + ".new", LOG)
+    print(f"stall of {entry['seconds']} s, {entry['kind']}, {entry['culprit']}", flush=True)
+
+
+def tell(user, entry, sentence):
+    prompt = ("The desktop froze by itself just now, and Mentor's watch on it wrote down what it saw:\n\n"
+              f"{json.dumps(entry, indent=1)}\n\nThe last stalls are in {LOG}. Explain in two or three short sentences, "
+              "in simple words, what most likely happened and whether I should do anything. /etc/mentor/FREEZES.md "
+              "says how to read it.")
+    subprocess.run(as_user(user, ["/usr/local/bin/mentor", "notice", "warning",
+                                  f"The desktop froze for {round(entry['seconds'])} seconds", sentence,
+                                  "--prompt", prompt]), capture_output=True, timeout=30)
+
+
+def watch(user):
+    """Until the session ends or the child dies."""
+    child = subprocess.Popen(as_user(user, ["/usr/bin/python3", "-c", PINGER]), stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    asked = None            # when the question not yet answered went out
+    stall = None
+    told = float("-inf")  # not 0: the clock starts at boot, and the first minutes count too
+    before = cpu_times()
+    last = scanned = time.monotonic()
+    try:
+        while child.poll() is None:
+            ready = select.select([child.stdout], [], [], TICK)[0]
+            now = time.monotonic()
+            overslept = max(0.0, now - last - TICK - 0.25)
+            last = now
+            if ready:
+                line = child.stdout.readline().split()
+                if line and line[0] == "ask":
+                    asked = float(line[1])
+                elif line and line[0] in ("answer", "error"):
+                    asked = None
+            late = asked is not None and now - asked > SLOW
+            if late and stall is None:
+                stall = Stall(asked)
+            # What each process used since the last look, and a look that came late (the VM was
+            # stopped: this program sleeps far longer than asked) count for the stall going on.
+            # Every process is looked at each TICK during a stall, otherwise each INTERVAL: reading
+            # all of /proc twice a second cost 2% of a processor for nothing.
+            if stall is None and now - scanned < INTERVAL:
+                continue
+            scanned = now
+            current = cpu_times()
+            if stall:
+                stall.overslept += overslept
+                for pid, total in current.items():
+                    used = total - before.get(pid, total)
+                    if used > 0:
+                        stall.used[pid] = stall.used.get(pid, 0.0) + used
+            before = current
+            if stall and late:
+                act(stall, user, (os.getpid(), child.pid), now)
+            if not late and stall is not None:
+                entry, sentence = explain(stall, now, ours=(os.getpid(), child.pid))
+                if entry["seconds"] >= REPORT:
+                    record(entry)
+                    if entry["kind"] != "paused" and now - told >= QUIET:
+                        tell(user, entry, sentence)
+                        told = now
+                stall = None
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+def main():
+    # There from the start, empty until a stall: so that reading it says "none" instead of failing.
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    if not os.path.exists(LOG):
+        open(LOG, "a").close()
+        os.chmod(LOG, 0o644)
+    while True:
+        user = desktop_user()
+        if user and os.path.exists(f"/run/user/{user[0]}/bus"):
+            try:
+                watch(user)
+            except Exception as e:  # noqa: BLE001 - the watch must outlive anything odd
+                print(f"watch ended: {e}", file=sys.stderr, flush=True)
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()

@@ -237,7 +237,7 @@ When the user presses **Share it**, you get a request that says so. It is their 
    sub-category: `new_category` with `id` (lower case letters and dashes), `parent` (one of the main ones), `name`, and a
    `description` of one sentence. Never a main category: those are the site owner's.
 4. **Preview**: `recipe_share` without `confirmed`. It shows exactly what would be posted and where. Show the user the whole
-   file, say in plain words what is in it, that **it is public and cannot be taken back**, and where it goes (category, new or
+   file, say in plain words what is in it, that **it is public**: they can take it down later in the Recipes app, but copies already downloaded stay; and where it goes (category, new or
    not). Wait for their answer in a new message.
 5. **Post**: only after a yes, `recipe_share` again with `confirmed` true. The tool refuses if they have not answered since the
    preview, if the file changed since, if it holds a secret, or if the rules would stop it on the site.

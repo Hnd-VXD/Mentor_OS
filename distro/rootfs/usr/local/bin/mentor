@@ -202,6 +202,36 @@ def cmd_scale(args):
                           capture_output=True).returncode == 0:
             return
 
+# Tries "Ask Mentor…" in Files the way Files uses it (cmd_doctor): prints ok, or exits with why not.
+FILES_PROBE = r"""
+import glob, importlib.util, os, re, sys
+import gi
+found = sorted((tuple(int(n) for n in re.findall(r"\d+", v)), v) for v in
+               (re.search(r"Nautilus-([\d.]+)\.typelib$", p).group(1)
+                for p in glob.glob("/usr/lib/girepository-1.0/Nautilus-*.typelib")))
+if not found:
+    sys.exit("Files offers no interface for add-ons any more (no Nautilus typelib)")
+gi.require_version("Nautilus", found[-1][1])
+from gi.repository import Gio, Nautilus
+for name, wanted in (("get_file_items", 1), ("get_background_items", 1)):
+    method = getattr(Nautilus.MenuProvider, name, None)
+    if method is None or len(method.get_arguments()) != wanted:
+        sys.exit(f"Files {found[-1][1]} asks add-ons for their menu items in a new way ({name})")
+spec = importlib.util.spec_from_file_location("mentor_files", "/usr/share/nautilus-python/extensions/mentor.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class Place:
+    def get_location(self):
+        return Gio.File.new_for_path("/tmp")
+
+ask = module.AskMentor()
+labels = [item.props.label for item in ask.get_file_items([Place()]) + ask.get_background_items(Place())]
+if len(labels) != 2 or not all(label.startswith("Ask Mentor") for label in labels):
+    sys.exit(f"the add-on gives no menu item ({labels})")
+print("ok")
+"""
+
 
 def cmd_doctor(args):
     """Say which parts of Mentor's desktop work right now (they are described in /etc/mentor/DESKTOP.md)."""
@@ -215,10 +245,12 @@ def cmd_doctor(args):
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
-    def say(ok, what, detail=""):
+    def say(ok, what, detail="", minor=False):
+        """A part that does not work is BROKEN; a minor one (a menu item missing) is WARN."""
         nonlocal bad
         bad += not ok
-        lines.append(f"{'ok    ' if ok else 'BROKEN'} {what}" + (f": {detail}" if detail else ""))
+        mark = "ok    " if ok else "WARN  " if minor else "BROKEN"
+        lines.append(f"{mark} {what}" + (f": {detail}" if detail else ""))
 
     shell = (re.search(r"[\d.]+", out("gnome-shell", "--version")) or [""])[0]
     try:
@@ -253,6 +285,23 @@ def cmd_doctor(args):
     say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip()), "the assistant is running")
     say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "lib/mentor/mentor-clipboard").strip()),
         "the clipboard shared with the host")
+    watching = out("systemctl", "is-active", "mentor-sentinel").strip() == "active"
+    say(watching, "the watch on freezes", "" if watching else "not running (/etc/mentor/FREEZES.md)", minor=True)
+    key = out("systemctl", "is-active", "mentor-emergency-key").strip() == "active"
+    say(key, "the emergency key (Ctrl+Alt+Backspace)", "" if key else "not running (/etc/mentor/FREEZES.md)", minor=True)
+    # "Ask Mentor…" in Files, a Python add-on. When a new Files changes how add-ons work (Files 43
+    # did), the item is simply gone, with no error anywhere: it is tried here as Files uses it.
+    import glob
+    if not glob.glob("/usr/lib/nautilus/extensions-*/libnautilus-python.so"):
+        say(False, '"Ask Mentor…" in Files', "Files no longer loads Python add-ons (the nautilus-python package)", minor=True)
+    else:
+        try:
+            probe = subprocess.run([sys.executable, "-W", "ignore", "-c", FILES_PROBE], capture_output=True,
+                                   text=True, timeout=30)
+            why = probe.stdout.strip() if probe.returncode == 0 else (probe.stderr.strip().splitlines() or ["it failed"])[-1]
+        except (OSError, subprocess.TimeoutExpired):
+            why = "the check did not finish"
+        say(why == "ok", '"Ask Mentor…" in Files', "" if why == "ok" else why[:200], minor=True)
     errors = [line for line in out("journalctl", "-b", "--no-pager", "-o", "cat", "_COMM=gnome-shell").splitlines()
               if "mentor" in line.lower() and ("error" in line.lower() or "could not" in line)]
     say(not errors, "errors of Mentor's in the shell's log", errors[-1][:200] if errors else "")

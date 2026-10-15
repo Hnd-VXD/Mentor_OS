@@ -1732,8 +1732,9 @@ class Conversation(Gtk.Box):
         heading = Gtk.Label(label=f"Share \u201c{title}\u201d with other Mentor users?", xalign=0, wrap=True, max_width_chars=64)
         heading.add_css_class("heading")
         body = Gtk.Label(
-            label="It is saved on your computer. If you share it, it goes on the public recipes site and cannot be taken "
-                  "back. It names no one. The site checks it by itself before showing it. This is what it does:",
+            label="It is saved on your computer. If you share it, it goes on the public recipes site; you can take it "
+                  "down later in the Recipes app, but copies already downloaded stay. It names no one. The site checks "
+                  "it by itself before showing it. This is what it does:",
             xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64)
         said = Gtk.Entry(text=summary, hexpand=True, max_length=200)
         everything = Gtk.Label(label=text, xalign=0, wrap=True, selectable=True, wrap_mode=Pango.WrapMode.WORD_CHAR)
@@ -4008,12 +4009,32 @@ class DesktopWindow(Adw.ApplicationWindow):
             self.show_connect()
 
 
+def desktop_first():
+    """This window is the desktop: among the apps (app.slice) it gets ten times their processor
+    share, as GNOME Shell does against them (/etc/systemd/user/session.slice.d), so that a busy
+    program slows itself and not the desktop (/etc/mentor/FREEZES.md, stage 1). At login it runs
+    in a scope of its own (app-gnome-mentor\\x2ddesktop-N.scope), after an update in a service."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            group = f.read().strip()
+    except OSError:
+        return
+    unit = group.rsplit("/", 1)[-1]
+    if "/user@" in group and "/app.slice/" in group and unit.endswith((".scope", ".service")):
+        try:  # never in the way of starting
+            Gio.Subprocess.new(["systemctl", "--user", "set-property", "--runtime", unit, "CPUWeight=1000"],
+                               Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except Exception:
+            pass
+
+
 class AssistantApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        desktop_first()
         show = Gio.SimpleAction.new("show", None)  # a click on one of our notifications
         show.connect("activate", lambda *_: self.shell("Show"))
         self.add_action(show)

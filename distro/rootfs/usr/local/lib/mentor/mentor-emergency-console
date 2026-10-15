@@ -1,0 +1,19 @@
+#!/bin/sh
+# The emergency console (Ctrl+Alt+Backspace; /etc/mentor/FREEZES.md), run by
+# mentor-emergency-console.service. kmscon draws the console at the size the display has now
+# (the launcher's window, or the whole screen), where the kernel's own console keeps the size it
+# had at boot (1280x800, before the launcher sized the window). Its letters follow the scale of
+# the host's screen, as the desktop's do. If kmscon is missing or cannot start, the kernel's
+# console on tty3 is used, as the repair console does.
+user=$(sed -n 's/^ *AutomaticLogin *= *//p' /etc/gdm/custom.conf 2>/dev/null | head -1)
+id "$user" >/dev/null 2>&1 || user=$(id -nu 1000 2>/dev/null)
+scale=$(cat /run/mentor/host-scale 2>/dev/null)
+size=$(awk -v s="${scale:-1}" 'BEGIN { s = s + 0; if (s < 1) s = 1; printf "%d", 16 * s }')
+if [ -x /usr/bin/kmscon ] && [ -n "$user" ]; then
+    started=$(date +%s)
+    /usr/bin/kmscon --vt=3 --switchvt --font-size "$size" --login -- /bin/login -f "$user" && exit 0
+    # Ended at once: it could not take the screen. Anything later is the user leaving it.
+    [ $(( $(date +%s) - started )) -gt 5 ] && exit 0
+    echo "kmscon could not start; the kernel's console is used" >&2
+fi
+exec /usr/local/lib/mentor/mentor-repair-console tty3

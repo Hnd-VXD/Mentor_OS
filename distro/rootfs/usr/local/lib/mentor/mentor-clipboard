@@ -44,6 +44,20 @@ STAGING = os.path.join(GLib.get_user_cache_dir(), "mentor", "clipboard")
 # to hand a large picture (over ~256 KB, an INCR transfer) from the X11 side on to Wayland programs,
 # so the chat reads this file first.
 HOST_PICTURE = os.path.join(GLib.get_user_cache_dir(), "mentor", "host-picture.png")
+# The text last copied, on the host or here, as a file of the user's alone: the emergency console
+# (a text console, outside the desktop and its clipboard) pastes it with Ctrl+V (mentor_repair.py).
+CLIP_TEXT = os.path.join(GLib.get_user_cache_dir(), "mentor", "clipboard-text")
+
+
+def keep_text(text):
+    try:
+        os.makedirs(os.path.dirname(CLIP_TEXT), exist_ok=True)
+        fd = os.open(CLIP_TEXT + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(CLIP_TEXT + ".part", CLIP_TEXT)
+    except OSError:
+        pass
 MAX_BYTES = 1 << 20            # of text
 MAX_IMAGE = 32 << 20           # of a picture from the host (a PNG, sent as base64)
 MAX_FILE_BYTES = 256 << 20     # of files in one copy
@@ -114,6 +128,7 @@ class Bridge:
         if len(text.encode()) > MAX_BYTES:
             return
         self.synced = text
+        keep_text(text)
         self.write({"text": text}, patience=0.5)
 
     def send_files(self, paths, mine):
@@ -210,6 +225,7 @@ class Bridge:
             text = message["text"]
             if isinstance(text, str) and text != self.synced:
                 self.synced = text
+                keep_text(text)  # first: the desktop's clipboard may be the part that is stuck
                 self.clipboard.set_text(text, -1)
         elif "window-fullscreen" in message:
             # Not the clipboard's business, but this is the service that listens to the host

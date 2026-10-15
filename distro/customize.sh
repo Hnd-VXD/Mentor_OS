@@ -85,6 +85,10 @@ systemctl enable nftables.service
 # Where the agent's tools ask for root, with a password dialog that says exactly what for (mentor-rootd).
 systemctl enable mentor-root.socket
 systemctl enable mentor-power-button.service
+# A watch on the desktop from outside it: a freeze is noticed and explained (etc/mentor/FREEZES.md).
+systemctl enable mentor-sentinel.service
+# The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
+systemctl enable mentor-emergency-key.service
 
 # Boot splash: our own theme (distro/splash). It shows the emblem (a second one while
 # the system goes back after a failed start), the hint drawn here from hint.svg, and

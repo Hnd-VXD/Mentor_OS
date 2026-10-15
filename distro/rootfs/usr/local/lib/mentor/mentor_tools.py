@@ -1534,7 +1534,8 @@ def recipe_share(a):
             " This is the first time: a key is made on this computer (it stays here) and signs what is posted. It is how "
             "the site tells posts apart, and it names no one.")
         return 0, (f"NOT POSTED YET. This is exactly what would be posted, publicly, to {mentor_hub.HUB}, {where}. Anyone can read it "
-                   f"and it can be copied; it cannot be taken back by the sender.{first}\n\nShow the user the whole text below, "
+                   f"and it can be copied. The sender can take it down from the site later (the Recipes app, Yours: Remove it from "
+                   f"the site), but copies already downloaded stay.{first}\n\nShow the user the whole text below, "
                    "say in plain words what is in it and where it goes, and ask if they want it posted. Only after they "
                    "answer yes, in a new message, call this again with confirmed set to true.\n\n----- THE FILE -----\n" + _clip(text))
     when = shown.get(sha)

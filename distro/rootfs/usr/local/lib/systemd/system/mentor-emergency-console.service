@@ -1,0 +1,13 @@
+[Unit]
+Description=Mentor: the emergency console (Ctrl+Alt+Backspace), the agent on tty3 beside a frozen desktop
+Documentation=file:///etc/mentor/FREEZES.md
+# Started by mentor-emergency-key, never at boot. The user logged in on the third console, drawn
+# by kmscon at the display's present size (mentor-emergency-console); what they get is started by
+# /etc/profile.d/mentor-repair.sh because /run/mentor/emergency exists. The desktop runs on.
+After=systemd-user-sessions.service
+Conflicts=getty@tty3.service
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-emergency-console
+Type=simple
+Restart=no

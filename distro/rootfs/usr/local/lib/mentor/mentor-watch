@@ -53,7 +53,9 @@ def findings():
                "(~/.local/share/mentor/notes.md) and works, or is damaged; tell me which, and what putting it back "
                "would take. The journal (journal_read) says what was changed lately and for which request. Do not "
                "change anything before I agree.")
-    broken = re.findall(r"(?m)^BROKEN\s+(.+)$", output(MENTOR, "doctor"))
+    doctor = output(MENTOR, "doctor")
+    broken = re.findall(r"(?m)^BROKEN\s+(.+)$", doctor)
+    minor = re.findall(r"(?m)^WARN\s+(.+)$", doctor)
     if broken:
         # Looked at again a little later: a part caught in a moment of change (the assistant being
         # restarted by an update, the shell busy just after login) is not a broken part. On
@@ -69,6 +71,15 @@ def findings():
                f"`mentor doctor` reports these parts of Mentor's desktop as broken:\n\n{listed}\n\n"
                "Read the journal first (journal_read): a change made lately may be why. Then follow "
                "/etc/mentor/DESKTOP.md to find out why and mend them, one part at a time, in the sandbox "
+               "first. Tell me what you found before you change anything.")
+    if minor:  # a smaller part (a menu item of Mentor's that is gone): a yellow card
+        listed = "\n".join(minor[:10])
+        yield ("doctor-minor:" + ",".join(sorted(line.split(":")[0] for line in minor)), "warning",
+               "A small part of Mentor stopped working",
+               listed,
+               f"`mentor doctor` warns about these parts of Mentor:\n\n{listed}\n\n"
+               "Read the journal first (journal_read): a recent upgrade or change may be why. Then follow "
+               "/etc/mentor/DESKTOP.md for that part (\"Ask Mentor…\" in Files: its row there), in the sandbox "
                "first. Tell me what you found before you change anything.")
 
     # The user's safety: the firewall, the first password, remote login, root without a password.
@@ -94,7 +105,7 @@ def findings():
 def group(key):
     """Which of the user's switches (Mentor Settings, Warnings) a finding belongs to."""
     kind = key.split(":")[0]
-    if kind in ("verify", "doctor"):
+    if kind in ("verify", "doctor", "doctor-minor"):
         return "self"
     if kind == "security":
         return "refused" if key.startswith("security:refused") else "security"
