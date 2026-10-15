@@ -237,6 +237,16 @@ def notice(level, title, text, *extra):
 
 # --- after the restart -----------------------------------------------------------------
 
+def remember(state, update, outcome):
+    """One line of the history of updates on this Mentor (Mentor Settings, Updates; newest last)."""
+    state.setdefault("history", []).append({
+        "version": update["version"], "name": update.get("name") or display_name(update["version"]),
+        "summary": update.get("summary", ""), "change": update.get("change"), "outcome": outcome,
+        "notes": f"{NOTES_DIR}/{update['version']}.md" if update.get("notes") and outcome == "installed" else None,
+        "time": time.strftime("%Y-%m-%d %H:%M")})
+    state["history"] = state["history"][-100:]
+
+
 def settle(state):
     """What became of the update installed before the last restart. True when that is known."""
     installing = state.get("installing")
@@ -252,6 +262,7 @@ def settle(state):
     if not kept:
         log(f"update {installing['version']} ({installing.get('name', '')}) was undone by the start that tried it")
         state.setdefault("failed", []).append(installing["version"])
+        remember(state, installing, "undone")
         state.pop("installing")
         save(state)
         return True  # mentor-chat has already said "Mentor went back to the way it last worked"
@@ -273,6 +284,7 @@ def settle(state):
     log(f"update {installing['version']} ({installing.get('name', '')}) is installed")
     state["installed"] = {"version": installing["version"], "name": installing.get("name"),
                           "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    remember(state, installing, "installed")
     state.pop("installing")
     state.pop("offered", None)
     save(state)
@@ -423,12 +435,14 @@ def stage(tree, declined=frozenset()):
             written += 1
     # Files of Mentor's that the new version no longer has.
     new = _manifest(os.path.join(tree, MANIFEST.lstrip("/")))
-    gone = [path for path in _manifest(MANIFEST) if new and path not in new]
+    gone = [path for path in _manifest(MANIFEST) if new and path not in new and os.path.lexists(merged + path)]
     for path in gone:
-        if os.path.lexists(merged + path):
-            os.remove(merged + path)
+        os.remove(merged + path)
     # Packages the new version added to Mentor's list. One the user removed stays removed.
     added = sorted(_package_list(os.path.join(tree, PACKAGES.lstrip("/"))) - _package_list(PACKAGES) - set(declined))
+    if added:  # only those that are not installed already (an older list may not name what is there)
+        missing = subprocess.run(["pacman", "-T", *added], capture_output=True, text=True).stdout.split()
+        added = [name for name in added if name in missing]
     if added:
         names = " ".join(added)
         try:
