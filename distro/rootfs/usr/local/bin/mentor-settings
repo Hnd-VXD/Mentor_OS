@@ -20,7 +20,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 import mentor_journal
 import mentor_security
@@ -32,6 +32,9 @@ CHAT = "/usr/local/bin/mentor-chat"
 VERSION_PATH = "/etc/mentor/version"
 UPDATE_STATE = "/var/lib/mentor/updates/state.json"
 UPDATE_WAITING = "/var/lib/mentor/updates/update.json"
+UPDATES_INCLUDED = "/etc/mentor/updates-included.json"
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")  # what a new build came with (build.sh)
 # Asked before a Mentor update is installed: it restarts the system (UPDATES.md). Same words as the chat's.
 RESTART_HEADING = "Restart to update?"
 RESTART_BODY = ("Mentor restarts the whole system to install the update. It takes about a minute, and the apps you "
@@ -257,8 +260,10 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.look_row.add_suffix(self.look_button)
         now.add(self.look_row)
         page.add(now)
-        self.history = Adw.PreferencesGroup(title="Every update", description="Newest first. Ask Mentor goes over one with you")
+        self.history = Adw.PreferencesGroup(title="Every update",
+                                            description="By year and month, newest first. Ask Mentor goes over one with you")
         self.history_rows = []
+        self.history_open = set()  # the years and months opened ("2026", "2026-10")
         page.add(self.history)
         self.show_update()
         return page
@@ -331,22 +336,81 @@ class SettingsWindow(Adw.ApplicationWindow):
         if last and not any(e.get("version") == last.get("version") for e in entries):
             entries.append({"version": last["version"], "name": last.get("name"), "outcome": "installed",
                             "time": str(last.get("time", ""))[:16], "summary": ""})
+        # The updates published before this Mentor was built: it came with them (build.sh).
+        try:
+            with open(UPDATES_INCLUDED) as f:
+                included = json.load(f)
+        except (OSError, ValueError):
+            included = []
+        known = {e.get("version") for e in entries}
+        for e in included if isinstance(included, list) else []:
+            if isinstance(e, dict) and e.get("version") not in known:
+                notes = f"/etc/mentor/update-notes/{e.get('version')}.md"
+                entries.append({"version": e.get("version"), "name": e.get("name"), "summary": e.get("summary", ""),
+                                "outcome": "included", "time": e.get("published", ""),
+                                "notes": notes if os.path.exists(notes) else None})
+        entries.sort(key=lambda e: int(e.get("version") or 0))
         if not entries:
             row = Adw.ActionRow(title="No updates yet", subtitle="Each update this Mentor gets is listed here")
             self.history.add(row)
             self.history_rows.append(row)
             return
-        for entry in reversed(entries):
-            name = entry.get("name") or mentor_update.display_name(entry.get("version"))
-            undone = entry.get("outcome") == "undone"
-            when = str(entry.get("time", ""))
-            row = Adw.ActionRow(title=f"Mentor {name}" + (" — went back" if undone else ""),
-                                subtitle=(entry.get("summary") or "") + (f"\n{when}" if when else ""))
-            row.set_subtitle_lines(4)
-            row.add_suffix(button("Ask Mentor", lambda entry=entry, name=name, undone=undone:
-                                  ask(self.review_request(entry, name, undone))))
-            self.history.add(row)
-            self.history_rows.append(row)
+        # By year, then month, then the updates of that month (the user's wish): each a row that opens.
+        # What was open stays open when the list is shown again (after Look).
+        tree = {}
+        for entry in entries:
+            year, month = self.when_made(entry)
+            tree.setdefault(year, {}).setdefault(month, []).append(entry)
+        for year in sorted(tree, reverse=True):
+            count = sum(len(month) for month in tree[year].values())
+            year_row = Adw.ExpanderRow(title=str(year), subtitle=self.how_many(count),
+                                       expanded=f"{year}" in self.history_open)
+            year_row.connect("notify::expanded", self.remember_open, f"{year}")
+            for month in sorted(tree[year], reverse=True):
+                month_row = Adw.ExpanderRow(title=MONTHS[month - 1], subtitle=self.how_many(len(tree[year][month])),
+                                            expanded=f"{year}-{month}" in self.history_open)
+                month_row.connect("notify::expanded", self.remember_open, f"{year}-{month}")
+                for entry in reversed(tree[year][month]):
+                    month_row.add_row(self.update_entry_row(entry))
+                year_row.add_row(month_row)
+            self.history.add(year_row)
+            self.history_rows.append(year_row)
+
+    @staticmethod
+    def how_many(count):
+        return "1 update" if count == 1 else f"{count} updates"
+
+    @staticmethod
+    def when_made(entry):
+        """(year, month) of an update: from the date it was installed or published, else its version."""
+        for text in (str(entry.get("time") or ""), str(entry.get("version") or "")):
+            try:
+                if len(text) >= 7 and text[4] == "-":
+                    return int(text[:4]), int(text[5:7])
+                if len(text) >= 6 and text[:6].isdigit():
+                    return int(text[:4]), int(text[4:6])
+            except ValueError:
+                pass
+        return 0, 1
+
+    def remember_open(self, row, _param, key):
+        if row.get_expanded():
+            self.history_open.add(key)
+        else:
+            self.history_open.discard(key)
+
+    def update_entry_row(self, entry):
+        name = entry.get("name") or mentor_update.display_name(entry.get("version"))
+        undone = entry.get("outcome") == "undone"
+        when = str(entry.get("time", ""))
+        if entry.get("outcome") == "included":
+            when = "Came with this Mentor" + (f" (published {when})" if when else "")
+        row = Adw.ActionRow(title=f"Mentor {name}" + (" — went back" if undone else ""),
+                            subtitle=(entry.get("summary") or "") + (f"\n{when}" if when else ""))
+        row.set_subtitle_lines(4)
+        row.add_suffix(button("Ask Mentor", lambda entry=entry, name=name, undone=undone:
+                              ask(self.review_request(entry, name, undone))))
+        return row
 
     def review_request(self, entry, name, undone):
         """What Ask Mentor hands the assistant about one update."""
@@ -356,7 +420,9 @@ class SettingsWindow(Adw.ApplicationWindow):
                     "can what happened and whether I need to do anything. Do not change anything before I agree. "
                     "/etc/mentor/UPDATES.md says how.")
         notes = entry.get("notes")
-        return (f"Go over Mentor update {name} with me (installed {entry.get('time')}). "
+        installed = ("it came with this Mentor" if entry.get("outcome") == "included" else
+                     f"installed {entry.get('time')}")
+        return (f"Go over Mentor update {name} with me ({installed}). "
                 + (f"Its maker's notes are in {notes}. " if notes else "It came without notes. ")
                 + (f"The change it made is {entry['change']} (change_list). " if entry.get("change") else "")
                 + "First tell me as simply as you can what it changed and what that means for me. Then check that "
@@ -440,6 +506,16 @@ class SettingsWindow(Adw.ApplicationWindow):
         dialog.present(self)
 
 
+# A month inside an open year: libadwaita draws its arrow from the year's open state (the rule for
+# an open row reaches the rows inside it), so a closed month looked open. Put back as closed.
+NESTED_ARROW_CSS = """
+row.expander:checked row.expander:not(:checked) image.expander-row-arrow {
+  -gtk-icon-transform: rotate(0.5turn);
+  color: inherit;
+}
+"""
+
+
 class SettingsApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id="org.mentor.Settings", flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
@@ -447,6 +523,10 @@ class SettingsApp(Adw.Application):
 
     def do_command_line(self, command_line):
         if self.window is None:
+            css = Gtk.CssProvider()
+            css.load_from_string(NESTED_ARROW_CSS)
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             self.window = SettingsWindow(self)
         if "updates" in command_line.get_arguments()[1:]:  # mentor settings updates: straight to that tab
             self.window.tabs.set_visible_child_name("updates")

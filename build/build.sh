@@ -70,6 +70,16 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-update "$dest"/usr/local/lib/mentor/mentor-enable
     echo "$VERSION" > "$dest/etc/mentor/version"
     echo "$VERSION_NAME" > "$dest/etc/mentor/version-name"
+    # Every update published before this build (distro/updates.json, kept by publish-update.ps1) is in it
+    # already, being made from the same source; their list and the maker's notes come along, so that a
+    # fresh Mentor knows them too (Mentor Settings, Updates; etc/mentor/UPDATES.md).
+    install -d "$dest/etc/mentor/update-notes"
+    for f in "$SRC"/distro/update-notes/*.md; do
+        [[ -e $f ]] && tr -d '\r' < "$f" > "$dest/etc/mentor/update-notes/$(basename "$f")"
+    done
+    if [[ -f $SRC/distro/updates.json ]]; then
+        tr -d '\r' < "$SRC/distro/updates.json" > "$dest/etc/mentor/updates-included.json"
+    fi
 
     # A copy of everything of ours as it was built, and what each file's contents should be:
     # what the agent checks the system against (mentor verify) and makes a lost part again

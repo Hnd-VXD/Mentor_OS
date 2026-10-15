@@ -89,4 +89,16 @@ foreach ($name in $assets) {
     if ($notesFile) { $current += (Split-Path -Leaf $notesFile) }
     if ($name -like 'mentor-update-*' -and $current -notcontains $name) { & gh release delete-asset updates $name --repo $Repo --yes }
 }
-Write-Host "Published update $version. Every Mentor offers it within a day."
+# Remembered in the source: the next image says it has this update in it (build.sh, updates-included.json).
+$listPath = Join-Path $root 'distro\updates.json'
+$list = @()
+# (through ForEach-Object: Windows PowerShell 5 hands a JSON list on as one item)
+if (Test-Path $listPath) { $list = @(Get-Content $listPath -Raw | ConvertFrom-Json | ForEach-Object { $_ }) }
+$list += [pscustomobject][ordered]@{ version = $version; name = $info.name; summary = $info.summary;
+                                     published = (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+[IO.File]::WriteAllText($listPath, (ConvertTo-Json -InputObject @($list) -Depth 3) + "`n", (New-Object Text.UTF8Encoding($false)))
+if ($notesFile) {
+    New-Item -ItemType Directory -Force (Join-Path $root 'distro\update-notes') | Out-Null
+    Copy-Item $notesFile (Join-Path $root "distro\update-notes\$version.md")
+}
+Write-Host "Published update $($info.name) ($version). Every Mentor offers it within a day."

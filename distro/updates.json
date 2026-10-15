@@ -1,0 +1,26 @@
+[
+  {
+    "version": 202610151955,
+    "name": "15.10.26.01",
+    "summary": "Mentor can now tell you in simple words what each update brings, and its version reads like a date.",
+    "published": "2026-10-15 22:56"
+  },
+  {
+    "version": 202610152004,
+    "name": "15.10.26.02",
+    "summary": "Mentor Settings has an Updates tab: every update this Mentor had, and Ask Mentor to go over one with you.",
+    "published": "2026-10-15 23:05"
+  },
+  {
+    "version": 202610152010,
+    "name": "15.10.26.03",
+    "summary": "Mentor now warns you and asks first before it restarts to install an update.",
+    "published": "2026-10-15 23:11"
+  },
+  {
+    "version": 202610152029,
+    "name": "15.10.26.04",
+    "summary": "In Mentor Settings, Updates, the list of updates is sorted by year and month.",
+    "published": "2026-10-15 23:30"
+  }
+]

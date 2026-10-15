@@ -20,7 +20,7 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | **What Mentor did** "Show" | the journal (JOURNAL.md), to read and search |
 | **More choices** (folded away) | each kind of tip (updates, a filling disk, something that stopped, news of the system, news of the desktop, new applications, new projects on GitHub); each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "Show the exact command when my password is asked" |
 
-The window has two tabs: **Settings** (the table above) and **Updates** (`mentor settings updates` opens it): which Mentor this is ("Mentor 15.10.26.00"), an update that is waiting with **What's new?** and **Update**, "Look for an update now", and **Every update** this Mentor had, newest first, each with **Ask Mentor** (UPDATES.md).
+The window has two tabs: **Settings** (the table above) and **Updates** (`mentor settings updates` opens it): which Mentor this is ("Mentor 15.10.26.00"), an update that is waiting with **What's new?** and **Update**, "Look for an update now", and **Every update** this Mentor had, by year and then month (rows that open), newest first, each with **Ask Mentor** (UPDATES.md).
 
 Nothing in the window calls a model. "Ask Mentor" and "Let Mentor look" hand you a written request (`mentor-chat "…"`).
 
