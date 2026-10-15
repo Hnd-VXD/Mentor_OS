@@ -24,6 +24,24 @@ import mentor_recipes
 import mentor_security
 import mentor_settings
 
+def _find_session():
+    """The tools act in the user's desktop session: settings (dconf), extensions, windows, apps.
+    Some engines start this tool server with only a handful of variables (Codex keeps HOME, PATH,
+    USER, LANG...), and then the settings service is "not reachable": gsettings even reports
+    success while nothing is written (2026-10-15, a widget that could not be enabled). The
+    session's places are the standard ones of this user, so they are filled in when missing."""
+    uid = os.getuid()
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    if os.path.isdir(runtime):
+        os.environ.setdefault("XDG_RUNTIME_DIR", runtime)
+        if os.path.exists(f"{runtime}/bus"):
+            os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
+        if os.path.exists(f"{runtime}/wayland-0"):
+            os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
+
+
+_find_session()
+
 LIBDIR = "/usr/local/lib/mentor"
 HELPER = f"{LIBDIR}/mentor-helper"
 ROOT_SHELL = f"{LIBDIR}/mentor-root-shell"
@@ -549,7 +567,30 @@ def extension_list(a):
 
 
 def extension_set(a):
-    return _run(["gnome-extensions", "enable" if a["enabled"] else "disable", a["uuid"]])
+    code, out = _run(["gnome-extensions", "enable" if a["enabled"] else "disable", a["uuid"]])
+    folders = [os.path.expanduser(f"~/.local/share/gnome-shell/extensions/{a['uuid']}"),
+               f"/usr/share/gnome-shell/extensions/{a['uuid']}"]
+    if code == 0 or not any(os.path.isfile(os.path.join(f, "metadata.json")) for f in folders):
+        return code, out  # done, or no such extension at all (whatever language the error is in)
+    # GNOME Shell learns of an extension only at login: one made just now "does not exist" for it
+    # yet. It goes on the list the shell reads then (org.gnome.shell enabled-extensions).
+    import gi
+    gi.require_version("Gio", "2.0")
+    from gi.repository import Gio
+    shell = Gio.Settings.new("org.gnome.shell")
+    enabled = list(shell.get_strv("enabled-extensions"))
+    if a["enabled"] and a["uuid"] not in enabled:
+        enabled.append(a["uuid"])
+    elif not a["enabled"]:
+        enabled = [uuid for uuid in enabled if uuid != a["uuid"]]
+    shell.set_strv("enabled-extensions", enabled)
+    Gio.Settings.sync()
+    if (a["uuid"] in shell.get_strv("enabled-extensions")) != bool(a["enabled"]):
+        return 1, out + "\nand writing the list of enabled extensions did not take either"
+    if a["enabled"]:
+        return 0, (f"{a['uuid']} is on the list of enabled extensions. GNOME Shell had not loaded it yet (it reads new "
+                   "extensions only at login): it comes up after the user logs out and back in (session_logout).")
+    return 0, f"{a['uuid']} is off the list of enabled extensions."
 
 
 def _sandbox():

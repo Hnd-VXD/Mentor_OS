@@ -174,7 +174,7 @@ static class Program
             if (settings.memory > 0) memoryGB = settings.memory;
             if (settings.cpus > 0) cpus = settings.cpus;
             using (var window = new LauncherWindow(memoryGB, cpus, settings.gpu, settings.vulkan && own, own,
-                                                   File.Exists(modeFile), points, watch, vmDir))
+                                                   File.Exists(modeFile), points, watch, vmDir, image))
             {
                 if (window.ShowDialog() != DialogResult.OK) return 0;
                 settings.memory = memoryGB = window.Memory;
@@ -1748,7 +1748,7 @@ class LauncherWindow : Form
     }
 
     public LauncherWindow(int memoryGB, int cpuCount, bool useGpu, bool useVulkan, bool own,
-                          bool startFullscreen, RestorePoints points, BootWatch watch, string vmDir)
+                          bool startFullscreen, RestorePoints points, BootWatch watch, string vmDir, string image)
     {
         Text = "Mentor";
         AutoScaleMode = AutoScaleMode.None;  // sized by Theme.Fit, below
@@ -1826,7 +1826,25 @@ class LauncherWindow : Form
 
         var restore = new PillButton { Text = "Restore points", Left = 28, Top = 562 + more, Width = 186, Height = 38 };
         var fresh = new PillButton { Text = "Start over", Left = 226, Top = 562 + more, Width = 186, Height = 38 };
-        var mend = new PillButton { Text = "Repair", Left = 28, Top = 608 + more, Width = 384, Height = 38 };
+        var mend = new PillButton { Text = "Repair", Left = 28, Top = 608 + more, Width = 186, Height = 38 };
+        var reinstall = new PillButton { Text = "Reinstall", Left = 226, Top = 608 + more, Width = 186, Height = 38 };
+
+        reinstall.Click += (s, e) => {
+            if (MessageBox.Show(this, "Reinstall Mentor from GitHub?\n\n" +
+                    "The newest Mentor is downloaded (about 2.3 GB) and put in place of this one.\n\n" +
+                    "Everything inside Mentor is deleted: your files in it, installed apps, settings, conversations, " +
+                    "recipes, the sign-ins to Claude, ChatGPT and Gemini, the NVIDIA key, and all restore points. " +
+                    "Copy anything you want to keep to Windows first.\n\n" +
+                    "Your files on Windows are not touched. Nothing is deleted until the download has arrived whole: " +
+                    "if it is stopped or fails, Mentor stays as it is.",
+                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+            if (Reinstall.Run(this, image, vmDir))
+            {
+                watch.Failures = 0;
+                MessageBox.Show(this, "Done. Mentor is the newest one now, and starts fresh: press Start Mentor.", Text);
+            }
+        };
 
         mend.Click += (s, e) => {
             if (MessageBox.Show(this, "Start Mentor in repair mode?\n\nFor when the desktop no longer comes up, or something " +
@@ -1878,12 +1896,199 @@ class LauncherWindow : Form
             }
         };
 
-        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, restore, fresh, mend });
+        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, restore, fresh, mend, reinstall });
         Theme.Fit(this);
         ActiveControl = start;
         KeyDown += (s, e) => {
             if (e.KeyCode == Keys.Escape) Close();
             if (e.KeyCode == Keys.Enter && !(ActiveControl is PillButton)) DialogResult = DialogResult.OK;
         };
+    }
+}
+
+// "Reinstall" in the launcher window: the newest Mentor from GitHub in place of the one here. The
+// system image is downloaded beside the old one (resumed when the connection drops: GitHub ends
+// long downloads now and then), checked against the size and SHA-256 that release.json gives,
+// and only then is the old installation deleted (vm\: the disk with everything done inside
+// Mentor, and the restore points) and the new image put in its place. Cancelled or failed, the
+// old one is left exactly as it was.
+class Reinstall : Form
+{
+    // MENTOR_RELEASE: another address to fetch the release from (a test server).
+    static readonly string Release = Environment.GetEnvironmentVariable("MENTOR_RELEASE") ??
+                                     "https://github.com/Hnd-VXD/Mentor_OS/releases/latest/download/";
+    readonly string image, vmDir, partial;
+    readonly Label words = new Label();
+    readonly ProgressBar bar = new ProgressBar { Minimum = 0, Maximum = 1000 };
+    readonly PillButton cancel = new PillButton { Text = "Cancel" };
+    volatile bool cancelled;
+    public string Error;
+
+    Reinstall(string image, string vmDir)
+    {
+        this.image = image;
+        this.vmDir = vmDir;
+        partial = image + ".download";
+        Text = "Mentor";
+        AutoScaleMode = AutoScaleMode.None;
+        ClientSize = new Size(440, 170);
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        StartPosition = FormStartPosition.CenterParent;
+        MaximizeBox = MinimizeBox = false;
+        BackColor = Theme.Back;
+        ForeColor = Theme.Text;
+        Font = Theme.Font(9.5f, FontStyle.Regular);
+        Theme.Dress(this);
+        words.SetBounds(28, 24, 384, 44);
+        words.ForeColor = Theme.Text;
+        words.BackColor = Theme.Back;
+        words.Text = "Asking GitHub for the newest Mentor…";
+        bar.SetBounds(28, 76, 384, 14);
+        cancel.SetBounds(276, 112, 136, 38);
+        cancel.Click += (s, e) => { cancelled = true; cancel.Enabled = false; words.Text = "Stopping…"; };
+        FormClosing += (s, e) => { if (e.CloseReason == CloseReason.UserClosing && cancel.Enabled) { cancelled = true; e.Cancel = true; } };
+        Controls.AddRange(new Control[] { words, bar, cancel });
+        Theme.Fit(this);
+        Shown += (s, e) => new Thread(Work) { IsBackground = true }.Start();
+    }
+
+    // True when the new Mentor is in place.
+    public static bool Run(IWin32Window owner, string image, string vmDir)
+    {
+        using (var form = new Reinstall(image, vmDir))
+        {
+            form.ShowDialog(owner);
+            if (form.Error != null)
+                MessageBox.Show(owner, form.Error, "Mentor", MessageBoxButtons.OK,
+                                form.cancelled ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            return form.Error == null;
+        }
+    }
+
+    void Say(string text, long done, long size)
+    {
+        BeginInvoke((MethodInvoker)(() => {
+            words.Text = text;
+            bar.Value = size > 0 ? (int)Math.Min(1000, done * 1000 / size) : 0;
+        }));
+    }
+
+    void Finish(string error)
+    {
+        Error = error;
+        BeginInvoke((MethodInvoker)(() => { cancel.Enabled = false; Close(); }));
+    }
+
+    static HttpWebResponse Get(string name, long from)
+    {
+        var request = (HttpWebRequest)WebRequest.Create(Release + name);
+        request.UserAgent = "Mentor";
+        request.ReadWriteTimeout = 60000;
+        request.Timeout = 60000;
+        if (from > 0) request.AddRange(from);
+        return (HttpWebResponse)request.GetResponse();
+    }
+
+    void Work()
+    {
+        try
+        {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;  // TLS 1.2
+            Dictionary<string, object> release;
+            using (HttpWebResponse response = Get("release.json", 0))
+            using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+                release = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(reader.ReadToEnd());
+            var info = release != null && release.ContainsKey("image") ? release["image"] as Dictionary<string, object> : null;
+            if (info == null) { Finish("The release on GitHub does not say what it holds. Nothing was changed."); return; }
+            long size = Convert.ToInt64(info["size"]);
+            string wanted = (info["sha256"] as string ?? "").ToLowerInvariant();
+            var parts = new List<string>();
+            foreach (object part in (System.Collections.IEnumerable)info["parts"]) parts.Add(Path.GetFileName(part as string));
+
+            long free = new DriveInfo(Path.GetPathRoot(image)).AvailableFreeSpace;
+            long have = File.Exists(partial) ? new FileInfo(partial).Length : 0;
+            if (free + have < size + (512L << 20))
+            {
+                Finish("There is not enough free space on " + Path.GetPathRoot(image) + " for the download: it needs " +
+                       (size >> 30) + "." + ((size >> 20) % 1024 * 10 / 1024) + " GB and a little more. Nothing was changed.");
+                return;
+            }
+
+            // The parts one after the other into one file, each resumed where it stopped.
+            if (File.Exists(partial)) File.Delete(partial);  // an earlier attempt may have been another release
+            var buffer = new byte[1 << 20];
+            using (var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                foreach (string part in parts)
+                {
+                    long start = file.Length, length = -1;
+                    for (int attempt = 1; ; attempt++)
+                    {
+                        if (cancelled) throw new OperationCanceledException();
+                        long got = file.Length - start;
+                        if (length >= 0 && got >= length) break;
+                        try
+                        {
+                            using (HttpWebResponse response = Get(part, got))
+                            using (Stream from = response.GetResponseStream())
+                            {
+                                if (got > 0 && response.StatusCode != HttpStatusCode.PartialContent)
+                                {   // it sent the whole part again: start the part over
+                                    file.SetLength(start);
+                                    file.Position = start;
+                                    got = 0;
+                                }
+                                if (length < 0) length = got + response.ContentLength;
+                                int read;
+                                while ((read = from.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    if (cancelled) throw new OperationCanceledException();
+                                    file.Write(buffer, 0, read);
+                                    Say("Downloading the newest Mentor: " + (file.Length >> 20) + " of " + (size >> 20) + " MB",
+                                        file.Length, size);
+                                }
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            if (!(e is IOException || e is WebException) || attempt >= 30) throw;
+                            Say("The connection dropped; going on where it stopped…", file.Length, size);
+                            Thread.Sleep(Math.Min(10, attempt) * 1000);
+                        }
+                    }
+                }
+            }
+
+            Say("Checking that it arrived whole…", size, size);
+            string got256;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var file = File.OpenRead(partial))
+                got256 = BitConverter.ToString(sha.ComputeHash(file)).Replace("-", "").ToLowerInvariant();
+            if (new FileInfo(partial).Length != size || (wanted != "" && got256 != wanted))
+            {
+                File.Delete(partial);
+                Finish("The download did not arrive whole. Nothing was changed; try again.");
+                return;
+            }
+
+            // Only now is the old installation taken away.
+            Say("Putting the new Mentor in place…", size, size);
+            if (Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
+            if (File.Exists(image)) File.Delete(image);
+            File.Move(partial, image);
+            Finish(null);
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (File.Exists(partial)) File.Delete(partial); } catch (IOException) { }
+            cancelled = true;
+            Finish("Stopped. Nothing was changed: Mentor is as it was.");
+        }
+        catch (Exception e)
+        {
+            try { if (File.Exists(partial)) File.Delete(partial); } catch (IOException) { }
+            Finish("It did not work: " + e.Message + "\n\nIf this happened while downloading, nothing was changed. " +
+                   "If Mentor is running, close it first.");
+        }
     }
 }

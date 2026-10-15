@@ -54,6 +54,19 @@ This one leans on the most that is not ours, so it is written out.
 - Not signed in, a run waits about a minute and ends with `status: ERROR`, "authentication failed or timed out".
 - The CLI carries its own documentation in `~/.gemini/antigravity-cli/builtin/skills/`; `agy --help` lists its options. Google's pages: `https://antigravity.google/docs/cli/headless/`, `/docs/permissions/`, `/docs/mcp/`.
 
+## Cancel on the connect card
+
+Choosing a model that is not ready yet (no key, not signed in) shows the connect card. It has **Cancel** when a working model was in use before: `choose_model` keeps it in `came_from` (only when leaving the chat, not when going from one connect card to another), and Cancel chooses it again. On a first start, with nothing working yet, there is no Cancel.
+
+## Changing the model in the middle of a conversation
+
+The model is one for all tabs: choosing it in one changes them all, from their next question on.
+
+- **A question already being answered** goes on with the model it started with. Its tab's model button goes on showing that model until the answer is done (`finish`), then shows the one chosen now (`choose_model` leaves busy tabs alone).
+- **Within one engine** (Claude Opus to Sonnet, one ChatGPT model to another, NVIDIA's models among themselves) the engine's own session goes on, and the new model knows everything said.
+- **To another engine** (Gemini to an NVIDIA model, say), the new engine has its own memory of the conversation, or none: `handover()` puts what it has not seen in front of the question ("You are taking over this conversation from another model…", the last 14000 characters). It goes by turns: each question starts one (`self.turn`, kept with every message), and `engine_seen` holds the last turn each engine took part in, so an engine coming back gets only what was said while it was away. A conversation taken up again from History is not handed over twice (`reopened` brings it).
+- A small note marks each change above the question the new model answers: "GLM 5.3 handed over to Gemini" (`last_model`).
+
 ## How to tell that it works
 
 | What | How |
@@ -89,4 +102,4 @@ The Antigravity CLI keeps the Google sign-in in the login keyring. A keyring tha
 
 ## When Gemini reaches for a tool of its own
 
-The Antigravity CLI has tools of its own (RunCommand, its file editing). They are not allowed here, so that every change goes through Mentor's tools, and run headless a refused one ends its turn with no answer (`denied_actions` in its `result`). The first time in a request, `on_agy_event` sets it going again by itself: a note in the chat ("Gemini tried a tool it may not use here; Mentor told it to use its own") and `send(…, carry_on=True)` with a word to use the Mentor tools instead (`carry_prompt`), in the same conversation, with no bubble and nothing of the text box touched; the turn's steps and thumbs go on. A second refusal in the same request is shown as before: "Gemini reached for a tool of its own … Ask again."
+The Antigravity CLI has tools of its own (RunCommand, its file editing). They are not allowed here, so that every change goes through Mentor's tools, and run headless a refused one ends its turn with no answer (`denied_actions` in its `result`). The first time in a request, `on_agy_event` sets it going again by itself: a note in the chat ("Gemini reached for a tool of its own; Mentor used its own, which ask you first and keep a record": the reason in a few words, for a user who does not know what a tool is) and `send(…, carry_on=True)` with a word to use the Mentor tools instead (`carry_prompt`), in the same conversation, with no bubble and nothing of the text box touched; the turn's steps and thumbs go on. A second refusal in the same request is shown as before: "Gemini reached for a tool of its own … Ask again."

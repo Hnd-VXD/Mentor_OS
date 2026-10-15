@@ -251,14 +251,12 @@ def open_with_menu(path, widget, dialog=None, at=None):
         items.append(button)
 
     # The list of programs belongs to the window under the preview (a preview over the ask bar is a
-    # window of its own, closed now). While it is up, that window keeps its place (hold_open: the
-    # ask bar would otherwise go away and take the list with it); after, it is in front again.
+    # window of its own, closed now); after it, that window is in front again.
     root = widget.get_root()
     if dialog and root.get_transient_for():
         root = root.get_transient_for()
 
     def chosen(launcher, result):
-        root.hold_open = False
         try:
             launcher.launch_finish(result)
         except GLib.Error:
@@ -267,7 +265,6 @@ def open_with_menu(path, widget, dialog=None, at=None):
             root.present()
 
     def open_with():
-        root.hold_open = True
         Gtk.FileLauncher(file=Gio.File.new_for_path(path), always_ask=True).launch(root, None, chosen)
 
     item("Open with\u2026", open_with)
@@ -313,6 +310,9 @@ RESTORE_SEEN_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "restore-
 # The conversations, so that logging out or restarting does not lose them.
 CONVERSATIONS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "conversations.json")
 HISTORY_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "history.jsonl")
+# Which engine a provider runs on, as send() names it (self.engine): every other provider (NVIDIA)
+# answers through mentor-agent, in one conversation format.
+ENGINE_OF = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
 MAX_SAVED_ITEMS = 300  # per conversation
 # What the accounts last said of their allowance: {"claude": {"at": time, "windows": [...]}, "codex": ...},
 # a window being {"minutes": length, "used": percent or None, "resets": time or None}.
@@ -410,6 +410,9 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$")
 TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
 
 
+LOG_OUT = re.compile(r"(?i)\b(log[- ]?out)\b")
+
+
 def _inline(line):
     """One line of text, escaped, with `code`, **bold** and headings."""
     out = GLib.markup_escape_text(line, -1)
@@ -418,6 +421,11 @@ def _inline(line):
     out = re.sub(r"^#{1,6} +(.+)$", r"<b>\1</b>", out)
     out = re.sub(r"^(\s*)[-*] +", "\\1\u2022 ", out)
     out = re.sub(r"^&gt; ?(.+)$", r"<i>\1</i>", out)  # a quoted line (a recipe's one-line summary)
+    # A log out the agent asks for stands out, bold and blue, outside code (the user's wish, 2026-10-15):
+    # it is the one thing in an answer the user has to do themselves, and their windows close with it.
+    parts = re.split(r"(<tt>.*?</tt>)", out)
+    out = "".join(part if part.startswith("<tt>") else LOG_OUT.sub(r'<b><span foreground="#78aeed">\1</span></b>', part)
+                  for part in parts)
     return out
 
 
@@ -979,6 +987,9 @@ class Conversation(Gtk.Box):
         self.window = window
         self.first_run = first_run
         self.sessions = {}  # what each kind of engine calls this conversation, to go on with it
+        self.turn = 0  # one more for each question asked here; the messages carry the turn they belong to
+        self.engine_seen = {}  # engine: the last turn it took part in (handover, in send)
+        self.last_model = ""  # the model that answered here last, as its button names it
         self.engine = None  # the kind of engine the running turn uses
         self.process = None
         self.spinner = None
@@ -1372,12 +1383,17 @@ class Conversation(Gtk.Box):
         self.entry.grab_focus()
 
     def saved(self, title):
-        return {"title": title, "sessions": self.sessions, "sandbox": self.sandbox, "offered_after": self.offered_after,
+        return {"title": title, "sessions": self.sessions, "turn": self.turn, "engine_seen": self.engine_seen,
+                "last_model": self.last_model,
+                "sandbox": self.sandbox, "offered_after": self.offered_after,
                 "workspace": self.workspace, "history": self.history[-MAX_SAVED_ITEMS:]}
 
     def restore(self, saved):
         """Show a conversation from before the assistant was last started, ready to go on."""
         self.sessions = dict(saved.get("sessions") or {})
+        self.turn = int(saved.get("turn") or 0)
+        self.engine_seen = dict(saved.get("engine_seen") or {})
+        self.last_model = str(saved.get("last_model") or "")
         if saved.get("session_id"):  # saved before there was more than one engine
             self.sessions.setdefault("claude", saved["session_id"])
         self.sandbox = saved.get("sandbox") or self.sandbox
@@ -1557,7 +1573,7 @@ class Conversation(Gtk.Box):
                 label.insert_action_group("message", actions)
         if error:
             label.add_css_class("chat-error")
-        item = {"text": text, "user": user, "error": error}
+        item = {"text": text, "user": user, "error": error, "turn": self.turn}
         bubble = label
         if user and apps:
             item["apps"] = dict(apps)
@@ -2076,6 +2092,13 @@ class Conversation(Gtk.Box):
                 if self.first_run:  # from here on this is no longer a new system
                     os.makedirs(os.path.dirname(WELCOMED_PATH), exist_ok=True)
                     open(WELCOMED_PATH, "w").close()
+            # A change of model shows where it happened, above the question the new one answers
+            # (the user's idea, 2026-10-15); handover() gives it what it missed.
+            current = self.window.shown_name(self.window.model_index)
+            if self.last_model and current != self.last_model:
+                self.add_note(f"{self.last_model} handed over to {current}")
+            self.last_model = current
+            self.turn += 1
             self.add_text(shown or text, user=True, apps=picked if shown is None else None)
             if picked:
                 prompt += self.picked_note(picked)
@@ -2102,6 +2125,7 @@ class Conversation(Gtk.Box):
         _, provider, model, _ = MODELS[self.window.model_index]
         effort = EFFORTS[self.window.effort_index][1]
         key = folder = None
+        prompt = self.handover(ENGINE_OF.get(provider, "agent"), prompt)
         if provider == "claude":
             self.engine = "claude"
             argv = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
@@ -2323,7 +2347,7 @@ class Conversation(Gtk.Box):
                         "mentor: run_command for a shell command, settings_get / settings_set for a setting, "
                         "file_read / file_write for a file, app_open to open an application. Carry on with "
                         "the user's request from where you were.")
-                    self.add_note("Gemini tried a tool it may not use here; Mentor told it to use its own")
+                    self.add_note("Gemini reached for a tool of its own; Mentor used its own, which ask you first and keep a record")
                 else:
                     self.add_text(f"Gemini reached for a tool of its own ({refused}) in place of Mentor’s, "
                                   "which is not allowed here, and stopped. Ask again.", error=True)
@@ -2355,8 +2379,29 @@ class Conversation(Gtk.Box):
         if self.spinner:  # keep it last
             self.messages.reorder_child_after(self.spinner, self.messages.get_last_child())
 
+    def handover(self, engine, prompt):
+        """Each engine keeps its own memory of a conversation. When the model is changed to another
+        engine half way, the new one would start knowing nothing of what was said here: what it
+        missed goes with the question (2026-10-15). Within one engine (NVIDIA's models, which share
+        one conversation) nothing is added."""
+        seen = self.engine_seen.get(engine)
+        if seen is None and self.sessions.get(engine):
+            seen = self.turn - 1  # a conversation from before turns were counted: it knows it
+        self.engine_seen[engine] = self.turn
+        if getattr(self, "reopened", ""):
+            return prompt  # taken up again from History: that brings the whole of it already
+        missed = [item for item in self.history if item.get("text") and not item.get("error")
+                  and (seen is None or item.get("turn", 0) > seen) and item.get("turn", 0) < self.turn]
+        if not missed:
+            return prompt
+        said = "\n\n".join(("The user: " if item.get("user") else "The assistant: ") + str(item["text"]) for item in missed)
+        return ("You are taking over this conversation from another model. What was said in it that you have "
+                "not seen (the start may be cut):\n\n" + said[-14000:] + "\n\n---\n\n" + prompt)
+
     def finish(self):
         """The CLI exited: the turn is over."""
+        # The model button shows the model chosen now again (choose_model left it as it was).
+        self.model.set_label(self.window.shown_name(self.window.model_index))
         self.say_pending()
         self.end_steps()
         if self.spinner:
@@ -3166,7 +3211,8 @@ class DesktopWindow(Adw.ApplicationWindow):
         """What is shown above the text box while it is over the windows."""
         if self.ask_of is None:
             return
-        self.ask_words.set_label(text if len(text) <= 1500 else text[:1499] + "\u2026")
+        # Drawn as the chat draws answers (to_markup): **bold**, `code`, and a log out in blue.
+        self.ask_words.set_markup(to_markup(text if len(text) <= 1500 else text[:1499] + "\u2026"))
         self.ask_bubble.set_visible(bool(text))
 
     def toggle_ask(self):
@@ -3201,13 +3247,15 @@ class DesktopWindow(Adw.ApplicationWindow):
                                          resizable=False, child=box)
             self.ask_window.add_css_class("agent")
             self.ask_window.add_css_class("ask-over")
+            # The model button's menu calls win.model and win.effort: the desktop window's actions.
+            # Without them here its entries could be browsed but not chosen (2026-10-15).
+            self.ask_window.insert_action_group("win", self)
             keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
             keys.connect("key-pressed", lambda _c, keyval, *_: keyval == Gdk.KEY_Escape and self.close_ask() is None)
             self.ask_window.add_controller(keys)
             self.ask_window.connect("close-request", lambda *_: self.close_ask() is None)
-            # A click anywhere else puts the box back where it lives, on the desktop.
-            self.ask_window.connect("notify::is-active", lambda window, _p: (
-                not window.is_active() and GLib.timeout_add(200, self.ask_left)))
+            # It stays over the other windows while the user works in them (the user's choice,
+            # 2026-10-15): Esc in it, or the same key again, puts it back on the desktop.
         self.ask_of, self.ask_shot = conversation, shot
         self.ask_say("")
         conversation.bottom_home.set_child(None)
@@ -3217,18 +3265,6 @@ class DesktopWindow(Adw.ApplicationWindow):
             conversation.entry.set_placeholder_text("Ask Mentor about what you see\u2026   (Esc puts this away)")
         self.ask_window.present()
         conversation.entry.grab_focus()
-
-    def ask_left(self):
-        """The window with the text box is no longer the one in front. (A moment after, so
-        that a menu of its own opening and closing does not count.)"""
-        if self.ask_of is not None and self.ask_window and not self.ask_window.is_active():
-            # Its own windows (a picture's preview, too large for the bar) and the list of programs
-            # of "Open with…" (open_with_menu) do not count.
-            if getattr(self.ask_window, "hold_open", False) or any(window.is_active() and window.get_transient_for() is self.ask_window
-                   for window in Gtk.Window.list_toplevels()):
-                return GLib.SOURCE_REMOVE
-            self.close_ask()
-        return GLib.SOURCE_REMOVE
 
     def close_ask(self):
         conversation, self.ask_of = self.ask_of, None
@@ -3335,6 +3371,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         """One model for all conversations, picked from the button next to any text box."""
         if index == self.model_index and not self.unchosen:
             return
+        # The model left while it was working: the connect card's Cancel goes back to it.
+        if not self.unchosen and self.stack.get_visible_child_name() != "sign-in":
+            self.came_from = self.model_index
         self.unchosen = False
         self.model_index = index
         self.settings["choice"] = MODELS[index][0]
@@ -3343,8 +3382,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         save_settings(self.settings)
         self.lookup_action("model").set_state(GLib.Variant.new_string(MODELS[index][0]))
         for conversation in self.conversations():
-            conversation.model.set_label(self.shown_name(index))
             conversation.model.popdown()
+            if not conversation.busy:  # one that is answering shows its model until it is done (finish)
+                conversation.model.set_label(self.shown_name(index))
         self.show_model()
         # The menu itself stays as it is: this is called from it, and taking it apart under the
         # click that is still being handled brought the assistant down. Only its top changes.
@@ -3919,6 +3959,15 @@ class DesktopWindow(Adw.ApplicationWindow):
             index = [p for _, p, _, _ in MODELS].index(first)
             other.connect("clicked", lambda _button, index=index: self.choose_model(index))
             others.append(other)
+        # Cancel: back to the model that was working before this one was chosen (the user's
+        # wish, 2026-10-15), instead of having to find it in the menu again.
+        back_to = getattr(self, "came_from", None)
+        if back_to is not None and back_to != self.model_index and not change:
+            cancel = Gtk.Button(label="Cancel", halign=Gtk.Align.CENTER,
+                                tooltip_text=f"Back to {self.shown_name(back_to)}")
+            cancel.add_css_class("flat")
+            cancel.connect("clicked", lambda *_: self.choose_model(back_to))
+            widgets.append(cancel)  # above "Or use"
         widgets.append(others)
         while child := self.connect_page.get_first_child():
             self.connect_page.remove(child)

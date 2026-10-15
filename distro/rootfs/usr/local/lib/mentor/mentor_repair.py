@@ -376,7 +376,8 @@ class Engine:
         if self.refused and not carried:
             # Gemini may not use its own tools here (a refusal ends its turn): told so once and set
             # going again on the same request, without the user having to ask again (as in the chat).
-            print(paint("    (it tried a tool it may not use here; told to use Mentor's)", "90"), flush=True)
+            print(paint("    (Gemini reached for a tool of its own; Mentor used its own, which ask you first and keep a record)", "90"),
+                  flush=True)
             return self.ask(
                 f"You reached for {self.refused}, a tool of your own, which is not allowed here, and your turn "
                 "ended. Do it through the Mentor tools instead, with call_mcp_tool and ServerName mentor: "

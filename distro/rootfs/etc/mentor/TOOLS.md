@@ -88,6 +88,10 @@ Every engine has them, whatever its own tools (Gemini had none: asked how to mak
 
 `mentor tools` prints them with their descriptions; that list is the truth, this one a summary.
 
+**The desktop session, whatever engine started the tools.** The tool server acts in the user's session: settings (dconf), extensions, windows, apps. Some engines start it with only a few environment variables (Codex keeps HOME, PATH, USER, LANG…), and without the session's address the settings service is "not reachable", and `gsettings` even says it succeeded while nothing was written. `_find_session()` in `mentor_tools.py` fills in `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` (`/run/user/UID/bus`) and `WAYLAND_DISPLAY` when they are missing (2026-10-15: a user's widget could not be enabled).
+
+**A new extension.** GNOME Shell reads new extensions only at login, so for one just written `gnome-extensions enable` answers that it does not exist. `extension_set` then puts it on `org.gnome.shell enabled-extensions` itself (when its folder with `metadata.json` exists) and says that it comes up after a log out (session_logout); after the next login its state is ACTIVE. An extension with no folder at all still gives the error.
+
 ## What you may not change
 
 `ALWAYS_PROTECTED` in `mentor_core.py` and `[files] protected` in `policy.toml`. Writing to them is refused by `file_write`, skipped by `sandbox_apply` ("not applied, protected: …"), and a root command that names them is refused by the patterns in `[root_shell] deny_patterns`. This is on purpose: it is the layer that keeps the agent in check, the files that decide who is root, and what a failed start falls back on. Do not look for a way around it.

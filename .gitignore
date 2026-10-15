@@ -4,3 +4,4 @@ Mentor.exe
 backup-*/
 Mentor.settings
 qemu/
+__pycache__/
