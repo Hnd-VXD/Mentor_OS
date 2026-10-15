@@ -310,6 +310,12 @@ RESTORE_SEEN_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "restore-
 # The conversations, so that logging out or restarting does not lose them.
 CONVERSATIONS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "conversations.json")
 HISTORY_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "history.jsonl")
+# Asked before a Mentor update is installed: it restarts the system (UPDATES.md).
+RESTART_HEADING = "Restart to update?"
+RESTART_BODY = ("Mentor restarts the whole system to install the update. It takes about a minute, and the apps you "
+                "have open close: save your work in them first. If the new version does not start properly, Mentor "
+                "goes back by itself.")
+
 # Which engine a provider runs on, as send() names it (self.engine): every other provider (NVIDIA)
 # answers through mentor-agent, in one conversation format.
 ENGINE_OF = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
@@ -1667,6 +1673,8 @@ class Conversation(Gtk.Box):
             if auto and not self.window.unchosen:
                 GLib.timeout_add(800, lambda: hand_over() and False)
         if update:  # last: the main choice
+            body.set_label(f"{text}\n\nInstalling it restarts Mentor (about a minute).")
+            body.set_visible(True)
             install = Gtk.Button(label="Update")
             install.add_css_class("pill")
             install.add_css_class("look")
@@ -3698,11 +3706,26 @@ class DesktopWindow(Adw.ApplicationWindow):
         if any(conversation.busy for conversation in self.conversations()):
             body.set_label(f"{summary}\n\nMentor is still working on something. Press Update again when it is done.")
             return
+        # The restart comes a second or two after the install starts: ask before, never after (the user
+        # was surprised by it, 2026-10-15).
+        dialog = Adw.AlertDialog(heading=RESTART_HEADING, body=RESTART_BODY)
+        dialog.add_response("cancel", "Not now")
+        dialog.add_response("restart", "Restart and update")
+        dialog.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _dialog, response: response == "restart"
+                       and self.start_update(install, dismiss, body, summary))
+        dialog.present(self)
+
+    def start_update(self, install, dismiss, body, summary):
+        if any(conversation.busy for conversation in self.conversations()):
+            return  # the assistant began something while the question was open
         install.set_sensitive(False)
         dismiss.set_visible(False)
         install.set_label("Updating…")
-        body.set_label(f"{summary}\n\nMentor restarts by itself when it is ready, in a minute or two. "
-                       "If the new version does not start properly, it goes back by itself.")
+        body.set_label(f"{summary}\n\nRestarting in a moment. If the new version does not start properly, "
+                       "Mentor goes back by itself.")
 
         def failed(why):
             install.set_sensitive(True)
