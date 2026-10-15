@@ -15,6 +15,19 @@ LOOPS=()
 # Mentor's version: a number that only grows (UTC time of the build). Updates compare it
 # (etc/mentor/UPDATES.md); MENTOR_VERSION sets it by hand.
 VERSION=${MENTOR_VERSION:-$(date -u +%Y%m%d%H%M)}
+# What people read: day.month.year and the number of the build that day, from 00 (15.10.26.00).
+# The builds are counted in out/version-names.txt ("VERSION NAME" a line).
+version_name() {
+    local names=$SRC/out/version-names.txt day=${VERSION:0:8} n=0
+    if [[ -f $names ]]; then
+        n=$(awk -v d="$day" -v v="$VERSION" 'index($1, d) == 1 && $1 != v { c++ } END { print c + 0 }' "$names")
+        grep -q "^$VERSION " "$names" && { awk -v v="$VERSION" '$1 == v { print $2; exit }' "$names"; return; }
+    fi
+    printf '%s.%s.%s.%02d\n' "${VERSION:6:2}" "${VERSION:4:2}" "${VERSION:2:2}" "$n"
+}
+VERSION_NAME=${MENTOR_VERSION_NAME:-$(version_name)}
+mkdir -p "$SRC/out"
+grep -qs "^$VERSION " "$SRC/out/version-names.txt" || echo "$VERSION $VERSION_NAME" >> "$SRC/out/version-names.txt"
 
 [[ $EUID -eq 0 ]] || { echo "build.sh must run as root" >&2; exit 1; }
 [[ -f /etc/arch-release ]] || { echo "build.sh must run inside Arch Linux" >&2; exit 1; }
@@ -56,6 +69,7 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-emergency-console "$dest"/usr/local/lib/mentor/mentor-taskbar-quiet \
         "$dest"/usr/local/lib/mentor/mentor-update "$dest"/usr/local/lib/mentor/mentor-enable
     echo "$VERSION" > "$dest/etc/mentor/version"
+    echo "$VERSION_NAME" > "$dest/etc/mentor/version-name"
 
     # A copy of everything of ours as it was built, and what each file's contents should be:
     # what the agent checks the system against (mentor verify) and makes a lost part again
@@ -221,6 +235,7 @@ build_update() {
     mkdir -p "$OUT/update"
     rm -f "$OUT"/update/mentor-update-*.tar.zst
     tar --zstd --numeric-owner --owner=0 --group=0 -cf "$OUT/update/$file" -C "$root" .
+    echo "$VERSION_NAME" > "$OUT/update/version-name"  # for publish-update.ps1
     rm -rf "$root"
     echo "Built $OUT/update/$file"
 }

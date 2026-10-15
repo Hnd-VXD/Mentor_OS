@@ -405,16 +405,16 @@ def cmd_verify(args):
 def cmd_notice(args):
     """Tell the user something in the assistant's chat: a yellow card for a warning, a red one
     for a problem. For what the agent builds to speak with (see /etc/mentor/ASSISTANT.md)."""
-    print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt, update=args.update))
+    print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt, update=args.update,
+                                    action=args.action))
 
 
 def cmd_update(args):
     """Which version of Mentor this is, and what the updater knows (/etc/mentor/UPDATES.md)."""
-    try:
-        with open("/etc/mentor/version") as f:
-            version = f.read().strip()
-    except OSError:
-        version = "unknown (made before Mentor had updates)"
+    sys.path.insert(0, "/usr/local/lib/mentor")
+    import mentor_update  # only for the names: nothing here needs root
+    version = mentor_update.installed_name() if mentor_update.installed_version() else \
+        "unknown (made before Mentor had updates)"
     try:
         with open("/var/lib/mentor/updates/state.json") as f:
             state = json.load(f)
@@ -422,7 +422,7 @@ def cmd_update(args):
         state = {}
     print(f"Mentor version: {version}")
     if state.get("installing"):
-        print(f"Being tried: update {state['installing']['version']} (installed {state['installing']['time']}; "
+        print(f"Being tried: update {state['installing'].get('name') or state['installing']['version']} (installed {state['installing']['time']}; "
               "kept once a start with it reaches the desktop)")
     if state.get("offered"):
         try:
@@ -430,13 +430,19 @@ def cmd_update(args):
                 brings = json.load(f).get("summary", "")
         except (OSError, ValueError, AttributeError):
             brings = ""
-        print(f"Waiting for the user: update {state['offered']['version']} (offered "
+        try:
+            with open("/var/lib/mentor/updates/update.json") as f:
+                waiting_name = mentor_update.display_name(state["offered"]["version"], json.load(f).get("name"))
+        except (OSError, ValueError, AttributeError):
+            waiting_name = mentor_update.display_name(state["offered"]["version"])
+        print(f"Waiting for the user: update {waiting_name} (offered "
               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(state['offered']['time']))})"
               + (f". What it brings: {brings}" if brings else ""))
     if state.get("installed"):
-        print(f"Last installed: update {state['installed']['version']} on {state['installed']['time']}")
+        print(f"Last installed: update {mentor_update.display_name(state['installed']['version'], state['installed'].get('name'))} "
+              f"on {state['installed']['time']}")
     if state.get("failed"):
-        print("Undone by a start that failed, not offered again: " + ", ".join(map(str, state["failed"])))
+        print("Undone by a start that failed, not offered again: " + ", ".join(mentor_update.display_name(v) for v in state["failed"]))
     if state.get("declined_packages"):
         print("Packages the user removed, never put back by an update: " + ", ".join(state["declined_packages"]))
     if not state.get("offered") and not state.get("installing"):
@@ -550,6 +556,7 @@ p.add_argument("title")
 p.add_argument("text", nargs="?", default="")
 p.add_argument("--prompt", help="what goes to the agent when the user presses Let Mentor look")
 p.add_argument("--update", help=argparse.SUPPRESS)  # the updater's card, with its Update button
+p.add_argument("--action", help="the label of the button that hands the prompt to the agent (Let Mentor look)")
 p.set_defaults(func=cmd_notice)
 p = sub.add_parser("update", help="which version of Mentor this is, and whether an update is waiting")
 p.set_defaults(func=cmd_update)

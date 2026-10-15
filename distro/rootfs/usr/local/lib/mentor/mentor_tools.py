@@ -66,18 +66,20 @@ MAX_OUTPUT = 20000
 NOTICES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "notices")
 
 
-def leave_notice(level, title, text="", prompt=None, auto=False, update=None):
+def leave_notice(level, title, text="", prompt=None, auto=False, update=None, action=None):
     """Tell the user something by itself: the assistant shows it in the chat as a card, yellow
     for a "warning", red for a "problem" (mentor-chat, NOTICES_DIR). `prompt` is what goes to
     the agent when the user asks it to look; with `auto` the assistant sends it on by itself,
     without waiting to be asked (only mentor-firewall-watch does). `update` is the version of an
-    update waiting to be installed: the card gets an Update button (mentor_update). Returns where it was left."""
+    update waiting to be installed: the card gets an Update button (mentor_update). `action` names the
+    button that hands `prompt` over ("Let Mentor look" when not given). Returns where it was left."""
     os.makedirs(NOTICES, exist_ok=True)
     path = os.path.join(NOTICES, f"{time.time():.3f}-{os.getpid()}.json")
     with open(path + ".new", "w") as f:
         json.dump({"level": level if level in ("problem", "idea") else "warning", "title": title, "text": text,
                    **({"prompt": prompt} if prompt else {}), **({"auto": True} if auto and prompt else {}),
-                   **({"update": str(update)} if update else {})}, f)
+                   **({"update": str(update)} if update else {}),
+                   **({"action": str(action)[:40]} if action and prompt else {})}, f)
     os.replace(path + ".new", path)  # whole when it is seen
     return path
 

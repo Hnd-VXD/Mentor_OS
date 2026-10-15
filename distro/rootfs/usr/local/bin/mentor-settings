@@ -26,6 +26,7 @@ import mentor_journal
 import mentor_security
 import mentor_settings
 import mentor_tools
+import mentor_update
 
 CHAT = "/usr/local/bin/mentor-chat"
 VERSION_PATH = "/etc/mentor/version"
@@ -246,8 +247,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         try:
             with open(VERSION_PATH) as f:
                 version = f.read().strip()
-            built = GLib.DateTime.new_utc(int(version[:4]), int(version[4:6]), int(version[6:8]), 0, 0, 0)
-            made = f"Mentor of {built.format('%-d %B %Y')}"
+            made = f"Mentor {mentor_update.installed_name()}"
         except (OSError, ValueError, TypeError):
             made = "Mentor"
         try:
@@ -268,7 +268,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.update_row.set_title("An update is being tried")
             self.update_row.set_subtitle("It is kept once Mentor has started with it")
         elif waiting:
-            self.update_row.set_title("An update is waiting")
+            self.update_row.set_title(f"An update is waiting: {mentor_update.display_name(waiting['version'], waiting.get('name'))}")
             self.update_row.set_subtitle(str(waiting.get("summary", "")))
             self.update_button.set_visible(True)
         else:

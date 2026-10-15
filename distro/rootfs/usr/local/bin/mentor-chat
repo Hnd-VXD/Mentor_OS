@@ -1647,12 +1647,6 @@ class Conversation(Gtk.Box):
         dismiss.add_css_class("flat")
         dismiss.connect("clicked", lambda *_: self.messages.remove(card))
         buttons.append(dismiss)
-        if update:
-            install = Gtk.Button(label="Update")
-            install.add_css_class("pill")
-            install.add_css_class("look")
-            install.connect("clicked", lambda *_: self.window.install_update(install, dismiss, body, text))
-            buttons.append(install)
         if silence:
             quiet = Gtk.Button(label="Don't suggest this")
             quiet.add_css_class("flat")
@@ -1672,6 +1666,12 @@ class Conversation(Gtk.Box):
             # without waiting, when an engine is chosen. The card stays, to say what it was.
             if auto and not self.window.unchosen:
                 GLib.timeout_add(800, lambda: hand_over() and False)
+        if update:  # last: the main choice
+            install = Gtk.Button(label="Update")
+            install.add_css_class("pill")
+            install.add_css_class("look")
+            install.connect("clicked", lambda *_: self.window.install_update(install, dismiss, body, text))
+            buttons.append(install)
         card.append(buttons)
         self.window.note(self, f"{title}. {text}".strip(), False)
         if self.first_run and self.welcome:  # the card of a first start stays where it is
@@ -3748,7 +3748,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
             self.current.add_notice(notice.get("level") if notice.get("level") in ("problem", "idea") else "warning", title, text, prompt,
                                     auto=notice.get("auto") is True,
-                                    update=notice.get("update") if isinstance(notice.get("update"), str) else None)
+                                    update=notice.get("update") if isinstance(notice.get("update"), str) else None,
+                                    action=notice.get("action") if isinstance(notice.get("action"), str) else "Let Mentor look")
             shown.append((title, text))
         if shown:
             self.show_chat()

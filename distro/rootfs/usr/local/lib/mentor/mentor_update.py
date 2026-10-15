@@ -34,6 +34,7 @@ BASE = (os.environ.get("MENTOR_UPDATES") or "https://github.com/Hnd-VXD/Mentor_O
 SIGNERS = "/etc/mentor/update-signers"
 NAMESPACE = "mentor-update"
 VERSION_PATH = "/etc/mentor/version"
+VERSION_NAME_PATH = "/etc/mentor/version-name"  # what people read: 15.10.26.00
 MANIFEST = "/etc/mentor/source/MANIFEST.sha256"
 PACKAGES = "/etc/mentor/source/build/packages.x86_64"
 STATE_DIR = "/var/lib/mentor/updates"
@@ -43,6 +44,8 @@ CONTROL_PORT = "/dev/virtio-ports/org.mentor.control"
 SANDBOX = "mentor-update"
 REOFFER = 3 * 86400  # a card not acted on comes again after this long
 MAX_PACKAGE = 200 << 20
+MAX_NOTES = 256 << 10
+NOTES_DIR = "/etc/mentor/update-notes"  # each installed update's notes, kept (UPDATES.md)
 
 
 class UpdateError(Exception):
@@ -73,6 +76,15 @@ def save(state):
     os.replace(STATE_PATH + ".new", STATE_PATH)
 
 
+def display_name(version, given=None):
+    """What people read for a version: 15.10.26.00 (day.month.year and the build that day), as the
+    build named it; from the number alone (15.10.26) when it has no name."""
+    if isinstance(given, str) and 0 < len(given) <= 20 and all(c.isdigit() or c == "." for c in given):
+        return given
+    text = str(version)
+    return f"{text[6:8]}.{text[4:6]}.{text[2:4]}" if len(text) >= 8 and text.isdigit() else text
+
+
 def installed_version():
     try:
         with open(VERSION_PATH) as f:
@@ -82,6 +94,14 @@ def installed_version():
 
 
 # --- what is offered ---------------------------------------------------------------
+
+def installed_name():
+    try:
+        with open(VERSION_NAME_PATH) as f:
+            return display_name(installed_version(), f.read().strip())
+    except OSError:
+        return display_name(installed_version())
+
 
 def _fetch(name, most, timeout=60):
     request = urllib.request.Request(f"{BASE}/{name}", headers={"User-Agent": "mentor-update"})
@@ -111,7 +131,20 @@ def offered(update):
         raise UpdateError(f"update.json is not as expected: {e}")
     if not name.startswith("mentor-update-") or "/" in name or not 0 < size <= MAX_PACKAGE or len(digest) != 64:
         raise UpdateError("update.json is not as expected")
-    return {"version": version, "summary": summary, "file": name, "size": size, "sha256": digest}
+    found = {"version": version, "summary": summary, "file": name, "size": size, "sha256": digest,
+             "name": display_name(version, update.get("name"))}
+    # The maker's notes for the assistant (NOTES.md): what changed and why, and steps for what files
+    # cannot do. Optional; signed through update.json like the package.
+    if update.get("notes"):
+        try:
+            notes, notes_size, notes_digest = str(update["notes"]), int(update["notes_size"]), str(update["notes_sha256"]).lower()
+        except (KeyError, TypeError, ValueError) as e:
+            raise UpdateError(f"update.json is not as expected: {e}")
+        if not notes.startswith("mentor-update-") or not notes.endswith(".md") or "/" in notes \
+                or not 0 < notes_size <= MAX_NOTES or len(notes_digest) != 64:
+            raise UpdateError("update.json is not as expected")
+        found.update(notes=notes, notes_size=notes_size, notes_sha256=notes_digest)
+    return found
 
 
 def _sha256(path):
@@ -127,12 +160,43 @@ def _package_ok(update):
     return os.path.isfile(path) and os.path.getsize(path) == update["size"] and _sha256(path) == update["sha256"]
 
 
+def notes_path(update):
+    """Where the waiting update's notes are, or None."""
+    return f"{STATE_DIR}/{update['notes']}" if update.get("notes") else None
+
+
+def _notes_ok(update):
+    path = notes_path(update)
+    return path is None or (os.path.isfile(path) and os.path.getsize(path) == update["notes_size"]
+                            and _sha256(path) == update["notes_sha256"])
+
+
+def has_steps(path):
+    """True when notes hold steps for the assistant: a "## Steps" heading with something under it."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return False
+    part = text.split("\n## Steps", 1)
+    return len(part) == 2 and bool(part[1].split("\n## ", 1)[0].strip(" \n:-").strip())
+
+
 def download(update):
+    if update.get("notes") and not _notes_ok(update):
+        data = _fetch(update["notes"], update["notes_size"])
+        with open(notes_path(update) + ".part", "wb") as f:
+            f.write(data)
+        os.chmod(notes_path(update) + ".part", 0o644)
+        os.replace(notes_path(update) + ".part", notes_path(update))
+        if not _notes_ok(update):
+            os.remove(notes_path(update))
+            raise UpdateError("the notes that arrived are not the ones update.json describes")
     path = f"{STATE_DIR}/{update['file']}"
     if _package_ok(update):
         return path
     for old in os.listdir(STATE_DIR):  # one package at a time
-        if old.startswith("mentor-update-"):
+        if old.startswith("mentor-update-") and old != update.get("notes"):
             os.remove(f"{STATE_DIR}/{old}")
     with open(path + ".part", "wb") as f:
         f.write(_fetch(update["file"], update["size"], timeout=600))
@@ -186,15 +250,28 @@ def settle(state):
     if kept and mentor_boot.load().get("phase") != "ok":
         return False  # the start that tries it is not over yet
     if not kept:
-        log(f"update {installing['version']} was undone by the start that tried it")
+        log(f"update {installing['version']} ({installing.get('name', '')}) was undone by the start that tried it")
         state.setdefault("failed", []).append(installing["version"])
         state.pop("installing")
         save(state)
         return True  # mentor-chat has already said "Mentor went back to the way it last worked"
-    if not notice("idea", "Mentor is up to date", installing["summary"]):
+    kept = f"{NOTES_DIR}/{installing['version']}.md"
+    extra = []
+    if installing.get("notes") and has_steps(kept):
+        extra = ["--action", "Let Mentor finish", "--prompt",
+                 f"Mentor was just updated. Its maker's notes are in {kept}. Follow its section \"Steps\" exactly as "
+                 "/etc/mentor/UPDATES.md says (\"Steps after an update\"): first tell me in plain words what you are "
+                 "going to do and wait for my yes; then one step at a time, checking each as the notes say, through the "
+                 "sandbox where a step changes the system. If anything is not as the notes expect, stop and tell me."]
+    elif installing.get("notes"):
+        extra = ["--action", "What's new?", "--prompt",
+                 f"Mentor was just updated. Its maker's notes are in {kept}. Tell me in plain words, in a few sentences, "
+                 "what changed and why it matters to me."]
+    if not notice("idea", f"Mentor is up to date: {installing.get('name') or installed_name()}", installing["summary"], *extra):
         return False  # told when somebody is logged in
-    log(f"update {installing['version']} is installed")
-    state["installed"] = {"version": installing["version"], "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    log(f"update {installing['version']} ({installing.get('name', '')}) is installed")
+    state["installed"] = {"version": installing["version"], "name": installing.get("name"),
+                          "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     state.pop("installing")
     state.pop("offered", None)
     save(state)
@@ -227,10 +304,17 @@ def check():
     last = state.get("offered") or {}
     if last.get("version") == update["version"] and time.time() - last.get("time", 0) < REOFFER:
         return 0
-    if notice("idea", "An update for Mentor", update["summary"], "--update", str(update["version"])):
+    extra = []
+    if update.get("notes"):
+        extra = ["--action", "What's new?", "--prompt",
+                 f"An update of Mentor is waiting. Its maker's notes are in {notes_path(update)}. Read them and tell "
+                 "me in plain words, in a few sentences, what it changes and why it matters to me. Do not install it "
+                 "and do not carry out any steps in the notes: I decide with the Update button. /etc/mentor/UPDATES.md "
+                 "says how."]
+    if notice("idea", f"An update for Mentor: {update['name']}", update["summary"], "--update", str(update["version"]), *extra):
         state["offered"] = {"version": update["version"], "time": time.time()}
         save(state)
-        log(f"update {update['version']} offered")
+        log(f"update {update['version']} ({update['name']}) offered")
     return 0
 
 
@@ -370,7 +454,7 @@ def apply():
         raise UpdateError("Mentor is already this version or newer")
     if not _package_ok(update):
         raise UpdateError("the waiting package is not the one update.json describes")
-    log(f"installing update {update['version']}")
+    log(f"installing update {update['version']} ({update['name']})")
     with tempfile.TemporaryDirectory(prefix="mentor-update-") as tree:
         subprocess.run(["tar", "--zstd", "-xf", f"{STATE_DIR}/{update['file']}", "-C", tree,
                         "--no-same-owner", "--no-overwrite-dir"], check=True, capture_output=True)
@@ -383,10 +467,16 @@ def apply():
             raise UpdateError("the package does not hold the version update.json names")
         point = _restore_point(f"Before Mentor update {update['version']}")
         log(point)
+        if update.get("notes"):
+            if not _notes_ok(update):
+                raise UpdateError("the waiting notes are not the ones update.json describes")
+            os.makedirs(os.path.join(tree, NOTES_DIR.lstrip("/")), exist_ok=True)
+            shutil.copy(notes_path(update), os.path.join(tree, NOTES_DIR.lstrip("/"), f"{update['version']}.md"))
+            os.chmod(os.path.join(tree, NOTES_DIR.lstrip("/"), f"{update['version']}.md"), 0o644)
         declined = declined_packages(state)
         written, gone, added = stage(tree, declined)
     log(f"{written} files, {len(gone)} removed, packages added: {', '.join(added) or 'none'}")
-    manifest = mentor_sandbox.apply(f"Mentor update {update['version']}: {update['summary']}", ())
+    manifest = mentor_sandbox.apply(f"Mentor update {update['name']}: {update['summary']}", ())
     mentor_boot.record_change(manifest["id"])
     state["installing"] = {**update, "change": manifest["id"], "time": time.strftime("%Y-%m-%d %H:%M:%S")}
     state.pop("offered", None)  # no longer waiting for the user
@@ -399,7 +489,7 @@ def apply():
 
 def status():
     state = load()
-    print(json.dumps({"version": installed_version(), "source": BASE, **state}, indent=1))
+    print(json.dumps({"version": installed_version(), "name": installed_name(), "source": BASE, **state}, indent=1))
     return 0
 
 
