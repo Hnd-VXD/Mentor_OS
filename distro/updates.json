@@ -22,5 +22,11 @@
     "name": "15.10.26.04",
     "summary": "In Mentor Settings, Updates, the list of updates is sorted by year and month.",
     "published": "2026-10-15 23:30"
+  },
+  {
+    "version": 202610152050,
+    "name": "15.10.26.05",
+    "summary": "Mentor Settings now uses the whole width of the window, like the Recipes app.",
+    "published": "2026-10-15 23:51"
   }
 ]

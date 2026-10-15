@@ -83,12 +83,26 @@ def switch(title, subtitle, active, changed):
     return row
 
 
+class WidePage(Gtk.ScrolledWindow):
+    """A page of groups, like Adw.PreferencesPage but as wide as the window allows (up to 1100 pixels),
+    as in the Recipes app: the standard page stops at about 600 and leaves a wide window mostly empty."""
+
+    def __init__(self):
+        super().__init__(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, margin_top=24, margin_bottom=24,
+                           margin_start=12, margin_end=12)
+        self.set_child(Adw.Clamp(maximum_size=1100, tightening_threshold=900, child=self.box))
+
+    def add(self, group):
+        self.box.append(group)
+
+
 class SettingsWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Mentor Settings", default_width=560, default_height=720)
         self.busy = False  # a switch being set from here, not by the user
         self.look_request = ""
-        page = Adw.PreferencesPage()
+        page = WidePage()
 
         first = Adw.PreferencesGroup()
         helper = Adw.ActionRow(title="Not sure about something?",
@@ -243,7 +257,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         """Which Mentor this is, an update that is waiting (with the buttons of the card in the chat), a
         way to look now, and every update this Mentor had, each with Ask Mentor to have it reviewed.
         The work is mentor-update's, as root (UPDATES.md)."""
-        page = Adw.PreferencesPage()
+        page = WidePage()
         now = Adw.PreferencesGroup(title="This Mentor")
         self.update_row = Adw.ActionRow(title="Checking…")
         self.update_row.set_subtitle_lines(4)
