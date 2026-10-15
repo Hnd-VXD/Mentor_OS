@@ -265,8 +265,9 @@ def settle(state):
                  "sandbox where a step changes the system. If anything is not as the notes expect, stop and tell me."]
     elif installing.get("notes"):
         extra = ["--action", "What's new?", "--prompt",
-                 f"Mentor was just updated. Its maker's notes are in {kept}. Tell me in plain words, in a few sentences, "
-                 "what changed and why it matters to me."]
+                 f"Mentor was just updated. Its maker's notes are in {kept}. Tell me as simply as you can, in two or three "
+                 "short sentences, what was fixed or is new and what that means for me: no technical words, as to "
+                 "someone who has never looked inside a computer."]
     if not notice("idea", f"Mentor is up to date: {installing.get('name') or installed_name()}", installing["summary"], *extra):
         return False  # told when somebody is logged in
     log(f"update {installing['version']} ({installing.get('name', '')}) is installed")
@@ -308,7 +309,8 @@ def check():
     if update.get("notes"):
         extra = ["--action", "What's new?", "--prompt",
                  f"An update of Mentor is waiting. Its maker's notes are in {notes_path(update)}. Read them and tell "
-                 "me in plain words, in a few sentences, what it changes and why it matters to me. Do not install it "
+                 "me as simply as you can, in two or three short sentences, what it fixes or brings and what that means "
+                 "for me: no technical words, as to someone who has never looked inside a computer. Do not install it "
                  "and do not carry out any steps in the notes: I decide with the Update button. /etc/mentor/UPDATES.md "
                  "says how."]
     if notice("idea", f"An update for Mentor: {update['name']}", update["summary"], "--update", str(update["version"]), *extra):
