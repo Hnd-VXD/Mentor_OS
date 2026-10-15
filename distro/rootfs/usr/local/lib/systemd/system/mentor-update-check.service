@@ -1,0 +1,12 @@
+[Unit]
+Description=Mentor: look for an update of Mentor's own files
+Documentation=file:///etc/mentor/UPDATES.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-update check
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=30min

@@ -62,6 +62,7 @@ vm\                   your own disk, created on the first start
 ## What is in it
 
 - **The assistant is the desktop.** Click it or press Super+A and type what you want. It has tools for packages, settings, services, files (search and read), logs, sound, the network, open windows, the desktop itself and the web (search and read a page), and asks before it changes the system. An app it opens is confirmed by name from the shell, not guessed from a screenshot.
+- **Updates of Mentor itself.** Once a day Mentor looks for a fix from its maker. A card in the chat says in a sentence what it brings and asks first; Update installs it and restarts, and a version that does not start properly is undone by itself. Updates are signed, and Mentor installs nothing its maker did not sign. Mentor Settings shows the version and can look now. Asking the assistant "any updates?" covers both Mentor and the system's packages.
 - **Safe changes.** System changes are made in a sandbox and applied when they work. A start after a change that does not reach the desktop is undone by itself. Restore points of the whole disk are kept on Windows.
 - **When the desktop freezes.** The desktop gets more of the processor than apps. A watch outside the desktop notices when it stops answering, writes down what was behind it, and tells you in one sentence afterwards; when a freeze goes on, it gives the busy app less of the processor, and when memory has run out it closes the largest app. **Ctrl+Alt+Backspace** opens the assistant on a text screen even while the desktop is frozen, at the size of Mentor's window: it looks at what is going on, says what would help, and can write, build and apply a fix through the sandbox with your password. `/desktop` goes back; Ctrl+V pastes what you copied. The boot screen reminds you of the key.
 - **Ask without leaving what you are doing.** Alt+Space (or Super+Z) lifts the assistant's text box over the program you are in. The assistant gets your words with a picture of your screen and answers in a small bubble above the box. It stays on top while you work in other windows; Esc in the box puts it back on the desktop.
@@ -80,6 +81,7 @@ vm\                   your own disk, created on the first start
 
 ## Going back
 
+- The launcher window keeps its rarer buttons (Restore points, Start over, Repair, Reinstall) under **More options**, folded away at first.
 - **Repair** in the launcher window (`Mentor.exe --repair`) is for when the desktop no longer comes up: Mentor starts without it, on a text screen where you talk to the assistant, and it works from its instructions to mend what is broken. `/restart` there starts Mentor normally.
 - `Mentor.exe --restore` returns to a restore point; the launcher window has the same choice.
 - `Mentor.exe --reset` starts again from the clean system. Everything in `vm\` is lost.

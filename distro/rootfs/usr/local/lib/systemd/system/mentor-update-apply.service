@@ -1,0 +1,10 @@
+[Unit]
+Description=Mentor: install the update the user agreed to
+Documentation=file:///etc/mentor/UPDATES.md
+# Started from the update card in the chat (the polkit rule 50-mentor-update.rules lets the user do so).
+# It only installs a package signed by Mentor's maker, and the system restarts at the end.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-update apply
+TimeoutStartSec=90min

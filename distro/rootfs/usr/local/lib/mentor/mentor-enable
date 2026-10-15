@@ -1,0 +1,27 @@
+#!/bin/sh
+# Sets up what Mentor's own files need around them: its services, the settings database built from
+# /etc/dconf/db/*.d, the icon cache. Run once by the image build (customize.sh) and by every update
+# (mentor_update.py, inside the update's sandbox, so it is part of what an undo takes back). It must
+# stay safe to run again and again. A new service of Mentor's is enabled here, not in customize.sh,
+# or updates would never turn it on (UPDATES.md).
+set -e
+dconf update
+systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service \
+    mentor-taskbar-quiet.service
+systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
+# Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
+systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
+systemctl enable mentor-advisor.timer
+# Updates of Mentor's own files, signed by its maker (etc/mentor/UPDATES.md).
+systemctl enable mentor-update-check.timer
+# The firewall: what comes in from other computers is refused (etc/nftables.conf, etc/mentor/SECURITY.md).
+systemctl enable nftables.service
+# Where the agent's tools ask for root, with a password dialog that says exactly what for (mentor-rootd).
+systemctl enable mentor-root.socket
+systemctl enable mentor-power-button.service
+# A watch on the desktop from outside it: a freeze is noticed and explained (etc/mentor/FREEZES.md).
+systemctl enable mentor-sentinel.service
+# The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
+systemctl enable mentor-emergency-key.service
+install -d -m 755 /var/log/mentor
+gtk-update-icon-cache -q -f /usr/share/icons/hicolor

@@ -1,0 +1,14 @@
+// The update card in Mentor's chat, and Updates in Mentor Settings, start mentor-update-apply.service
+// without asking for the password: pressing Update is the user's consent, and the service installs only
+// a package signed by Mentor's maker (/etc/mentor/UPDATES.md). "Look for updates now" starts
+// mentor-update-check.service the same way. Only these units, only starting them, only from the
+// user's own active session.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        (action.lookup("unit") == "mentor-update-apply.service" ||
+         action.lookup("unit") == "mentor-update-check.service") &&
+        action.lookup("verb") == "start" &&
+        subject.local && subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

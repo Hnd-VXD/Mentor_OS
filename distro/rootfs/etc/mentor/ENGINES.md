@@ -58,6 +58,8 @@ This one leans on the most that is not ours, so it is written out.
 
 Choosing a model that is not ready yet (no key, not signed in) shows the connect card. It has **Cancel** when a working model was in use before: `choose_model` keeps it in `came_from` (only when leaving the chat, not when going from one connect card to another), and Cancel chooses it again. On a first start, with nothing working yet, there is no Cancel.
 
+The card that "Set a key for …" in the model menu opens (`show_connect(change=…)`) has its own **Cancel**: it keeps the key the model has and goes back to the chat (`check_sign_in`).
+
 ## Changing the model in the middle of a conversation
 
 The model is one for all tabs: choosing it in one changes them all, from their next question on.

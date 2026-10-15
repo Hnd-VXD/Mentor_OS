@@ -1753,7 +1753,7 @@ class LauncherWindow : Form
         Text = "Mentor";
         AutoScaleMode = AutoScaleMode.None;  // sized by Theme.Fit, below
         int more = own ? 62 : 0;  // the Vulkan row
-        ClientSize = new Size(440, 668 + more);
+        ClientSize = new Size(440, 600 + more);  // with the buttons below folded away (Unfold)
         FormBorderStyle = FormBorderStyle.FixedSingle;
         StartPosition = FormStartPosition.CenterScreen;
         MaximizeBox = false;
@@ -1824,10 +1824,10 @@ class LauncherWindow : Form
                 new Label { Left = 18, Top = 130, Width = 348, Height = 1, BackColor = Theme.Line },
             });
 
-        var restore = new PillButton { Text = "Restore points", Left = 28, Top = 562 + more, Width = 186, Height = 38 };
-        var fresh = new PillButton { Text = "Start over", Left = 226, Top = 562 + more, Width = 186, Height = 38 };
-        var mend = new PillButton { Text = "Repair", Left = 28, Top = 608 + more, Width = 186, Height = 38 };
-        var reinstall = new PillButton { Text = "Reinstall", Left = 226, Top = 608 + more, Width = 186, Height = 38 };
+        var restore = new PillButton { Text = "Restore points", Left = 28, Top = 598 + more, Width = 186, Height = 38 };
+        var fresh = new PillButton { Text = "Start over", Left = 226, Top = 598 + more, Width = 186, Height = 38 };
+        var mend = new PillButton { Text = "Repair", Left = 28, Top = 644 + more, Width = 186, Height = 38 };
+        var reinstall = new PillButton { Text = "Reinstall", Left = 226, Top = 644 + more, Width = 186, Height = 38 };
 
         reinstall.Click += (s, e) => {
             if (MessageBox.Show(this, "Reinstall Mentor from GitHub?\n\n" +
@@ -1896,8 +1896,19 @@ class LauncherWindow : Form
             }
         };
 
-        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, restore, fresh, mend, reinstall });
-        Theme.Fit(this);
+        // The rarer choices start folded away under one quiet line (2026-10-15): the window is about
+        // starting Mentor, and these are for when something went wrong.
+        var folded = new Control[] { restore, fresh, mend, reinstall };
+        foreach (Control button in folded) button.Visible = false;
+        var unfold = new Unfold { Text = "More options", Left = 28, Top = 560 + more, Width = 384, Height = 28 };
+        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, unfold, restore, fresh, mend, reinstall });
+        float factor = Theme.Fit(this);
+        unfold.Click += (s, e) => {
+            unfold.Open = !unfold.Open;
+            foreach (Control button in folded) button.Visible = unfold.Open;
+            ClientSize = new Size(ClientSize.Width, (int)Math.Round((unfold.Open ? 706 + more : 600 + more) * factor));
+            unfold.Invalidate();
+        };
         ActiveControl = start;
         KeyDown += (s, e) => {
             if (e.KeyCode == Keys.Escape) Close();
@@ -2089,6 +2100,42 @@ class Reinstall : Form
             try { if (File.Exists(partial)) File.Delete(partial); } catch (IOException) { }
             Finish("It did not work: " + e.Message + "\n\nIf this happened while downloading, nothing was changed. " +
                    "If Mentor is running, close it first.");
+        }
+    }
+}
+
+// A quiet line with a chevron that shows or hides what is under it (the launcher's rarer buttons).
+class Unfold : Painted
+{
+    public bool Open;
+    bool hot;
+
+    public Unfold() { Cursor = Cursors.Hand; }
+
+    protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hot = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { Focus(); base.OnMouseDown(e); }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) OnClick(EventArgs.Empty);
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = Begin(e);
+        Color colour = hot || Focused ? Theme.Text : Theme.Dim;
+        Size text = TextRenderer.MeasureText(g, Text, Font);
+        float side = Height * 0.18f, gap = Height * 0.3f;
+        float left = (Width - text.Width - gap - side * 2) / 2f;
+        TextRenderer.DrawText(g, Text, Font, new Point((int)left, (Height - text.Height) / 2), colour);
+        float x = left + text.Width + gap + side, y = Height / 2f;
+        using (var pen = new Pen(colour, Math.Max(1.5f, Height / 16f)))
+        {
+            pen.StartCap = pen.EndCap = LineCap.Round;
+            if (Open) g.DrawLines(pen, new[] { new PointF(x - side, y + side / 2), new PointF(x, y - side / 2), new PointF(x + side, y + side / 2) });
+            else g.DrawLines(pen, new[] { new PointF(x - side, y - side / 2), new PointF(x, y + side / 2), new PointF(x + side, y - side / 2) });
         }
     }
 }

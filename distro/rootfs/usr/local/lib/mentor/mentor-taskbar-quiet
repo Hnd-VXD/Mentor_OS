@@ -1,0 +1,10 @@
+#!/bin/sh
+# Dash to Panel (the taskbar) shows "Dash to Panel has been updated!" whenever its version is not
+# the one it last stored: on a fresh install, and after each upgrade of it. Of no use to Mentor's
+# users (2026-10-15). Run at login before the shell starts (mentor-taskbar-quiet.service), this
+# stores the installed version first, so the taskbar has nothing to announce. See DESKTOP.md.
+metadata=/usr/share/gnome-shell/extensions/dash-to-panel@jderose9.github.com/metadata.json
+version=$(sed -n 's/.*"version": *\([0-9][0-9]*\).*/\1/p' "$metadata" 2>/dev/null | head -n 1)
+[ -n "$version" ] || exit 0
+[ "$(gsettings get org.gnome.shell.extensions.dash-to-panel extension-version 2>/dev/null)" = "$version" ] && exit 0
+exec gsettings set org.gnome.shell.extensions.dash-to-panel extension-version "$version"

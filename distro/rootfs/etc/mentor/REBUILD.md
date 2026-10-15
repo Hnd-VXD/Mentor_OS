@@ -21,6 +21,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
 | `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
 | `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall |
+| `UPDATES.md` | updates of Mentor itself: the daily look, the signature, the card, how one is installed and tried |
 | `ASKBAR.md` | the assistant's text box lifted over the program in front (Alt+Space, Super+Z), with a picture of the screen for the agent |
 | `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
@@ -144,6 +145,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor-power-button`, `/etc/systemd/system/mentor-power-button.service` | the power button powers off (the launcher's proper shut down) | root | at once | BOOT.md |
 | `/usr/local/lib/mentor/mentor-sentinel`, `/etc/systemd/system/mentor-sentinel.service`, `/etc/systemd/user/session.slice.d/50-mentor-desktop-first.conf` | the watch on freezes (it acts too: lowers a busy app, closes the largest when memory runs out), and the desktop's processor share | root | at once (the share: at the next login) | FREEZES.md |
 | `/usr/local/lib/mentor/mentor-emergency-key`, `/etc/systemd/system/mentor-emergency-key.service`, `/usr/local/lib/systemd/system/mentor-emergency-console.service`, `/usr/local/lib/mentor/mentor-emergency-console` (needs the `kmscon` package) | Ctrl+Alt+Backspace: the agent on tty3 beside a frozen desktop, at the window's size | root | at once | FREEZES.md |
+| `/usr/local/lib/mentor/mentor_update.py`, `/usr/local/lib/mentor/mentor-update`, `/usr/local/lib/mentor/mentor-enable`, `/usr/local/lib/systemd/system/mentor-update-check.service`, `mentor-update-check.timer`, `mentor-update-apply.service`, `/etc/polkit-1/rules.d/50-mentor-update.rules`, `/etc/mentor/update-signers` | updates of Mentor itself; the setup an image and every update share | root | the next look (timer) | UPDATES.md |
+| `/etc/systemd/user/mentor-taskbar-quiet.service`, `/usr/local/lib/mentor/mentor-taskbar-quiet` | no "Dash to Panel has been updated!" notice | user | the next login | DESKTOP.md |
 | `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf`, `/etc/systemd/user/service.d/10-mentor-no-watchdog.conf` | no service is killed as hung after Windows slept | root | next start | BOOT.md |
 | `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
 | `/usr/local/lib/systemd/system/mentor-root.socket`, `mentor-root@.service` | where the tools reach it (`/run/mentor-root.sock`), one start for each request | user | `systemctl daemon-reload` | TOOLS.md |

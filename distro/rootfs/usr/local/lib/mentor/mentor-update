@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+# Mentor's updates (UPDATES.md): mentor-update check|apply|status, as root.
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_update
+
+sys.exit(mentor_update.main(sys.argv))

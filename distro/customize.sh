@@ -73,22 +73,9 @@ cat > /etc/gdm/custom.conf <<EOF
 AutomaticLoginEnable=True
 AutomaticLogin=$MENTOR_USER
 EOF
-dconf update
 systemctl set-default graphical.target
-systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
-systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
-# Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
-systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
-systemctl enable mentor-advisor.timer
-# The firewall: what comes in from other computers is refused (etc/nftables.conf, etc/mentor/SECURITY.md).
-systemctl enable nftables.service
-# Where the agent's tools ask for root, with a password dialog that says exactly what for (mentor-rootd).
-systemctl enable mentor-root.socket
-systemctl enable mentor-power-button.service
-# A watch on the desktop from outside it: a freeze is noticed and explained (etc/mentor/FREEZES.md).
-systemctl enable mentor-sentinel.service
-# The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
-systemctl enable mentor-emergency-key.service
+# Mentor's services, settings database and icons: the same script every update runs (UPDATES.md).
+/usr/local/lib/mentor/mentor-enable
 
 # Boot splash: our own theme (distro/splash). It shows the emblem (a second one while
 # the system goes back after a failed start), the hint drawn here from hint.svg, and
@@ -105,9 +92,6 @@ for frame in /usr/share/plymouth/themes/spinner/throbber-*.png; do
 done
 sed -i "s/@FRAMES@/$frames/g" "$theme/mentor.script"
 
-# Agent layer
-install -d -m 755 /var/log/mentor
-gtk-update-icon-cache -q -f /usr/share/icons/hicolor
 
 # Claude Code, Codex and Google's Antigravity CLI, the engines for those who run the assistant on their
 # Claude, ChatGPT or Google account, are not installed here: an image that is given to others should not

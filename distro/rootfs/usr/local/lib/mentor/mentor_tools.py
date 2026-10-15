@@ -66,16 +66,18 @@ MAX_OUTPUT = 20000
 NOTICES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "notices")
 
 
-def leave_notice(level, title, text="", prompt=None, auto=False):
+def leave_notice(level, title, text="", prompt=None, auto=False, update=None):
     """Tell the user something by itself: the assistant shows it in the chat as a card, yellow
     for a "warning", red for a "problem" (mentor-chat, NOTICES_DIR). `prompt` is what goes to
     the agent when the user asks it to look; with `auto` the assistant sends it on by itself,
-    without waiting to be asked (only mentor-firewall-watch does). Returns where it was left."""
+    without waiting to be asked (only mentor-firewall-watch does). `update` is the version of an
+    update waiting to be installed: the card gets an Update button (mentor_update). Returns where it was left."""
     os.makedirs(NOTICES, exist_ok=True)
     path = os.path.join(NOTICES, f"{time.time():.3f}-{os.getpid()}.json")
     with open(path + ".new", "w") as f:
         json.dump({"level": level if level in ("problem", "idea") else "warning", "title": title, "text": text,
-                   **({"prompt": prompt} if prompt else {}), **({"auto": True} if auto and prompt else {})}, f)
+                   **({"prompt": prompt} if prompt else {}), **({"auto": True} if auto and prompt else {}),
+                   **({"update": str(update)} if update else {})}, f)
     os.replace(path + ".new", path)  # whole when it is seen
     return path
 
@@ -922,6 +924,17 @@ def _restore_point(reason):
 def restore_point_create(a):
     note = _restore_point(a["reason"])
     return (1 if note.startswith("[No") else 0), note
+
+
+def mentor_updates(a):
+    """Mentor's own updates (UPDATES.md): look for one now, then say how things stand. The look is
+    mentor-update-check.service, which the user's session may start (polkit); it downloads a signed
+    update it finds and leaves the card that asks the user."""
+    code, out = _run(["systemctl", "start", "mentor-update-check.service"], timeout=900)
+    looked = "" if code == 0 else f"(Could not look just now: {out.strip()[:300]})\n"
+    code, out = _run(["/usr/local/bin/mentor", "update"])
+    return code, looked + out + ("\nOnly the user installs a Mentor update: the Update button on the green card in the "
+                                 "chat, or in Mentor Settings, Updates. Do not install it any other way.")
 
 
 def boot_status(a):
@@ -2296,6 +2309,12 @@ TOOLS = {
         "conversation ends when they accept, so finish explaining first: what will be different, and that "
         "a start which does not reach the desktop undoes the change by itself.",
         _schema(), system_restart),
+    "mentor_updates": (
+        "Updates of Mentor itself (its assistant, tools and instructions), apart from the system's packages: "
+        "looks for one now and says which version this is and whether one is waiting, with what it brings. "
+        "When the user asks about updates, call this as well and tell both. You cannot install it: the user "
+        "presses Update on the card in the chat or in Mentor Settings, Updates (/etc/mentor/UPDATES.md).",
+        _schema(), mentor_updates),
     "boot_status": (
         "How start-up stands: the running kernel, the one known to work, what is waiting to be tried at the "
         "next restart, and what the last automatic restore undid and why. Read it after a restart that was "

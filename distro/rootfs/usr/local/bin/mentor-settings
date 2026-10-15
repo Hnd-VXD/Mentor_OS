@@ -28,6 +28,9 @@ import mentor_settings
 import mentor_tools
 
 CHAT = "/usr/local/bin/mentor-chat"
+VERSION_PATH = "/etc/mentor/version"
+UPDATE_STATE = "/var/lib/mentor/updates/state.json"
+UPDATE_WAITING = "/var/lib/mentor/updates/update.json"
 KINDS = {"updates": "Updates for my programs", "disk": "When the disk is getting full",
          "failed": "When something stopped working", "news": "News about the system",
          "gnome": "News about the desktop", "apps": "New applications", "github": "New projects on GitHub",
@@ -119,6 +122,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         changes.add_suffix(button("Show", self.show_changes))
         did.add(changes)
         page.add(did)
+
+        page.add(self.updates_group())
 
         more = Adw.PreferencesGroup()
         fold = Adw.ExpanderRow(title="More choices", subtitle="Pick which tips and warnings you want")
@@ -216,6 +221,93 @@ class SettingsWindow(Adw.ApplicationWindow):
         for row in self.watch_rows.values():
             row.set_active(wanted)
         self.busy = False
+
+    # --- updates --------------------------------------------------------------------
+
+    def updates_group(self):
+        """Which Mentor this is, an update that is waiting (with the same Update button as the card in
+        the chat), and a way to look now. The work is mentor-update's, as root (UPDATES.md)."""
+        group = Adw.PreferencesGroup(title="Updates")
+        self.update_row = Adw.ActionRow(title="Checking…")
+        self.update_row.set_subtitle_lines(4)
+        self.update_button = button("Update", self.install_update, suggested=True)
+        self.update_button.set_visible(False)
+        self.update_row.add_suffix(self.update_button)
+        group.add(self.update_row)
+        self.look_row = Adw.ActionRow(title="Look for an update now", subtitle="Mentor also looks by itself once a day")
+        self.look_button = button("Look", self.look_for_update)
+        self.look_row.add_suffix(self.look_button)
+        group.add(self.look_row)
+        self.show_update()
+        return group
+
+    def show_update(self):
+        version = "0"
+        try:
+            with open(VERSION_PATH) as f:
+                version = f.read().strip()
+            built = GLib.DateTime.new_utc(int(version[:4]), int(version[4:6]), int(version[6:8]), 0, 0, 0)
+            made = f"Mentor of {built.format('%-d %B %Y')}"
+        except (OSError, ValueError, TypeError):
+            made = "Mentor"
+        try:
+            with open(UPDATE_STATE) as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            state = {}
+        waiting = None
+        try:
+            with open(UPDATE_WAITING) as f:
+                waiting = json.load(f)
+            if int(waiting["version"]) <= int(version) or int(waiting["version"]) in state.get("failed", []):
+                waiting = None
+        except (OSError, ValueError, TypeError, KeyError):
+            waiting = None
+        self.update_button.set_visible(False)
+        if state.get("installing"):
+            self.update_row.set_title("An update is being tried")
+            self.update_row.set_subtitle("It is kept once Mentor has started with it")
+        elif waiting:
+            self.update_row.set_title("An update is waiting")
+            self.update_row.set_subtitle(str(waiting.get("summary", "")))
+            self.update_button.set_visible(True)
+        else:
+            self.update_row.set_title("Mentor is up to date")
+            self.update_row.set_subtitle(made)
+
+    def install_update(self):
+        if subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "(^|/)(agy|claude|codex|mentor-agent)( |$)"],
+                          stdout=subprocess.DEVNULL).returncode == 0:
+            self.update_row.set_subtitle("Mentor is still working on something. Press Update again when it is done.")
+            return
+        self.update_button.set_sensitive(False)
+        self.update_button.set_label("Updating…")
+        self.update_row.set_subtitle("Mentor restarts by itself when it is ready, in a minute or two. "
+                                     "If the new version does not start properly, it goes back by itself.")
+
+        def done(result):
+            if isinstance(result, Exception) or result.returncode:
+                self.update_button.set_sensitive(True)
+                self.update_button.set_label("Update")
+                self.update_row.set_subtitle("The update could not be started: "
+                                             + (str(result) if isinstance(result, Exception) else result.stderr.strip()))
+        later(lambda: subprocess.run(["systemctl", "start", "--no-block", "mentor-update-apply.service"],
+                                     capture_output=True, text=True), done)
+
+    def look_for_update(self):
+        self.look_button.set_sensitive(False)
+        self.look_row.set_subtitle("Looking…")
+
+        def done(result):
+            self.look_button.set_sensitive(True)
+            if isinstance(result, Exception) or result.returncode:
+                self.look_row.set_subtitle("Could not look just now. Mentor tries again by itself tomorrow")
+            else:
+                self.look_row.set_subtitle("Mentor also looks by itself once a day")
+            self.show_update()
+        # Without --no-block: it returns when the look is over (a found update is also downloaded).
+        later(lambda: subprocess.run(["systemctl", "start", "mentor-update-check.service"],
+                                     capture_output=True, text=True, timeout=1800), done)
 
     # --- what Mentor did ----------------------------------------------------------
 

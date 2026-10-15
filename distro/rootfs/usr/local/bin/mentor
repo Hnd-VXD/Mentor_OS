@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, "/usr/local/lib/mentor")
 import mentor_core
@@ -317,7 +318,8 @@ def cmd_doctor(args):
 
 def differing():
     """Mentor's own files that are gone or no longer what was built: [(path, how)], where how
-    is "missing", "changed", "accepted" (changed, and said to be meant so: verify --accept) or
+    is "missing", "changed", "accepted" (changed, and said to be meant so: verify --accept),
+    "root only" (a file the user may not read, such as a polkit rule: checked as root) or
     "cannot be read (why)"."""
     import hashlib
     found = []
@@ -340,6 +342,8 @@ def differing():
                 found.append((path, "accepted" if isinstance(accepted, dict) and accepted.get(path) == now else "changed", now))
         except FileNotFoundError:
             found.append((path, "missing", None))
+        except PermissionError as e:
+            found.append((path, "root only" if os.geteuid() else f"cannot be read ({e.strerror})", None))
         except OSError as e:
             found.append((path, f"cannot be read ({e.strerror})", None))
     return found
@@ -372,6 +376,8 @@ def cmd_verify(args):
     """Compare every file Mentor added to the system with the copy kept from when it was built
     (/etc/mentor/source; see /etc/mentor/REBUILD.md)."""
     found = differing()
+    unchecked = [path for path, how, _now in found if how == "root only"]
+    found = [entry for entry in found if entry[1] != "root only"]
     if args.accept:
         # The changed files are as they are meant to be from now on (a part adapted to a new
         # GNOME, say). A file that changes again after this is reported again.
@@ -382,6 +388,8 @@ def cmd_verify(args):
     for path, how, _now in found:
         print(f"{how:<8} {path}")
     wrong = [path for path, how, _now in found if how != "accepted"]
+    if unchecked:
+        print(f"({len(unchecked)} file(s) only root may read were not checked: sudo mentor verify)")
     if not found:
         print("Every file of Mentor's is as it was built.")
     elif not wrong:
@@ -397,7 +405,44 @@ def cmd_verify(args):
 def cmd_notice(args):
     """Tell the user something in the assistant's chat: a yellow card for a warning, a red one
     for a problem. For what the agent builds to speak with (see /etc/mentor/ASSISTANT.md)."""
-    print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt))
+    print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt, update=args.update))
+
+
+def cmd_update(args):
+    """Which version of Mentor this is, and what the updater knows (/etc/mentor/UPDATES.md)."""
+    try:
+        with open("/etc/mentor/version") as f:
+            version = f.read().strip()
+    except OSError:
+        version = "unknown (made before Mentor had updates)"
+    try:
+        with open("/var/lib/mentor/updates/state.json") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        state = {}
+    print(f"Mentor version: {version}")
+    if state.get("installing"):
+        print(f"Being tried: update {state['installing']['version']} (installed {state['installing']['time']}; "
+              "kept once a start with it reaches the desktop)")
+    if state.get("offered"):
+        try:
+            with open("/var/lib/mentor/updates/update.json") as f:
+                brings = json.load(f).get("summary", "")
+        except (OSError, ValueError, AttributeError):
+            brings = ""
+        print(f"Waiting for the user: update {state['offered']['version']} (offered "
+              f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(state['offered']['time']))})"
+              + (f". What it brings: {brings}" if brings else ""))
+    if state.get("installed"):
+        print(f"Last installed: update {state['installed']['version']} on {state['installed']['time']}")
+    if state.get("failed"):
+        print("Undone by a start that failed, not offered again: " + ", ".join(map(str, state["failed"])))
+    if state.get("declined_packages"):
+        print("Packages the user removed, never put back by an update: " + ", ".join(state["declined_packages"]))
+    if not state.get("offered") and not state.get("installing"):
+        print("No update of Mentor is waiting: it has everything its maker has published.")
+    print("Log: /var/log/mentor/updates.log. To look for an update now (as root): "
+          "systemctl start mentor-update-check.service")
 
 
 def cmd_restore(args):
@@ -500,11 +545,14 @@ p = sub.add_parser("verify", help="say which of Mentor's own files are missing o
 p.add_argument("--accept", action="store_true", help="the files that are changed now are meant to be so")
 p.set_defaults(func=cmd_verify)
 p = sub.add_parser("notice", help="put a card into the assistant's chat: a warning (yellow) or a problem (red)")
-p.add_argument("level", choices=("warning", "problem"))
+p.add_argument("level", choices=("warning", "problem", "idea"))
 p.add_argument("title")
 p.add_argument("text", nargs="?", default="")
 p.add_argument("--prompt", help="what goes to the agent when the user presses Let Mentor look")
+p.add_argument("--update", help=argparse.SUPPRESS)  # the updater's card, with its Update button
 p.set_defaults(func=cmd_notice)
+p = sub.add_parser("update", help="which version of Mentor this is, and whether an update is waiting")
+p.set_defaults(func=cmd_update)
 p = sub.add_parser("restore", help="put files of Mentor's back as they were built (as root)")
 p.add_argument("paths", nargs="*")
 p.add_argument("--all", action="store_true", help="every file that verify lists")

@@ -1626,11 +1626,13 @@ class Conversation(Gtk.Box):
         self.add(box)
         return label
 
-    def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None):
+    def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None, update=None):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
         problem, green for an idea (something it suggests, such as writing down what was just
         built), with a way to hand it to the agent. Not part of what was said to the agent.
-        `silence` is a function: the user does not want ideas of this kind (a button for it)."""
+        `silence` is a function: the user does not want ideas of this kind (a button for it).
+        `update` is the version of a Mentor update waiting to be installed: the card asks first,
+        and its Update button starts the install (mentor_update, UPDATES.md)."""
         heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
         heading.add_css_class("heading")
         body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64,
@@ -1641,10 +1643,16 @@ class Conversation(Gtk.Box):
         card.append(heading)
         card.append(body)
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
-        dismiss = Gtk.Button(label="Dismiss")
+        dismiss = Gtk.Button(label="Not now" if update else "Dismiss")
         dismiss.add_css_class("flat")
         dismiss.connect("clicked", lambda *_: self.messages.remove(card))
         buttons.append(dismiss)
+        if update:
+            install = Gtk.Button(label="Update")
+            install.add_css_class("pill")
+            install.add_css_class("look")
+            install.connect("clicked", lambda *_: self.window.install_update(install, dismiss, body, text))
+            buttons.append(install)
         if silence:
             quiet = Gtk.Button(label="Don't suggest this")
             quiet.add_css_class("flat")
@@ -3683,6 +3691,41 @@ class DesktopWindow(Adw.ApplicationWindow):
         with open(RESTORE_SEEN_PATH, "w") as f:
             f.write(report["time"])
 
+    def install_update(self, install, dismiss, body, summary):
+        """The update card's Update button: Mentor installs the waiting update and restarts by itself
+        (mentor-update-apply.service, which polkit lets the user start). Not while the assistant works:
+        the restart would cut it off. `summary` is what the card said."""
+        if any(conversation.busy for conversation in self.conversations()):
+            body.set_label(f"{summary}\n\nMentor is still working on something. Press Update again when it is done.")
+            return
+        install.set_sensitive(False)
+        dismiss.set_visible(False)
+        install.set_label("Updating…")
+        body.set_label(f"{summary}\n\nMentor restarts by itself when it is ready, in a minute or two. "
+                       "If the new version does not start properly, it goes back by itself.")
+
+        def failed(why):
+            install.set_sensitive(True)
+            install.set_label("Update")
+            dismiss.set_visible(True)
+            body.set_label(f"{summary}\n\nThe update could not be started: {why}")
+
+        try:
+            process = Gio.Subprocess.new(["systemctl", "start", "--no-block", "mentor-update-apply.service"],
+                                         Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as e:
+            failed(e.message)
+            return
+
+        def started(process, result):
+            try:
+                _, _, err = process.communicate_utf8_finish(result)
+            except GLib.Error as e:
+                err = e.message
+            if not process.get_successful():
+                failed((err or "").strip())
+        process.communicate_utf8_async(None, None, started)
+
     def show_notices(self):
         """Put what was left in NOTICES_DIR into the chat, oldest first, and take it from there."""
         try:
@@ -3704,7 +3747,8 @@ class DesktopWindow(Adw.ApplicationWindow):
                 continue
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
             self.current.add_notice(notice.get("level") if notice.get("level") in ("problem", "idea") else "warning", title, text, prompt,
-                                    auto=notice.get("auto") is True)
+                                    auto=notice.get("auto") is True,
+                                    update=notice.get("update") if isinstance(notice.get("update"), str) else None)
             shown.append((title, text))
         if shown:
             self.show_chat()
@@ -3933,7 +3977,8 @@ class DesktopWindow(Adw.ApplicationWindow):
                 title = Gtk.Label(label=f"A key for {label}" if label else f"Change the {name} key")
                 title.add_css_class("title-2")
                 widgets.insert(1, title)
-                back = Gtk.Button(label="Keep the key I have", halign=Gtk.Align.CENTER)
+                # Called Cancel like the one on the connect card (the user looked for it, 2026-10-15).
+                back = Gtk.Button(label="Cancel", halign=Gtk.Align.CENTER, tooltip_text="Keep the key it has")
                 back.add_css_class("flat")
                 back.connect("clicked", lambda *_: self.check_sign_in())
                 widgets.append(back)

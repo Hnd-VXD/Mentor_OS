@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor keeps the taskbar from announcing its own updates
+Documentation=file:///etc/mentor/DESKTOP.md
+Before=graphical-session-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-taskbar-quiet
+
+[Install]
+WantedBy=graphical-session-pre.target

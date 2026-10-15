@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor: look for an update a few minutes after the start, and once a day
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1d
+RandomizedDelaySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

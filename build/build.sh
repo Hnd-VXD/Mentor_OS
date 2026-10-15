@@ -12,6 +12,9 @@ OUT=${MENTOR_OUT:-$SRC/out}
 RAW=$WORK/mentor.raw
 MNT=$WORK/mnt
 LOOPS=()
+# Mentor's version: a number that only grows (UTC time of the build). Updates compare it
+# (etc/mentor/UPDATES.md); MENTOR_VERSION sets it by hand.
+VERSION=${MENTOR_VERSION:-$(date -u +%Y%m%d%H%M)}
 
 [[ $EUID -eq 0 ]] || { echo "build.sh must run as root" >&2; exit 1; }
 [[ -f /etc/arch-release ]] || { echo "build.sh must run inside Arch Linux" >&2; exit 1; }
@@ -50,7 +53,9 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-rootd "$dest"/usr/local/lib/mentor/mentor-firewall-watch \
         "$dest"/usr/local/lib/mentor/mentor-recipe-watch "$dest"/usr/local/lib/mentor/mentor-power-button \
         "$dest"/usr/local/lib/mentor/mentor-sentinel "$dest"/usr/local/lib/mentor/mentor-emergency-key \
-        "$dest"/usr/local/lib/mentor/mentor-emergency-console
+        "$dest"/usr/local/lib/mentor/mentor-emergency-console "$dest"/usr/local/lib/mentor/mentor-taskbar-quiet \
+        "$dest"/usr/local/lib/mentor/mentor-update "$dest"/usr/local/lib/mentor/mentor-enable
+    echo "$VERSION" > "$dest/etc/mentor/version"
 
     # A copy of everything of ours as it was built, and what each file's contents should be:
     # what the agent checks the system against (mentor verify) and makes a lost part again
@@ -206,9 +211,24 @@ EOF
     rm -rf "$WORK/iso-work"
 }
 
+# An update instead of an image: Mentor's own files exactly as an image gets them (stage_overlay),
+# packed for mentor-update. build/publish-update.ps1 signs and publishes it (etc/mentor/UPDATES.md).
+build_update() {
+    local root=$WORK/update-root file=mentor-update-$VERSION.tar.zst
+    rm -rf "$root"
+    install -d "$root"
+    stage_overlay "$root"
+    mkdir -p "$OUT/update"
+    rm -f "$OUT"/update/mentor-update-*.tar.zst
+    tar --zstd --numeric-owner --owner=0 --group=0 -cf "$OUT/update/$file" -C "$root" .
+    rm -rf "$root"
+    echo "Built $OUT/update/$file"
+}
+
 mkdir -p "$WORK"
 case $target in
     disk) build_disk ;;
     iso) build_iso ;;
-    *) echo "usage: build.sh [disk|iso]" >&2; exit 1 ;;
+    update) build_update ;;
+    *) echo "usage: build.sh [disk|iso|update]" >&2; exit 1 ;;
 esac

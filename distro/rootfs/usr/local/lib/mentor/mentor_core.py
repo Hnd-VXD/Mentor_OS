@@ -40,6 +40,9 @@ ALWAYS_PROTECTED = (
     # Who asks for the password, and with which words (mentor-rootd).
     "/usr/local/lib/systemd/system/mentor-root.socket", "/usr/local/lib/systemd/system/mentor-root@.service",
     "/etc/systemd/system/sockets.target.wants/mentor-root.socket",
+    # Updates of Mentor itself: what installs them and what checks who signed them (UPDATES.md).
+    "/usr/local/lib/systemd/system/mentor-update-check.service", "/usr/local/lib/systemd/system/mentor-update-check.timer",
+    "/usr/local/lib/systemd/system/mentor-update-apply.service", "/etc/systemd/system/timers.target.wants/mentor-update-check.timer",
 )
 
 # Changes under these (relative to /) only show at the next restart.
