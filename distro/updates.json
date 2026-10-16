@@ -34,5 +34,11 @@
     "name": "16.10.26.00",
     "summary": "When something does not work as expected, you can tell Mentor's maker: right-click the desktop, Report a problem.",
     "published": "2026-10-16 08:21"
+  },
+  {
+    "version": 202610160557,
+    "name": "16.10.26.01",
+    "summary": "A shorter desktop menu, and the bell's suggestions now have their own tab in Mentor Settings.",
+    "published": "2026-10-16 08:57"
   }
 ]
