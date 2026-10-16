@@ -58,5 +58,11 @@
     "name": "16.10.26.05",
     "summary": "Mentor Settings is back in the desktop menu, next to Settings, and the menu now stays exactly as it is.",
     "published": "2026-10-16 09:39"
+  },
+  {
+    "version": 202610161632,
+    "name": "16.10.26.06",
+    "summary": "Mentor Settings has its own icon: the Mentor owl.",
+    "published": "2026-10-16 19:33"
   }
 ]

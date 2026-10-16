@@ -54,6 +54,7 @@ A key that is not in `settings.json` has its first value.
 |---|---|---|
 | The window | `/usr/local/bin/mentor-settings` | GTK 4 and libadwaita: one `Adw.PreferencesPage` in `SettingsWindow`; `check` and `checked` fill the safety rows off the window's thread; `on_firewall`; `save_advice`, `one_warning`, `all_warnings`; `show_changes` (the journal in an `Adw.Dialog`). One window: a second start shows the same one |
 | Its place in the application grid | `/usr/share/applications/org.mentor.Settings.desktop` | |
+| Its icon | `/usr/share/icons/hicolor/256x256/apps/org.mentor.Settings.png` and `512x512/…` (the owl in a rounded square; the same picture is the Windows launcher's icon, `launcher/Mentor.ico`) | `Icon=org.mentor.Settings` in the .desktop file; `gtk-update-icon-cache -f /usr/share/icons/hicolor` after a change |
 | `mentor settings` | `/usr/local/bin/mentor` | starts the window |
 | The file of choices | `/usr/local/lib/mentor/mentor_settings.py` | `load()`, `get(key)`, `put(key, value)`, `DEFAULTS` |
 | Who reads `watch_off` | `main` and `group` in `mentor-watch` | a finding whose group is switched off is not raised |
@@ -95,6 +96,9 @@ It leans on: `python-gobject`, `gtk4`, `libadwaita` (`Adw.PreferencesPage`, `Adw
 src=/etc/mentor/source/rootfs
 install -m 755 $src/usr/local/bin/mentor-settings /usr/local/bin/mentor-settings
 install -m 644 $src/usr/share/applications/org.mentor.Settings.desktop /usr/share/applications/
+install -m 644 $src/usr/share/icons/hicolor/256x256/apps/org.mentor.Settings.png /usr/share/icons/hicolor/256x256/apps/
+install -m 644 $src/usr/share/icons/hicolor/512x512/apps/org.mentor.Settings.png /usr/share/icons/hicolor/512x512/apps/
+gtk-update-icon-cache -q -f /usr/share/icons/hicolor
 # as root, by the user:
 install -m 644 $src/usr/local/lib/mentor/mentor_settings.py /usr/local/lib/mentor/
 ```
