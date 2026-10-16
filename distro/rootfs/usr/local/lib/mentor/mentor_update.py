@@ -328,6 +328,7 @@ def settle(state):
 def check():
     state = load()
     if not settle(state):
+        log("looked: the last update is still being tried, or nobody is logged in to be told")
         return 0
     try:
         data, signature = _fetch("update.json", 64 << 10), _fetch("update.json.sig", 16 << 10)
@@ -339,6 +340,7 @@ def check():
         return 1
     update = offered(json.loads(data))
     if update["version"] <= installed_version() or update["version"] in state.get("failed", []):
+        log(f"looked: nothing newer than {installed_name()}")  # mentor doctor reads that it looks
         return 0
     os.makedirs(STATE_DIR, exist_ok=True)
     download(update)
@@ -348,6 +350,7 @@ def check():
         f.write(signature)
     last = state.get("offered") or {}
     if last.get("version") == update["version"] and time.time() - last.get("time", 0) < REOFFER:
+        log(f"looked: {update['name']} is still waiting for the user")
         return 0
     extra = []
     if update.get("notes"):
@@ -362,6 +365,8 @@ def check():
         state["offered"] = {"version": update["version"], "time": time.time()}
         save(state)
         log(f"update {update['version']} ({update['name']}) offered")
+    else:
+        log(f"looked: {update['name']} is waiting, but the card could not be left (nobody logged in?); tried again later")
     return 0
 
 

@@ -726,6 +726,8 @@ class HostBridge : Form
         DateTime started = DateTime.UtcNow;
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
         timer.Tick += (s, e) => {
+            // QEMU's window is Mentor's on the taskbar: the owl and "Mentor", not QEMU's icon and name.
+            VmWindow.Brand(qemu);
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
             if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained &&
@@ -1279,6 +1281,45 @@ static class VmWindow
         Resize(qemu);
         SetForegroundWindow(hwnd);
         Thread.Sleep(300);  // let it settle before any key is sent to it
+    }
+
+    // QEMU's window, dressed as Mentor: the launcher's own icon (the owl, compiled into Mentor.exe from
+    // Mentor.ico) at the sizes Windows asks for, and the title "Mentor" in place of "QEMU (Mentor-0)".
+    // QEMU sets its title again now and then (a hint while it holds the mouse), so this is done on every
+    // tick of the launcher's timer; the icon only once for each window.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int most);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetWindowText(IntPtr hwnd, string text);
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern IntPtr LoadImage(IntPtr instance, IntPtr name, uint type, int width, int height, uint flags);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+    static IntPtr branded = IntPtr.Zero;
+
+    public static void Brand(Process qemu)
+    {
+        Brand(Find(qemu));
+    }
+
+    public static void Brand(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        if (hwnd != branded)
+        {
+            // 32512: the icon the C# compiler puts into the program from /win32icon.
+            IntPtr module = Marshal.GetHINSTANCE(typeof(VmWindow).Module);  // Mentor.exe, wherever it is loaded
+            IntPtr big = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(11), GetSystemMetrics(12), 0);  // SM_CXICON
+            IntPtr small = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(49), GetSystemMetrics(50), 0);  // SM_CXSMICON
+            if (big != IntPtr.Zero) SendMessage(hwnd, 0x0080, (IntPtr)1, big);  // WM_SETICON, ICON_BIG
+            if (small != IntPtr.Zero) SendMessage(hwnd, 0x0080, (IntPtr)0, small);  // ICON_SMALL
+            branded = hwnd;
+        }
+        var text = new StringBuilder(256);
+        GetWindowText(hwnd, text, text.Capacity);
+        string title = text.ToString();
+        if (title.StartsWith("QEMU (", StringComparison.Ordinal))
+        {
+            int end = title.IndexOf(')');
+            SetWindowText(hwnd, "Mentor" + (end >= 0 ? title.Substring(end + 1) : ""));
+        }
     }
 
     public static IntPtr Find(Process qemu)

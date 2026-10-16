@@ -290,6 +290,28 @@ def cmd_doctor(args):
     say(watching, "the watch on freezes", "" if watching else "not running (/etc/mentor/FREEZES.md)", minor=True)
     key = out("systemctl", "is-active", "mentor-emergency-key").strip() == "active"
     say(key, "the emergency key (Ctrl+Alt+Backspace)", "" if key else "not running (/etc/mentor/FREEZES.md)", minor=True)
+    # Updates of Mentor itself (UPDATES.md): the daily look, and the permission the Update button needs.
+    looking = (out("systemctl", "is-enabled", "mentor-update-check.timer").strip() == "enabled"
+               and out("systemctl", "is-active", "mentor-update-check.timer").strip() == "active")
+    say(looking, "the daily look for Mentor updates",
+        "" if looking else "mentor-update-check.timer is off: this Mentor gets no updates (/etc/mentor/UPDATES.md)", minor=True)
+    try:
+        recent = time.time() - os.path.getmtime("/var/log/mentor/updates.log") < 2 * 86400
+    except OSError:
+        recent = False
+    if recent:
+        say(True, "Mentor looked for an update in the last two days")
+    else:
+        # Not looked lately: ask for a look the way the Update button does (polkit rule 50-mentor-update.rules),
+        # never with a password box. Allowed, it simply looks, which was due.
+        asked = subprocess.run(["systemctl", "--no-ask-password", "start", "--no-block", "mentor-update-check.service"],
+                               capture_output=True, text=True)
+        say(asked.returncode == 0, "the Update button may install updates",
+            "" if asked.returncode == 0 else "refused (" + (asked.stderr.strip().splitlines() or ["?"])[-1][:120]
+            + "): /etc/polkit-1/rules.d/50-mentor-update.rules, UPDATES.md", minor=True)
+    quiet = out("systemctl", "--user", "is-enabled", "mentor-taskbar-quiet.service").strip() == "enabled"
+    say(quiet, 'no "Dash to Panel has been updated!" notice',
+        "" if quiet else "mentor-taskbar-quiet.service is off (/etc/mentor/DESKTOP.md)", minor=True)
     # "Ask Mentor…" in Files, a Python add-on. When a new Files changes how add-ons work (Files 43
     # did), the item is simply gone, with no error anywhere: it is tried here as Files uses it.
     import glob

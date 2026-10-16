@@ -64,5 +64,11 @@
     "name": "16.10.26.06",
     "summary": "Mentor Settings has its own icon: the Mentor owl.",
     "published": "2026-10-16 19:33"
+  },
+  {
+    "version": 202610161722,
+    "name": "16.10.26.07",
+    "summary": "Mentor's self-check now also makes sure Mentor keeps getting its updates.",
+    "published": "2026-10-16 20:22"
   }
 ]
