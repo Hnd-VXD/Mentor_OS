@@ -22,7 +22,7 @@ import urllib.request
 
 import mentor_recipes
 
-HUB = "https://mentor-recipes.netlify.app"
+HUB = os.environ.get("MENTOR_HUB") or "https://mentor-recipes.netlify.app"  # MENTOR_HUB: a test site
 STATE = os.environ.get("MENTOR_HUB_DIR") or os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mentor", "hub")
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "mentor", "hub-index.json")
@@ -296,6 +296,23 @@ def report(recipe_id, sha256, kind, findings=None, rules=None):
                                                    "medium": int((findings or {}).get("medium", 0))},
                                       "rules": [str(r)[:120] for r in (rules or [])][:8]})
     return _answer(*_request("/.netlify/functions/report", body))
+
+
+def send_problem(title, text, version):
+    """A problem report the user has read and agreed to send (mentor_tools.problem_report). It goes to a
+    private place only Mentor's maker reads. Returns the report's number."""
+    if len(text) > 24000 or not title or len(title) > 120:
+        raise HubError("the report is too long")
+    fields = [hashlib.sha256(title.encode("utf-8")).hexdigest(), hashlib.sha256(text.encode("utf-8")).hexdigest(), version]
+    body = _signed("problem", fields, {"title": title, "text": text, "version": version})
+    status, data = _request("/.netlify/functions/problem", body)
+    if status == 201:
+        try:
+            return int(json.loads(data.decode("utf-8"))["id"])
+        except (ValueError, KeyError, TypeError):
+            raise HubError("the site's answer was not understood")
+    _answer(status, data)  # raises with the reason
+    raise HubError(f"the site answered {status}")
 
 
 # --- looking before posting -------------------------------------------------------------------------------

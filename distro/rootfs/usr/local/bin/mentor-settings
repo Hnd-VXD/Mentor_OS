@@ -33,6 +33,10 @@ VERSION_PATH = "/etc/mentor/version"
 UPDATE_STATE = "/var/lib/mentor/updates/state.json"
 UPDATE_WAITING = "/var/lib/mentor/updates/update.json"
 UPDATES_INCLUDED = "/etc/mentor/updates-included.json"
+REPORTS = os.path.join(GLib.get_user_state_dir(), "mentor", "reports.json")  # sent by problem_report
+REPORT_REQUEST = ("Something in Mentor is not working as expected and I want to tell Mentor's maker, so an update can fix "
+                  "it. Ask me in one short question what is wrong, look a little yourself, then use problem_report: show "
+                  "me the report as it is and wait for my yes before sending. /etc/mentor/UPDATES.md says how.")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
           "November", "December")  # what a new build came with (build.sh)
 # Asked before a Mentor update is installed: it restarts the system (UPDATES.md). Same words as the chat's.
@@ -279,6 +283,15 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.history_rows = []
         self.history_open = set()  # the years and months opened ("2026", "2026-10")
         page.add(self.history)
+        # The problems this user reported to Mentor's maker (problem_report), and which update fixed each.
+        self.reports = Adw.PreferencesGroup(title="Problems you reported",
+                                            description="Only Mentor's maker reads them. An update that fixes one says so")
+        report = Adw.ActionRow(title="Something is not working as expected?",
+                               subtitle="Mentor puts a short report together, shows it to you, and sends it only if you say so")
+        report.add_suffix(button("Report a problem", lambda: ask(REPORT_REQUEST)))
+        self.reports.add(report)
+        self.report_rows = []
+        page.add(self.reports)
         self.show_update()
         return page
 
@@ -330,6 +343,36 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.update_row.set_title("Mentor is up to date")
             self.update_row.set_subtitle(made)
         self.show_history(state)
+        self.show_reports(state)
+
+    def show_reports(self, state):
+        for row in self.report_rows:
+            self.reports.remove(row)
+        self.report_rows = []
+        try:
+            with open(REPORTS, encoding="utf-8") as f:
+                mine = json.load(f)
+        except (OSError, ValueError):
+            mine = []
+        fixed_by = {}  # report number: the update that fixed it
+        try:
+            with open(UPDATES_INCLUDED) as f:
+                included = json.load(f)
+        except (OSError, ValueError):
+            included = []
+        for entry in (included if isinstance(included, list) else []) + list(state.get("history") or []):
+            if isinstance(entry, dict) and entry.get("outcome", "installed") != "undone":
+                for number in entry.get("fixes") or []:
+                    fixed_by.setdefault(number, entry.get("name") or mentor_update.display_name(entry.get("version")))
+        for item in reversed(mine if isinstance(mine, list) else []):
+            if not isinstance(item, dict):
+                continue
+            fixed = fixed_by.get(item.get("id"))
+            row = Adw.ActionRow(title=str(item.get("title", "")),
+                                subtitle=(f"Fixed in Mentor {fixed}" if fixed else "Sent, not fixed yet")
+                                + f" · sent {str(item.get('time', ''))[:10]} · number {item.get('id')}")
+            self.reports.add(row)
+            self.report_rows.append(row)
 
     def kept(self, installing):
         """The start with this update reached the desktop (mentor_boot), so it stays."""

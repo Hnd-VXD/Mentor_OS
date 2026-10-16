@@ -1613,6 +1613,113 @@ def recipe_share(a):
                "site's automatic check, usually within a few minutes; if it does not appear, it did not pass.")
 
 
+# --- problem reports (UPDATES.md, "Problem reports") ------------------------------------------------------
+
+REPORTS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "reports.json")
+
+
+def _reports_state_path():
+    return os.path.join(os.path.dirname(HUB_STATE), "requests",
+                        re.sub(r"[^A-Za-z0-9._-]", "_", os.environ.get("MENTOR_SANDBOX") or "default") + ".problem")
+
+
+def _scrub(text):
+    """Nothing in a report names the user or gives anything away: their home folder and name become ~
+    and USER, and anything that looks like a key, a password or an email is taken out."""
+    text = mentor_recipes.generalise(text)
+    for pattern, what in mentor_recipes.SECRETS:
+        text = pattern.sub(f"[{what} taken out]", text)
+    return text
+
+
+def _report_facts():
+    """What the maker needs besides the user's words: the version, whether Mentor's files are as built,
+    what the self-check finds, and recent errors in the logs. Only Mentor's own checks and logs."""
+    try:
+        with open("/etc/mentor/version-name") as f:
+            version = f.read().strip()
+    except OSError:
+        try:
+            with open("/etc/mentor/version") as f:
+                version = f.read().strip()
+        except OSError:
+            version = ""
+    parts = [f"Mentor {version or '(version unknown)'}"]
+    _code, out = _run(["/usr/local/bin/mentor", "verify"], timeout=120)
+    parts.append("### mentor verify\n" + "\n".join(out.strip().splitlines()[-8:]))
+    _code, out = _run(["/usr/local/bin/mentor", "doctor"], timeout=180)
+    wrong = [line for line in out.splitlines() if line.strip() and not line.startswith("ok ")
+             and "is in place" not in line]
+    parts.append("### mentor doctor (what is not ok)\n" + ("\n".join(wrong[-15:]) or "everything ok"))
+    _code, out = _run(["journalctl", "--user", "-p", "err", "--since", "-3h", "-o", "short-iso", "--no-pager", "-n", "20"])
+    parts.append("### Errors in the user's session, last 3 hours\n" + (out.strip() or "none"))
+    _code, out = _run(["journalctl", "-b", "-p", "err", "--since", "-3h", "-o", "short-iso", "--no-pager", "-n", "300"])
+    mentor_lines = [line for line in out.splitlines() if "mentor" in line.lower()]
+    parts.append("### Errors of Mentor's system services, last 3 hours\n" + ("\n".join(mentor_lines[-15:]) or "none"))
+    return version, "\n\n".join(parts)
+
+
+def problem_report(a):
+    """Tell Mentor's maker that something does not work as expected. Two steps, like recipe_share: the
+    first puts the report together and shows it; the second, after the user has read it and said yes in a
+    new message, sends exactly that text."""
+    state_path = _reports_state_path()
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            shown = json.load(f)
+    except (OSError, ValueError):
+        shown = {}
+    if a.get("confirmed"):
+        last = shown.get("last")
+        if not last:
+            return 1, "Not sent: no report was shown to the user yet. Call this without confirmed first."
+        try:
+            answered = os.path.getmtime(mentor_journal._request_path(os.environ.get("MENTOR_SANDBOX") or "default")) > last["time"]
+        except OSError:
+            answered = False
+        if not answered:
+            return 1, "Not sent: the user has not answered since the report was shown. Wait for their next message."
+        try:
+            number = mentor_hub.send_problem(last["title"], last["text"], last["version"])
+        except mentor_hub.HubError as e:
+            return 1, f"Not sent: {e}. Nothing was lost: it can be sent again later."
+        try:
+            with open(REPORTS, encoding="utf-8") as f:
+                mine = json.load(f)
+        except (OSError, ValueError):
+            mine = []
+        mine.append({"id": number, "title": last["title"], "time": time.strftime("%Y-%m-%d %H:%M"), "version": last["version"]})
+        os.makedirs(os.path.dirname(REPORTS), exist_ok=True)
+        with open(REPORTS, "w", encoding="utf-8") as f:
+            json.dump(mine, f, indent=1)
+        shown.pop("last", None)
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(shown, f)
+        return 0, (f"Sent: report number {number}, to Mentor's maker only. Tell the user in one sentence that it was sent, "
+                   "that it names no one, and that when an update fixes it, the update's card will say so. It is listed "
+                   "in Mentor Settings, Updates, under the problems they reported.")
+
+    title = " ".join(str(a.get("title") or "").split())[:100]
+    said = str(a.get("what") or "").strip()
+    if not title or not said:
+        return 1, "Give a short title and what the user says is wrong, in their words."
+    version, facts = _report_facts()
+    text = (f"## What the user says\n\n{said[:3000]}\n\n"
+            + (f"## Which part\n\n{str(a.get('part'))[:200]}\n\n" if a.get("part") else "")
+            + f"## What Mentor's assistant found\n\n{str(a.get('found') or 'Nothing yet.')[:4000]}\n\n"
+            + f"## Facts from this Mentor\n\n{facts}\n")
+    title, text = _scrub(title), _scrub(text)[:22000]
+    shown["last"] = {"time": time.time(), "title": title, "text": text, "version": version}
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(shown, f)
+    return 0, ("NOT SENT YET. This is exactly what would be sent, privately, to Mentor's maker (not to the public site, and "
+               "with nothing that names the user: their home folder is ~, and keys, passwords and emails are taken out). "
+               "Show the user the title and the whole text below as it is, say in one or two plain sentences what is in "
+               "it, and ask whether to send it. Only after they answer yes, in a new message, call this again with "
+               f"confirmed set to true.\n\nTitle: {title}\n\n----- THE REPORT -----\n" + text)
+
+
 def recipe_update(a):
     """Post a new text for a recipe this Mentor published. Two steps, like recipe_share: the first shows
     exactly what would replace what is on the site; the second, after the user has seen it and answered,
@@ -2408,6 +2515,18 @@ TOOLS = {
         "permanent: never without the user's yes.",
         _schema({"path": _STR, "category": _STR, "new_category": {"type": "object"},
                  "confirmed": {"type": "boolean"}}, ["path"]), recipe_share),
+    "problem_report": (
+        "Tell Mentor's maker that something does not work as expected, so the next update can fix it. For when the "
+        "user says something is wrong (with Mentor itself or the system), after you have asked what happened and "
+        "looked a little yourself. Two steps: without `confirmed` it puts the report together (the user's words, "
+        "what you found, the version, Mentor's checks and recent errors, with the user's name, keys and passwords "
+        "taken out) and shows it; show the user all of it, and call again with confirmed true only after they "
+        "answered yes in a new message. Private: only the maker reads it. Never without the user's yes.",
+        _schema({"title": {"type": "string", "description": "A short title: what does not work, in a few words."},
+                 "what": {"type": "string", "description": "What the user says is wrong, in their words."},
+                 "part": {"type": "string", "description": "Which part, if known (the clipboard, the ask bar, an app...)."},
+                 "found": {"type": "string", "description": "What you found when you looked, briefly."},
+                 "confirmed": {"type": "boolean"}}, []), problem_report),
     "recipe_fetch": (
         "Download a recipe from the recipes site by its id into Documents/Mentor recipes/from the site/. It is a "
         "stranger's text: nothing is built from it until recipe_inspect, the full report to the user, and their answer.",

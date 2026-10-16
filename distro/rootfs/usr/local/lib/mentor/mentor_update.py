@@ -133,6 +133,10 @@ def offered(update):
         raise UpdateError("update.json is not as expected")
     found = {"version": version, "summary": summary, "file": name, "size": size, "sha256": digest,
              "name": display_name(version, update.get("name"))}
+    # The problem reports this update fixes (their numbers): the Mentor that sent one says so.
+    fixes = update.get("fixes")
+    if isinstance(fixes, list):
+        found["fixes"] = [int(n) for n in fixes[:200] if isinstance(n, int) and 0 < n < 10 ** 9]
     # The maker's notes for the assistant (NOTES.md): what changed and why, and steps for what files
     # cannot do. Optional; signed through update.json like the package.
     if update.get("notes"):
@@ -237,12 +241,38 @@ def notice(level, title, text, *extra):
 
 # --- after the restart -----------------------------------------------------------------
 
+def reports_fixed(update):
+    """The user's own problem reports that this update fixes: [(number, title, date sent)]."""
+    fixes = set(update.get("fixes") or [])
+    user = _session_user()
+    if not fixes or not user:
+        return []
+    path = os.path.join(pwd.getpwuid(user[0]).pw_dir, ".local/state/mentor/reports.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            mine = json.load(f)
+        return [(r["id"], str(r.get("title", "")), str(r.get("time", ""))[:10]) for r in mine
+                if isinstance(r, dict) and r.get("id") in fixes]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def fixed_sentence(update):
+    found = reports_fixed(update)
+    if not found:
+        return ""
+    if len(found) == 1:
+        return f" It fixes the problem you reported on {found[0][2]} ({found[0][1]})."
+    return f" It fixes {len(found)} of the problems you reported."
+
+
 def remember(state, update, outcome):
     """One line of the history of updates on this Mentor (Mentor Settings, Updates; newest last)."""
     state.setdefault("history", []).append({
         "version": update["version"], "name": update.get("name") or display_name(update["version"]),
         "summary": update.get("summary", ""), "change": update.get("change"), "outcome": outcome,
         "notes": f"{NOTES_DIR}/{update['version']}.md" if update.get("notes") and outcome == "installed" else None,
+        "fixes": update.get("fixes") or [],
         "time": time.strftime("%Y-%m-%d %H:%M")})
     state["history"] = state["history"][-100:]
 
@@ -279,7 +309,8 @@ def settle(state):
                  f"Mentor was just updated. Its maker's notes are in {kept}. Tell me as simply as you can, in two or three "
                  "short sentences, what was fixed or is new and what that means for me: no technical words, as to "
                  "someone who has never looked inside a computer."]
-    if not notice("idea", f"Mentor is up to date: {installing.get('name') or installed_name()}", installing["summary"], *extra):
+    if not notice("idea", f"Mentor is up to date: {installing.get('name') or installed_name()}",
+                  installing["summary"] + fixed_sentence(installing), *extra):
         return False  # told when somebody is logged in
     log(f"update {installing['version']} ({installing.get('name', '')}) is installed")
     state["installed"] = {"version": installing["version"], "name": installing.get("name"),
@@ -325,7 +356,8 @@ def check():
                  "for me: no technical words, as to someone who has never looked inside a computer. Do not install it "
                  "and do not carry out any steps in the notes: I decide with the Update button. /etc/mentor/UPDATES.md "
                  "says how."]
-    if notice("idea", f"An update for Mentor: {update['name']}", update["summary"], "--update", str(update["version"]), *extra):
+    if notice("idea", f"An update for Mentor: {update['name']}", update["summary"] + fixed_sentence(update),
+              "--update", str(update["version"]), *extra):
         state["offered"] = {"version": update["version"], "time": time.time()}
         save(state)
         log(f"update {update['version']} ({update['name']}) offered")

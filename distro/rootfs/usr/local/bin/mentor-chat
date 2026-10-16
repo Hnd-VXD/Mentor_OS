@@ -311,6 +311,12 @@ RESTORE_SEEN_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "restore-
 CONVERSATIONS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "conversations.json")
 HISTORY_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "history.jsonl")
 # Asked before a Mentor update is installed: it restarts the system (UPDATES.md).
+# What the desktop menu's "Report a problem" asks of the assistant in the chat it was chosen in.
+REPORT_REQUEST = ("Something is not working as expected and I want to tell Mentor's maker, so an update can fix it. If we "
+                  "were dealing with it in this conversation, describe it from what was said here (a short description, "
+                  "not the conversation itself) and tell me in one sentence what you will report; otherwise ask me in one "
+                  "short question what is wrong. Look a little yourself, then use problem_report: show me the report as "
+                  "it is and wait for my yes before sending. /etc/mentor/UPDATES.md says how.")
 RESTART_HEADING = "Restart to update?"
 RESTART_BODY = ("Mentor restarts the whole system to install the update. It takes about a minute, and the apps you "
                 "have open close: save your work in them first. If the new version does not start properly, Mentor "
@@ -2669,6 +2675,7 @@ class DesktopWindow(Adw.ApplicationWindow):
                               ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
                               ("advice", lambda *_: self.show_advice_settings()),
                               ("mentor-settings", lambda *_: self.spawn(["/usr/local/bin/mentor-settings"])),
+                              ("report-problem", lambda *_: self.report_problem()),
                               # What the desktop's menu has on stock GNOME.
                               ("background", lambda *_: self.spawn(["gnome-control-center", "background"])),
                               ("displays", lambda *_: self.spawn(["gnome-control-center", "display"])),
@@ -2759,6 +2766,9 @@ class DesktopWindow(Adw.ApplicationWindow):
             # it asks first (ask_to_clear); not while the agent is answering in it
             if self.current and not self.current.untouched and not self.current.busy:
                 menu.append("Clear chat", "win.clear-chat")
+            # For this chat: what went wrong here goes to Mentor's maker, after the user has read it.
+            if self.current and not self.current.busy:
+                menu.append("Report a problem\u2026", "win.report-problem")
         # History is the button at the top left (beside +), not here.
         menu.append("Suggestions\u2026", "win.advice")
         menu.append("Mentor Settings\u2026", "win.mentor-settings")
@@ -3317,6 +3327,14 @@ class DesktopWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         return GLib.SOURCE_REMOVE
+
+    def report_problem(self):
+        """The desktop menu's Report a problem: the assistant, in this chat, puts together a report of what
+        went wrong (problem_report), shows it, and sends it only after the user's yes (UPDATES.md)."""
+        conversation = self.current
+        if not conversation or conversation.busy:
+            return
+        conversation.send(REPORT_REQUEST, shown="Report a problem")
 
     def for_request(self):
         """The conversation a request from outside goes to: the open tab if nothing was

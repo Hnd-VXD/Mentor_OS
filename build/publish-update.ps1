@@ -14,6 +14,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$Summary,
     [string]$Notes = '',
+    # The problem reports this update fixes (their issue numbers in Mentor_Reports), as "12,15": the Mentor
+    # that sent one tells its user so on the update's card.
+    [string]$Fixes = '',
     [switch]$Upload,
     [string]$Key = (Join-Path $HOME '.mentor\update-signing-key'),
     [string]$Repo = 'Hnd-VXD/Mentor_OS'
@@ -41,6 +44,7 @@ $info = [ordered]@{ version = $version; summary = $Summary.Trim(); file = $packa
 # The name people read (15.10.26.01), as build.sh gave it.
 $nameFile = Join-Path $out 'version-name'
 if (Test-Path $nameFile) { $info.name = (Get-Content $nameFile -Raw).Trim() }
+if ($Fixes) { $info.fixes = @($Fixes -split '[,\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }) }
 Get-ChildItem $out -Filter 'mentor-update-*.md' | Remove-Item
 $notesFile = $null
 if ($Notes) {
@@ -94,8 +98,10 @@ $listPath = Join-Path $root 'distro\updates.json'
 $list = @()
 # (through ForEach-Object: Windows PowerShell 5 hands a JSON list on as one item)
 if (Test-Path $listPath) { $list = @(Get-Content $listPath -Raw | ConvertFrom-Json | ForEach-Object { $_ }) }
-$list += [pscustomobject][ordered]@{ version = $version; name = $info.name; summary = $info.summary;
-                                     published = (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+$record = [ordered]@{ version = $version; name = $info.name; summary = $info.summary;
+                      published = (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+if ($info.fixes) { $record.fixes = $info.fixes }
+$list += [pscustomobject]$record
 [IO.File]::WriteAllText($listPath, (ConvertTo-Json -InputObject @($list) -Depth 3) + "`n", (New-Object Text.UTF8Encoding($false)))
 if ($notesFile) {
     New-Item -ItemType Directory -Force (Join-Path $root 'distro\update-notes') | Out-Null
