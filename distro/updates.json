@@ -40,5 +40,11 @@
     "name": "16.10.26.01",
     "summary": "A shorter desktop menu, and the bell's suggestions now have their own tab in Mentor Settings.",
     "published": "2026-10-16 08:57"
+  },
+  {
+    "version": 202610160612,
+    "name": "16.10.26.03",
+    "summary": "In the Recipes app, switching a recipe off only switches it off, and a widget's switch works at once.",
+    "published": "2026-10-16 09:12"
   }
 ]

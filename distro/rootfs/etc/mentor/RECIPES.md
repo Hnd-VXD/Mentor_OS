@@ -191,7 +191,7 @@ already there at start-up are not.
 
 ### Switching a recipe off and on
 
-Every recipe that changed something here has a switch in the Recipes app. **Off is not removing**: turn off what it
+Every recipe that changed something here has a switch in the Recipes app ("Off: switched off, its files kept"). A recipe whose "Touches" row names only a GNOME Shell extension in the home folder (and the list of enabled extensions) is switched by the app itself, at once and without you: it turns that extension off or on (`mentor_recipes.only_extension`, which finds the installed extension by the part of its name before the @, since the folder made when it was applied may differ from the recipe's) and notes it with `recipe_used`. Every other recipe's switch hands you the request below. **Off is not removing**: turn off what it
 added (disable the extension, stop the service, set the setting back) and keep every file, so that **On** brings it back in a
 moment. Never delete anything to switch a recipe off; if it cannot be switched off without removing it, say so and ask. Do
 not search the system or read Mentor's own files for this: the recipe file says what it added. When done, `recipe_used` with

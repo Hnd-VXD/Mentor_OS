@@ -729,6 +729,39 @@ def used_asked(rid):
         used_save(data)
 
 
+# What a recipe touches, when that is only a GNOME Shell extension of the user's: its switch in the Recipes
+# app then turns the extension off and on itself, at once and without the assistant (only_extension).
+NOT_ONLY_EXTENSION = ("/etc/", "/usr/", "/boot", "/var/", "/opt/", "systemd", "service", "pacman", "flatpak", "sudo",
+                      "polkit", "package", "kernel", "udev", "cron")
+USER_EXTENSIONS = os.path.expanduser("~/.local/share/gnome-shell/extensions")
+
+
+def only_extension(path):
+    """The uuid of the one installed user extension a recipe adds, when that is all it touches; else None.
+    The recipe's "Touches" row says what it changes. The folder it names may differ a little from the one
+    the assistant made when it applied it (keep-awake@example.com, then keep-awake@mentor.local), so the
+    installed extension is found by the part of the name before the @."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(6000)
+    except OSError:
+        return None
+    touches = next((line for line in head.splitlines() if line.lower().startswith("| touches")), "")
+    low = touches.lower()
+    if "gnome-shell/extensions/" not in low or any(word in low for word in NOT_ONLY_EXTENSION):
+        return None
+    named = {re.split(r"[@/`]", m)[0] for m in re.findall(r"gnome-shell/extensions/([A-Za-z0-9._@-]+)", touches)}
+    if len(named) != 1:
+        return None
+    stem = named.pop().lower()
+    try:
+        found = [d for d in os.listdir(USER_EXTENSIONS)
+                 if d.split("@")[0].lower() == stem and os.path.isfile(os.path.join(USER_EXTENSIONS, d, "metadata.json"))]
+    except OSError:
+        return None
+    return found[0] if len(found) == 1 else None
+
+
 def used_undone(rid):
     data = used_load()
     if rid in data:

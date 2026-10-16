@@ -312,15 +312,44 @@ class RecipesWindow(Adw.ApplicationWindow):
         self.filter()
 
     def recipe_switch(self, on, title, path, key, row):
-        """On: what the recipe built is on this computer. Off: the assistant takes it away, with the recipe's own
-        "Take it away again" section; on again, it puts it back with its steps. Both with the usual preview, and
-        the password where one is needed. The switch shows what was last done, not what is asked."""
-        switch = Gtk.Switch(active=on, valign=Gtk.Align.CENTER, tooltip_text="On: in use on this computer. Off: taken away")
+        """On: what the recipe built is in use on this computer. Off: switched off, with every file kept, so that
+        On brings it back in a moment; removing for good is another request ("Take it away again"). A recipe that
+        only added a GNOME Shell extension is switched here, at once, without the assistant: the extension is
+        turned off or on (mentor_recipes.only_extension). Any other goes to the assistant, with the usual preview
+        and the password where one is needed. The switch shows what was last done, not what is asked."""
+        switch = Gtk.Switch(active=on, valign=Gtk.Align.CENTER,
+                            tooltip_text="On: in use on this computer. Off: switched off, its files kept")
+        uuid = mentor_recipes.only_extension(path)
+        state = {"on": on}
+
+        def direct(wanted):
+            """Turn the recipe's extension off or on here, and note it as the assistant would (recipe_used)."""
+            import mentor_tools
+            code, out = mentor_tools.extension_set({"uuid": uuid, "enabled": wanted})
+            if code == 0:
+                mentor_tools.recipe_used({("put_back" if wanted else "taken_away"): key})
+            return code, out
+
+        def done(result, wanted):
+            switch.set_sensitive(True)
+            code, out = (1, str(result)) if isinstance(result, Exception) else result
+            if code == 0:
+                state["on"] = wanted
+                row.set_subtitle("Switched on" + (": it shows after you log out and back in" if "log" in out else "")
+                                 if wanted else "Switched off, its files kept")
+            else:
+                switch.set_active(state["on"])  # as it was: nothing changed
+                row.set_subtitle("It could not be switched: " + out.strip()[:90])
 
         def flipped(widget, _param):
-            if widget.get_active() == on:
+            if widget.get_active() == state["on"]:
                 return
             switch.set_sensitive(False)
+            if uuid:
+                wanted = widget.get_active()
+                threading.Thread(target=lambda: GLib.idle_add(
+                    lambda result=self.attempt(direct, wanted): done(result, wanted) and False), daemon=True).start()
+                return
             if widget.get_active():
                 row.set_subtitle("Mentor is putting it back, in the chat")
                 ask(f"Switch the recipe \u201c{title}\u201d back on. Its file is {path}. It was switched off, not removed: "
@@ -338,6 +367,13 @@ class RecipesWindow(Adw.ApplicationWindow):
                     f"recipe_used with taken_away set to {key}.")
         switch.connect("notify::active", flipped)
         return switch
+
+    @staticmethod
+    def attempt(work, *args):
+        try:
+            return work(*args)
+        except Exception as e:
+            return e
 
     def improve_copy(self, path, title, rid, row):
         """Someone else's recipe, made better: a copy of it among the user's own (Mine), which says what it
@@ -413,7 +449,7 @@ class RecipesWindow(Adw.ApplicationWindow):
 
     def say(self, row, entry):
         said = {"up": "you said it worked", "down": "you said it did not work"}.get(entry.get("vote"), "not rated yet")
-        row.set_subtitle(f"Used {day(entry.get('applied'))}, " + ("taken away again" if entry.get("undone") else said))
+        row.set_subtitle(f"Used {day(entry.get('applied'))}, " + ("switched off" if entry.get("undone") else said))
 
     def rate(self, rid, vote, row):
         def send():
