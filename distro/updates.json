@@ -70,5 +70,17 @@
     "name": "16.10.26.07",
     "summary": "Mentor's self-check now also makes sure Mentor keeps getting its updates.",
     "published": "2026-10-16 20:22"
+  },
+  {
+    "version": 202610162001,
+    "name": "16.10.26.08",
+    "summary": "The bell now has More buttons for more GitHub projects, apps and news, from more sources. History shows the question each answer was for.",
+    "published": "2026-10-16 23:02"
+  },
+  {
+    "version": 202610162033,
+    "name": "16.10.26.09",
+    "summary": "The gear now turns while Mentor works on your request, and the bell opens narrow when it has no cards.",
+    "published": "2026-10-16 23:34"
   }
 ]

@@ -341,13 +341,16 @@ NOTICES_DIR = os.path.join(GLib.get_user_state_dir(), "mentor", "notices")
 # What mentor-advisor found worth bringing up, and what this user has said about hearing of it.
 ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
 ADVICE_STATE_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "advice.json")
+ADVICE_MORE_PATH = "/var/lib/mentor/advice/more.json"  # more of the same, for the bell's "More" buttons
 ADVICE_KINDS = {"updates": "Waiting updates", "disk": "A disk that is filling", "failed": "Services that failed",
                 "news": "Arch Linux news", "gnome": "GNOME news", "apps": "New applications",
-                "github": "New projects on GitHub", "recipes": "Recipes people found useful"}
+                "github": "New projects on GitHub", "recipes": "Recipes people found useful",
+                "headlines": "News from Linux sites"}
 ADVICE_ICONS = {"updates": "software-update-available-symbolic", "disk": "drive-harddisk-symbolic",
                 "failed": "dialog-warning-symbolic", "news": "web-browser-symbolic", "gnome": "start-here-symbolic",
                 "apps": "view-app-grid-symbolic", "github": "applications-engineering-symbolic",
-                "recipes": "emblem-favorite-symbolic"}
+                "recipes": "emblem-favorite-symbolic", "headlines": "web-browser-symbolic"}
+ADVICE_MORE_KEPT = 14  # days a card asked for with "More" stays in the bell if nothing is done with it
 WELCOME_PROMPT = (
     "This is the first start of Mentor for this user. Greet them in one sentence, then set the system up "
     "with them one topic at a time, asking before you change anything: language and keyboard layout; time "
@@ -371,9 +374,7 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
          border: 1px solid rgba(255, 255, 255, 0.14); }
 .steps .steps-header { background: none; padding: 0 0 4px 0; font-size: 1em; font-weight: 700; color: #ffffff; }
 .steps .steps-header:disabled { color: #ffffff; }
-@keyframes gear-turn { from { -gtk-icon-transform: rotate(0turn); } to { -gtk-icon-transform: rotate(1turn); } }
 .gear { color: #7fb2ff; }
-.gear.turning { animation: gear-turn 2s linear infinite; }
 .tool-row { font-size: 0.9em; padding: 4px 10px; border-radius: 10px;
             background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
 .chat-error { color: #ff8a75; }
@@ -416,6 +417,11 @@ tabbar.agent-tabs tab.working button.tab-close-button { opacity: 0; }
 tabbar.agent-tabs tab { min-height: 34px; border-radius: 12px; background: rgba(20, 22, 27, 0.7); color: #ffffff; }
 tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
 """
+# The steps card's gear turns while the agent works. Not a CSS animation: Mentor switches GNOME's
+# animations off (enable-animations=false, for speed in the VM), and GTK then leaves those still.
+# So it is turned a step at a time by a timer (Conversation.add_step), through these classes.
+GEAR_STEPS = 16
+CSS += "".join(f".gear.turn-{i} {{ -gtk-icon-transform: rotate({i / GEAR_STEPS}turn); }}\n" for i in range(GEAR_STEPS))
 
 
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$")
@@ -501,15 +507,22 @@ def to_markup(text):
 HISTORY_LINES = 3  # lines of an entry shown in History before "Show more"
 
 
-def history_card(entry, when, open_in_chat=None):
+def history_card(entry, when, open_in_chat=None, asked=""):
     """One entry of History as a card: who, when, in which conversation, its first lines, and "Show more".
-    A question at the end of an answer stays in view, highlighted, as in the chat."""
+    An answer has the words it answered above it, whole (`asked`); the tab's title is cut short, so it
+    names the conversation only where there are no such words. A question at the end of an answer
+    stays in view, highlighted, as in the chat."""
     text = str(entry.get("text", ""))
     text = text if len(text) <= 6000 else text[:5999] + "\u2026"
     user = bool(entry.get("user"))
+    asked = " ".join(str(asked).split())
+    asked = asked if len(asked) <= 400 else asked[:399] + "\u2026"
+    title = str(entry.get("title") or "")
+    if user or asked:
+        title = ""
     who = Gtk.Label(xalign=0, use_markup=True, ellipsize=Pango.EllipsizeMode.END, label=(
         f"<b>{'You' if user else 'Mentor'}</b>  {time.strftime('%H:%M', when)}"
-        + (f"  \u00b7  {GLib.markup_escape_text(str(entry.get('title')), -1)}" if entry.get("title") else "")))
+        + (f"  \u00b7  {GLib.markup_escape_text(title, -1)}" if title else "")))
     who.add_css_class("caption")
     who.add_css_class("dim-label")
     lines = text.rstrip().split("\n")
@@ -533,6 +546,13 @@ def history_card(entry, when, open_in_chat=None):
     if user:
         card.add_css_class("mine")
     card.append(who)
+    if asked and not user:
+        answered = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=True,
+                             label="\u21aa " + asked)
+        answered.add_css_class("caption")
+        answered.add_css_class("dim-label")
+        answered.set_tooltip_text("What this answers")
+        card.append(answered)
     card.append(said)
     foot = Gtk.Box(spacing=6)
     if long:
@@ -2029,7 +2049,6 @@ class Conversation(Gtk.Box):
             header.add_css_class("steps-header")
             gear = Gtk.Image(icon_name="emblem-system-symbolic")
             gear.add_css_class("gear")
-            gear.add_css_class("turning")
             words = Gtk.Label()
             inside = Gtk.Box(spacing=8)
             inside.append(gear)
@@ -2044,6 +2063,16 @@ class Conversation(Gtk.Box):
             steps = self.steps
             # the time it has taken, counted on the card while the agent works
             GLib.timeout_add_seconds(1, lambda: not steps["done"] and (self.show_steps(steps) or True))
+
+            def turn():  # the gear, a sixteenth of a turn at a time, until the answer is there
+                if steps["done"] or (steps.get("turn") is not None and gear.get_root() is None):
+                    return GLib.SOURCE_REMOVE
+                steps["turn"] = ((steps.get("turn") or 0) + 1) % GEAR_STEPS
+                if gear.get_mapped():  # nothing to draw for a conversation not in view
+                    gear.set_css_classes(["gear", f"turn-{steps['turn']}"])
+                return GLib.SOURCE_CONTINUE
+            if not restored:
+                GLib.timeout_add(90, turn)
             header.connect("clicked", lambda *_: (steps.update(open=not steps["open"]), self.show_steps(steps)))
             self.add(card)
         self.steps["rows"].append(row)
@@ -2075,7 +2104,7 @@ class Conversation(Gtk.Box):
         """The answer is there: this turn's steps fold down to their button."""
         if self.steps is not None:
             self.steps["done"] = True
-            self.steps["gear"].remove_css_class("turning")
+            self.steps["gear"].set_css_classes(["gear"])
             self.steps["gear"].set_from_icon_name("object-select-symbolic")
             self.steps["end"] = self.steps["end"] or time.time()
             if not self.steps.get("restored"):  # kept, so that the card says it again after a restart
@@ -2656,7 +2685,16 @@ class DesktopWindow(Adw.ApplicationWindow):
         bell.append(self.advice_count)
         self.advice_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14,
                                    margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
-        self.advice_popover = Gtk.Popover(child=self.advice_list)
+        # The cards scroll when there are many; the "More" buttons stay in view under them.
+        self.advice_more = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8,
+                                   margin_bottom=6, margin_start=6, margin_end=6)
+        self.advice_scroller = Gtk.ScrolledWindow(child=self.advice_list, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                                  propagate_natural_height=True, propagate_natural_width=True,
+                                                  max_content_height=560)
+        advice_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        advice_box.append(self.advice_scroller)
+        advice_box.append(self.advice_more)
+        self.advice_popover = Gtk.Popover(child=advice_box)
         self.advice_button = Gtk.MenuButton(child=bell, popover=self.advice_popover, valign=Gtk.Align.CENTER,
                                             tooltip_text="Suggestions for this system", visible=False)
         self.advice_button.add_css_class("model")
@@ -2937,6 +2975,26 @@ class DesktopWindow(Adw.ApplicationWindow):
             return [], 0
         return entries, end
 
+    @staticmethod
+    def user_words():
+        """What the user said in each conversation, oldest first: {conversation: [(time, words), ...]}.
+        Read once when History opens; only the user's own lines are parsed."""
+        words = {}
+        try:
+            with open(HISTORY_PATH, "rb") as f:
+                for line in f:
+                    if b'"user": true' not in line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(item, dict) and item.get("c"):
+                        words.setdefault(item["c"], []).append((item.get("t", 0), str(item.get("text", ""))))
+        except OSError:
+            pass
+        return words
+
     def reopen(self, entry):
         """A conversation from History, whole, in a tab: the open one if it is still there, else a tab made
         again from what History kept of it, which goes on in the same conversation (its recipes, its tool
@@ -2981,6 +3039,13 @@ class DesktopWindow(Adw.ApplicationWindow):
         search = Gtk.SearchEntry(placeholder_text="Search everything that was said", margin_start=24, margin_end=24,
                                  margin_bottom=8)
         state = {"end": None, "day": None, "done": False}
+        said_by_user = self.user_words()
+
+        def asked(entry):
+            if entry.get("user"):
+                return ""
+            before = [text for t, text in said_by_user.get(entry.get("c"), ()) if t <= entry.get("t", 0)]
+            return before[-1] if before else ""
 
         def more(*_):
             if state["done"]:
@@ -2995,7 +3060,8 @@ class DesktopWindow(Adw.ApplicationWindow):
                     heading = Gtk.Label(label=day, xalign=0, margin_top=10)
                     heading.add_css_class("heading")
                     rows.append(heading)
-                rows.append(history_card(entry, when, lambda entry: (dialog.close(), self.reopen(entry))))
+                rows.append(history_card(entry, when, lambda entry: (dialog.close(), self.reopen(entry)),
+                                         asked(entry)))
             if state["done"] and rows.get_first_child() is None:
                 rows.append(Gtk.Label(label="Nothing yet." if not search.get_text().strip() else "Nothing found.",
                                       margin_top=30))
@@ -3034,6 +3100,8 @@ class DesktopWindow(Adw.ApplicationWindow):
         state.setdefault("off", False)
         state.setdefault("never", [])   # kinds of suggestion not to make again
         state.setdefault("until", {})   # a suggestion -> when it may be made again
+        state.setdefault("extra", [])   # cards the user asked for with "More", whole
+        state.setdefault("had", {})     # a group of "More" -> the keys of what it already gave
         return state
 
     def save_advice_state(self, state):
@@ -3050,18 +3118,92 @@ class DesktopWindow(Adw.ApplicationWindow):
             with open(ADVICE_PATH) as f:
                 found = [s for s in json.load(f) if isinstance(s, dict) and s.get("id") and s.get("prompt")]
         except (OSError, ValueError):
-            return []
+            found = []
+        ids = {s["id"] for s in found}
+        found += [s for s in state["extra"] if isinstance(s, dict) and s.get("id") and s.get("prompt")
+                  and s["id"] not in ids]
         return [s for s in found
                 if s.get("kind") not in state["never"] and state["until"].get(s["id"], 0) <= time.time()]
+
+    # --- more of the same, asked for -------------------------------------------
+    # mentor-advisor keeps, beside the day's cards, more of each sort (more.json, SUGGESTIONS.md).
+    # Nothing of it shows until the user asks with a "More" button at the end of the bell's list:
+    # then the next few that this user was not given yet become cards like the others.
+
+    def more_waiting(self, state=None):
+        """{group: (its "More" group, the entries not given yet)} for the groups that have any."""
+        state = state or self.advice_state()
+        if state["off"]:
+            return {}
+        try:
+            with open(ADVICE_MORE_PATH) as f:
+                more = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        try:
+            with open(ADVICE_PATH) as f:  # what the day's cards hold already
+                given = set()
+                for s in json.load(f):
+                    given.add(str(s.get("id")))
+                    given.update(str(key) for key in s.get("keys", ()))
+        except (OSError, ValueError, TypeError, AttributeError):
+            given = set()
+        waiting = {}
+        for name, group in (more.items() if isinstance(more, dict) else ()):
+            if not isinstance(group, dict) or not group.get("label"):
+                continue
+            had = set(state["had"].get(name, ())) | given
+            entries = [e for e in group.get("entries", ()) if isinstance(e, dict) and e.get("key")
+                       and str(e["key"]) not in had
+                       and (e.get("kind") or group.get("kind")) not in state["never"]]
+            if entries:
+                waiting[name] = (group, entries)
+        return waiting
+
+    def give_more(self, name):
+        """The next few of a group, as cards in the bell."""
+        state = self.advice_state()
+        group, entries = self.more_waiting(state).get(name, (None, []))
+        if not entries:
+            return
+        now = int(time.time())
+        taken = entries[:max(1, int(group.get("per_card") or 5))]
+        if group.get("head"):  # lines of one card
+            names = [str(e.get("name") or e["key"]) for e in taken]
+            lines = "\n".join(str(e.get("line") or e.get("name") or e["key"]) for e in taken)
+            cards = [{
+                "id": f"more-{name}-{now}", "kind": group.get("kind") or name, "title": group.get("title") or group["label"],
+                "body": (lambda t: t if len(t) <= 200 else t[:199] + "\u2026")(", ".join(names) + "."),
+                "details": "\n\n".join(str(e.get("details") or e.get("line") or "") for e in taken),
+                "link": group.get("link") or "", "since": now,
+                "prompt": str(group["head"]) + "\n\n" + lines + "\n\n" + str(group.get("tail") or ""),
+            }]
+        else:  # each a card of its own
+            cards = [{k: v for k, v in e.items() if k != "key"} for e in taken]
+            for card in cards:
+                card.setdefault("kind", group.get("kind") or name)
+                card["shown_at"] = now
+        for card in cards:
+            card.setdefault("shown_at", now)
+        state["extra"] = [s for s in state["extra"] if isinstance(s, dict)
+                          and now - s.get("shown_at", now) < ADVICE_MORE_KEPT * 86400] + cards
+        state["had"][name] = (list(state["had"].get(name, ())) + [str(e["key"]) for e in taken])[-1500:]
+        self.save_advice_state(state)
+        self.refresh_advice()
 
     def refresh_advice(self):
         """Fill the bell with the suggestions there are; no suggestions, no bell."""
         while child := self.advice_list.get_first_child():
             self.advice_list.remove(child)
+        while child := self.advice_more.get_first_child():
+            self.advice_more.remove(child)
         suggestions = self.suggestions()
-        self.advice_button.set_visible(bool(suggestions))
+        waiting = self.more_waiting()
+        # The bell stays while there is more to ask for; its number counts only the cards.
+        self.advice_button.set_visible(bool(suggestions or waiting))
         self.advice_count.set_text(str(len(suggestions)))
-        if not suggestions:
+        self.advice_count.set_visible(bool(suggestions))
+        if not suggestions and not waiting:
             self.advice_popover.popdown()
         for suggestion in suggestions:
             title = Gtk.Label(xalign=0, wrap=True, max_width_chars=46, use_markup=True,
@@ -3104,6 +3246,27 @@ class DesktopWindow(Adw.ApplicationWindow):
             if self.advice_list.get_first_child():
                 self.advice_list.append(Gtk.Separator())
             self.advice_list.append(one)
+        self.advice_scroller.set_visible(bool(suggestions))  # no cards: no empty space for them
+        self.advice_more.set_visible(bool(waiting))
+        if waiting:
+            if suggestions:
+                self.advice_more.append(Gtk.Separator())
+            ask = Gtk.Label(xalign=0, wrap=True, max_width_chars=46 if suggestions else 22,
+                            margin_top=0 if suggestions else 6,
+                            label="Want more?" if suggestions else "You have seen everything for now. Want more?")
+            ask.add_css_class("dim-label")
+            self.advice_more.append(ask)
+            # Under cards, side by side; alone, one under the other, so the bell's list stays narrow.
+            buttons = (Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=3,
+                                   column_spacing=6, row_spacing=6) if suggestions
+                       else Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6))
+            for name, (group, entries) in waiting.items():
+                more = Gtk.Button(label=str(group["label"]))
+                more.add_css_class("pill")
+                more.set_tooltip_text(f"{len(entries)} more waiting")
+                more.connect("clicked", lambda _b, name=name: self.give_more(name))
+                buttons.append(more)
+            self.advice_more.append(buttons)
         return GLib.SOURCE_REMOVE
 
     def show_advice_details(self, suggestion):
@@ -3158,6 +3321,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             state["never"].append(suggestion.get("kind"))
         if days:
             state["until"][suggestion["id"]] = time.time() + days * 86400
+        if never or days > 3:  # a card from "More", done with: gone for good ("Not now" keeps it)
+            state["extra"] = [s for s in state["extra"] if not isinstance(s, dict) or s.get("id") != suggestion["id"]]
         self.save_advice_state(state)
         self.refresh_advice()
 
@@ -3166,10 +3331,11 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.advice_popover.popdown()
         self.put_off(suggestion, days=7)
         prompt, shown = suggestion["prompt"], suggestion.get("title") or "Look into it"
-        if suggestion.get("kind") in ("news", "gnome", "apps", "github", "recipes"):
+        if suggestion.get("kind") in ("news", "gnome", "apps", "github", "recipes", "headlines"):
             prompt = ("Review this, and tell me what we can make of it: what in it is of use to me and to this "
                       "system, and what we could do with it, most worthwhile first.\n\n" + prompt)
-            shown = "Review this, what can we make of it: " + shown
+            # The suggestion's own title first: the conversation is named after the start of it.
+            shown = shown + ": what can we make of it?"
         self.for_request().send(prompt, shown=shown)
 
     def go_to_workspace(self, index):

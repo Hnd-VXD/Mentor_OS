@@ -50,7 +50,7 @@ RESTART_BODY = ("Mentor restarts the whole system to install the update. It take
 KINDS = {"updates": "Updates for my programs", "disk": "When the disk is getting full",
          "failed": "When something stopped working", "news": "News about the system",
          "gnome": "News about the desktop", "apps": "New applications", "github": "New projects on GitHub",
-         "recipes": "Recipes that people found useful"}
+         "recipes": "Recipes that people found useful", "headlines": "News from Linux sites (with More)"}
 WATCHES = {"security": "my safety", "refused": "someone trying to connect to this computer",
            "self": "Mentor itself", "disk": "the disk", "failed": "programs in the background"}
 

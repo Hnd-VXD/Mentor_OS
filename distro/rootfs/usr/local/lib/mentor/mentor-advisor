@@ -15,6 +15,15 @@ assistant's business (mentor-chat), not this program's.
 `details` is the whole of it as plain text, for the user to read when they open the
 suggestion; `link` the page it comes from.
 
+Beside it, once a day, more of the same for when the user asks for more (the bell's "More"
+buttons), read by the assistant only then:
+
+    /var/lib/mentor/advice/more.json
+        {GROUP: {"label", "title", "kind", "per_card", "head", "tail", "link", "entries": [...]}, ...}
+
+A group's entries are either lines of one card (github, apps: {"key", "name", "line", "details"})
+or whole suggestions of their own (news: {"key", "id", "kind", "title", "body", "prompt", ...}).
+
 Run by mentor-advisor.timer; by hand: mentor-advisor [--print]
 """
 import json
@@ -41,14 +50,24 @@ NEW_APPS = "https://flathub.org/api/v2/feed/new"
 APPS_DAYS = 2          # the day's suggestion names what was published in this many days
 APPS_MOST = 12         # and no more than this many
 GITHUB = "https://api.github.com/search/repositories"
-GITHUB_TOPICS = ("libadwaita", "gtk4", "gnome")
+GITHUB_TOPICS = ("libadwaita", "gtk4", "gnome", "gnome-shell-extension", "wayland", "linux-desktop")
 GITHUB_NEW = 45        # days since a project was created for it to count as new
 GITHUB_STARS = 15      # and how many people must have starred it: the only sign of worth there is without reading it
+GITHUB_MORE_NEW = 90   # for "More": projects up to this old,
+GITHUB_MORE_STARS = 8  # with this many stars
 GITHUB_SHOWN = 3       # days a project stays in the suggestion once it has appeared in it
 GITHUB_MOST = 8
 NEWS_EVERY = 1         # days between two readings of it
 NEWS_DAYS = 21         # how long an announcement counts as news
 NEWS_MOST = 3          # and how many of them at a time
+MORE = os.path.join(DIR, "more.json")
+MORE_DAYS = 120        # Arch and GNOME news this old still count for "More"
+HEADLINES = (("Phoronix", "https://www.phoronix.com/rss.php"), ("LWN", "https://lwn.net/headlines/rss"),
+             ("OMG! Linux", "https://www.omglinux.com/feed/"), ("9to5Linux", "https://9to5linux.com/feed"),
+             ("GamingOnLinux", "https://www.gamingonlinux.com/article_rss.php"))
+HEADLINE_DAYS = 7      # news from other sites this old
+HEADLINE_EACH = 10     # and at most this many from each
+POPULAR_APPS = "https://flathub.org/api/v2/collection/trending?page=1&per_page=30"
 RECIPES_INDEX = "https://mentor-recipes.netlify.app/index.json"
 RECIPE_MIN_UP = 2      # a recipe is news when this many Mentors said it worked,
 RECIPE_SHOWN_DAYS = 30  # and then it is not brought up again for this long
@@ -220,7 +239,7 @@ def arch_news():
     of interest, and the agent can say what it means for this system when asked."""
     found = []
     for title, link, text, when, laid in read_feed(ARCH_NEWS):
-        if time.time() - when > NEWS_DAYS * 86400:
+        if time.time() - when > MORE_DAYS * 86400:
             continue
         found.append({
             "id": "news-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "news",
@@ -233,14 +252,16 @@ def arch_news():
                        "before I agree."),
             "since": int(when),
         })
-    return found[:NEWS_MOST]
+    recent = [item for item in found if time.time() - item["since"] <= NEWS_DAYS * 86400][:NEWS_MOST]
+    more_news([item for item in found if item not in recent])
+    return recent
 
 
 def gnome_news():
     """This Week in GNOME: what changed in the desktop this system runs, and in the apps around it."""
     found = []
-    for title, link, text, when, laid in read_feed(GNOME_NEWS)[:6]:
-        if time.time() - when > GNOME_DAYS * 86400:
+    for title, link, text, when, laid in read_feed(GNOME_NEWS)[:10]:
+        if time.time() - when > MORE_DAYS * 86400:
             continue
         found.append({
             "id": "gnome-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "gnome",
@@ -255,14 +276,75 @@ def gnome_news():
                        "before I say so."),
             "since": int(when),
         })
-    return found[:1]
+    recent = [item for item in found if time.time() - item["since"] <= GNOME_DAYS * 86400][:1]
+    more_news([item for item in found if item not in recent])
+    return recent
+
+
+def more_news(items):
+    """News for "More": whole suggestions, newest first across where they came from."""
+    group = MORE_FOUND.setdefault("news", {
+        "label": "More news", "title": "", "kind": "news", "per_card": 3, "entries": []})
+    group["entries"] = sorted(group["entries"] + [dict(item, key=item["id"]) for item in items],
+                              key=lambda item: -item.get("since", 0))[:60]
+
+
+def headlines():
+    """What Linux news sites wrote in the last days: only for "More", never a card by itself."""
+    found = []
+    for site, url in HEADLINES:
+        try:
+            items = read_feed(url)
+        except Exception as e:
+            print(f"mentor-advisor: headlines: {site}: {e}", file=sys.stderr)
+            continue
+        for title, link, text, when, laid in [item for item in items
+                                              if time.time() - item[3] <= HEADLINE_DAYS * 86400][:HEADLINE_EACH]:
+            found.append({
+                "id": "headline-" + format(abs(hash_of([link])), "x"), "kind": "headlines",
+                "title": f"{site}: {title}",
+                "body": f"{day_of(when)}. {short(text, 180)}",
+                "details": laid[:12000], "link": link,
+                "prompt": (f"{site} wrote this on {day_of(when)}: \u201c{title}\u201d ({link}).\n\n{text[:3000]}\n\n"
+                           "Tell me in plain words what it is about and whether it matters for this system or for "
+                           "me (look at what is installed here). Do not change anything before I agree."),
+                "since": int(when),
+            })
+    more_news(found)
+    return []
 
 
 def new_apps():
     """Applications that appeared in the last days, one suggestion a day: which of them are
     worth a look is for the agent to say when asked, with this system in front of it."""
-    apps = [(title, link, text) for title, link, text, when, _laid in read_feed(NEW_APPS)
+    feed = read_feed(NEW_APPS)
+    apps = [(title, link, text) for title, link, text, when, _laid in feed
             if time.time() - when <= APPS_DAYS * 86400][:APPS_MOST]
+    more = [{"key": link, "name": title, "line": f"- {title}: {short(text, 160)} ({link}), new on Flathub {day_of(when)}",
+             "details": f"{title}\n{text}\n{link}"}
+            for title, link, text, when, _laid in feed if (title, link, text) not in apps]
+    try:
+        import urllib.request
+        request = urllib.request.Request(POPULAR_APPS, headers={"User-Agent": "mentor-advisor"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            for hit in json.load(response).get("hits", []):
+                if hit.get("type") not in (None, "desktop-application") or not hit.get("app_id"):
+                    continue
+                link = f"https://flathub.org/apps/{hit['app_id']}"
+                summary = " ".join(str(hit.get("summary") or "").split())
+                installs = hit.get("installs_last_month")
+                more.append({"key": link, "name": str(hit.get("name") or hit["app_id"]),
+                             "line": (f"- {hit.get('name')}: {short(summary, 160)} ({link}), popular on Flathub this week"
+                                      + (f", {installs} installs last month" if installs else "")),
+                             "details": f"{hit.get('name')}\n{summary}\n{link}"})
+    except Exception as e:
+        print(f"mentor-advisor: new_apps: popular: {e}", file=sys.stderr)
+    MORE_FOUND["apps"] = {
+        "label": "More apps", "title": "More applications to look at", "kind": "apps", "per_card": 10,
+        "link": "https://flathub.org/apps/collection/trending",
+        "head": "These applications are on Flathub, new there lately or popular this week:",
+        "tail": APPS_TAIL, "entries": more[:60],
+    }
     if not apps:
         return []
     listed = "\n".join(f"- {title}: {short(text, 160)} ({link})" for title, link, text in apps)
@@ -272,12 +354,16 @@ def new_apps():
         "body": short("Just published: " + ", ".join(title for title, _, _ in apps) + ".", 200),
         "details": "\n\n".join(f"{title}\n{text}\n{link}" for title, link, text in apps),
         "link": "https://flathub.org/apps/collection/recently-added",
-        "prompt": ("These applications were published on Flathub in the last days:\n\n" + listed + "\n\n"
-                   "Pick the few that are really worth trying on this system and its GNOME desktop, and leave the "
-                   "rest out. For each, say in a line what it does and how it can be installed here: from the Arch "
-                   "repositories if it is there (search them), otherwise the other ways, and whether Flatpak is "
-                   "set up on this system. Do not install anything before I say which."),
+        "keys": [link for _title, link, _text in apps],
+        "prompt": "These applications were published on Flathub in the last days:\n\n" + listed + "\n\n" + APPS_TAIL,
     }]
+
+
+APPS_TAIL = ("Pick the few that are really worth trying on this system and its GNOME desktop, and leave the "
+             "rest out. For each, say in a line what it does and how it can be installed here: from the Arch "
+             "repositories if it is there (search them), otherwise the other ways, and whether Flatpak is "
+             "set up on this system. Do not install anything before I say which.")
+MORE_FOUND = {}  # filled by the looks at the news, written to MORE
 
 
 def github_projects():
@@ -285,17 +371,27 @@ def github_projects():
     for a few days from the day it first qualifies, then not again."""
     import urllib.parse
     import urllib.request
-    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - GITHUB_NEW * 86400))
-    found = {}
-    for topic in GITHUB_TOPICS:
-        query = urllib.parse.urlencode({"q": f"topic:{topic} created:>{since} stars:>={GITHUB_STARS}",
-                                        "sort": "stars", "order": "desc", "per_page": 15})
+    since = time.strftime("%Y-%m-%d", time.localtime(time.time() - GITHUB_MORE_NEW * 86400))
+    newer = time.strftime("%Y-%m-%d", time.localtime(time.time() - GITHUB_NEW * 86400))
+    every = {}
+    for number, topic in enumerate(GITHUB_TOPICS):
+        if number:
+            time.sleep(7)  # GitHub allows a few searches a minute without a key
+        query = urllib.parse.urlencode({"q": f"topic:{topic} created:>{since} stars:>={GITHUB_MORE_STARS}",
+                                        "sort": "stars", "order": "desc", "per_page": 30})
         request = urllib.request.Request(f"{GITHUB}?{query}", headers={
             "User-Agent": "mentor-advisor", "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            for repo in json.load(response).get("items", []):
-                if not repo.get("archived") and not repo.get("fork"):
-                    found[repo["full_name"]] = repo
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                for repo in json.load(response).get("items", []):
+                    if not repo.get("archived") and not repo.get("fork"):
+                        every[repo["full_name"]] = repo
+        except Exception as e:  # one topic refused (the rate limit) does not cost the others
+            print(f"mentor-advisor: github_projects: {topic}: {e}", file=sys.stderr)
+    if not every:
+        raise RuntimeError("GitHub answered none of the searches")
+    found = {name: repo for name, repo in every.items()
+             if repo.get("stargazers_count", 0) >= GITHUB_STARS and repo.get("created_at", "")[:10] > newer}
     # When each was first seen here.
     seen_path = os.path.join(DIR, "github-seen.json")
     try:
@@ -311,29 +407,52 @@ def github_projects():
         json.dump(seen, f)
     fresh = sorted((repo for name, repo in found.items() if now - seen[name] < GITHUB_SHOWN * 86400),
                    key=lambda repo: -repo.get("stargazers_count", 0))[:GITHUB_MOST]
+    # For "More": the rest, most stars first. What the user was given by "More" before is left out by
+    # the assistant, which remembers it.
+    shown = {repo["full_name"] for repo in fresh}
+    rest = sorted((repo for name, repo in every.items() if name not in shown),
+                  key=lambda repo: -repo.get("stargazers_count", 0))
+    MORE_FOUND["github"] = {
+        "label": "More GitHub projects", "title": "More new projects on GitHub", "kind": "github", "per_card": 8,
+        "link": "https://github.com/topics/gnome",
+        "head": ("These projects for this kind of desktop (GNOME, GTK, Wayland, Linux desktops) were started on "
+                 "GitHub in the last months and have gathered some stars:"),
+        "tail": GITHUB_TAIL,
+        "entries": [{"key": repo["full_name"], "name": f"{repo['name']} ({repo.get('stargazers_count', 0)}\u2605)",
+                     "line": repo_line(repo), "details": repo_details(repo)} for repo in rest[:60]],
+    }
     if not fresh:
         return []
-    listed = "\n".join(
-        f"- {repo['full_name']} ({repo.get('stargazers_count', 0)} stars, created {repo.get('created_at', '')[:10]}, "
-        f"{repo.get('language') or 'language unknown'}): {short(' '.join((repo.get('description') or '').split()), 200)} "
-        f"{repo.get('html_url', '')}" for repo in fresh)
+    listed = "\n".join(repo_line(repo) for repo in fresh)
     names = sorted(repo["full_name"] for repo in fresh)
     return [{
         "id": "github-" + format(abs(hash_of(names)), "x")[:10], "kind": "github",
         "title": "New projects on GitHub for this desktop",
         "body": short(", ".join(f"{repo['name']} ({repo.get('stargazers_count', 0)}\u2605)" for repo in fresh) + ".", 200),
-        "details": "\n\n".join(
-            f"{repo['full_name']}  \u2605 {repo.get('stargazers_count', 0)}  ({repo.get('language') or 'language unknown'}, "
-            f"started {repo.get('created_at', '')[:10]})\n{' '.join((repo.get('description') or 'No description.').split())}\n"
-            f"{repo.get('html_url', '')}" for repo in fresh),
-        "prompt": ("These projects for GNOME and GTK were started on GitHub in the last weeks and have gathered "
-                   "some stars:\n\n" + listed + "\n\n"
-                   "Nobody has vetted them: stars say that people are interested, not that the code is safe. Pick "
-                   "the few that could be of use on this system, and for each say in a line what it does, who is "
-                   "behind it and how far along it is, and whether it is packaged for Arch (the repositories; "
-                   "say so if it is only in the AUR or only as source). Do not download, build or run anything "
-                   "from them before I say which, and when I do, try it in the sandbox first."),
+        "details": "\n\n".join(repo_details(repo) for repo in fresh),
+        "keys": names,
+        "prompt": ("These projects for this kind of desktop were started on GitHub in the last weeks and have gathered "
+                   "some stars:\n\n" + listed + "\n\n" + GITHUB_TAIL),
     }]
+
+
+GITHUB_TAIL = ("Nobody has vetted them: stars say that people are interested, not that the code is safe. Pick "
+               "the few that could be of use on this system, and for each say in a line what it does, who is "
+               "behind it and how far along it is, and whether it is packaged for Arch (the repositories; "
+               "say so if it is only in the AUR or only as source). Do not download, build or run anything "
+               "from them before I say which, and when I do, try it in the sandbox first.")
+
+
+def repo_line(repo):
+    return (f"- {repo['full_name']} ({repo.get('stargazers_count', 0)} stars, created {repo.get('created_at', '')[:10]}, "
+            f"{repo.get('language') or 'language unknown'}): {short(' '.join((repo.get('description') or '').split()), 200)} "
+            f"{repo.get('html_url', '')}")
+
+
+def repo_details(repo):
+    return (f"{repo['full_name']}  \u2605 {repo.get('stargazers_count', 0)}  ({repo.get('language') or 'language unknown'}, "
+            f"started {repo.get('created_at', '')[:10]})\n{' '.join((repo.get('description') or 'No description.').split())}\n"
+            f"{repo.get('html_url', '')}")
 
 
 def recipes():
@@ -396,7 +515,7 @@ def news():
     except (OSError, ValueError, AttributeError):
         pass
     found, read = [], False
-    for source in (arch_news, gnome_news, new_apps, github_projects, recipes):
+    for source in (arch_news, gnome_news, new_apps, github_projects, recipes, headlines):
         try:
             found += source()
             read = True
@@ -404,6 +523,19 @@ def news():
             print(f"mentor-advisor: {source.__name__}: {e}", file=sys.stderr)
     if read:
         open(stamp, "w").close()
+        try:
+            with open(MORE) as f:
+                kept = json.load(f)
+        except (OSError, ValueError):
+            kept = {}
+        kept = kept if isinstance(kept, dict) else {}
+        kept.update(MORE_FOUND)  # a source that could not be read today keeps yesterday's
+        with open(MORE + ".new", "w") as f:
+            json.dump(kept, f)
+        os.chmod(MORE + ".new", 0o644)
+        os.replace(MORE + ".new", MORE)
+        if "--print" in sys.argv:
+            print(json.dumps({group: len(more.get("entries", [])) for group, more in kept.items()}), file=sys.stderr)
     return found
 
 

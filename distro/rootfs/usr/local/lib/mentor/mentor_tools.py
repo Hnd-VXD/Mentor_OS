@@ -2167,7 +2167,8 @@ ADVICE = "/var/lib/mentor/advice/suggestions.json"
 ADVICE_STATE = os.path.expanduser("~/.config/mentor/advice.json")
 ADVICE_KINDS = {"updates": "waiting updates", "disk": "a disk that is filling", "failed": "services that failed",
                 "news": "Arch Linux news", "gnome": "GNOME news", "apps": "new applications",
-                "github": "new projects on GitHub", "recipes": "recipes people found useful"}
+                "github": "new projects on GitHub", "recipes": "recipes people found useful",
+                "headlines": "news from Linux sites"}
 
 
 def _advice_state():
