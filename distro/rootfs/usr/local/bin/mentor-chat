@@ -312,7 +312,7 @@ CONVERSATIONS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "conversa
 HISTORY_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "history.jsonl")
 # Asked before a Mentor update is installed: it restarts the system (UPDATES.md).
 # What the desktop menu's "Report a problem" asks of the assistant in the chat it was chosen in.
-REPORT_REQUEST = ("Something is not working as expected and I want to tell Mentor's maker, so an update can fix it. If we "
+REPORT_REQUEST = ("Something is not working as expected and I want to tell the Mentor repair center, so an update can fix it. If we "
                   "were dealing with it in this conversation, describe it from what was said here (a short description, "
                   "not the conversation itself) and tell me in one sentence what you will report; otherwise ask me in one "
                   "short question what is wrong. Look a little yourself, then use problem_report: show me the report as "
@@ -2673,7 +2673,6 @@ class DesktopWindow(Adw.ApplicationWindow):
                               ("new-chat", lambda *_: self.new_or_empty()),
                               ("history", lambda *_: self.show_history()),
                               ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
-                              ("advice", lambda *_: self.show_advice_settings()),
                               ("mentor-settings", lambda *_: self.spawn(["/usr/local/bin/mentor-settings"])),
                               ("report-problem", lambda *_: self.report_problem()),
                               # What the desktop's menu has on stock GNOME.
@@ -2766,12 +2765,15 @@ class DesktopWindow(Adw.ApplicationWindow):
             # it asks first (ask_to_clear); not while the agent is answering in it
             if self.current and not self.current.untouched and not self.current.busy:
                 menu.append("Clear chat", "win.clear-chat")
-            # For this chat: what went wrong here goes to Mentor's maker, after the user has read it.
-            if self.current and not self.current.busy:
-                menu.append("Report a problem\u2026", "win.report-problem")
         # History is the button at the top left (beside +), not here.
-        menu.append("Suggestions\u2026", "win.advice")
-        menu.append("Mentor Settings\u2026", "win.mentor-settings")
+        # Suggestions and Mentor Settings are not here: Mentor Settings is in the applications, and has the
+        # bell's suggestions as a tab (the user's wish, 2026-10-16).
+        # For this chat: what went wrong here goes to Mentor's maker, after the user has read it. Its own
+        # section, last of Mentor's, above GNOME's own (the user's wish).
+        if not self.chat_hidden and self.current and not self.current.busy:
+            report = Gio.Menu()
+            report.append("Report a problem\u2026", "win.report-problem")
+            menu.append_section(None, report)
         system = Gio.Menu()
         system.append("Change Background\u2026", "win.background")
         system.append("Display Settings", "win.displays")
@@ -3159,58 +3161,6 @@ class DesktopWindow(Adw.ApplicationWindow):
                       "system, and what we could do with it, most worthwhile first.\n\n" + prompt)
             shown = "Review this, what can we make of it: " + shown
         self.for_request().send(prompt, shown=shown)
-
-    def show_advice_settings(self):
-        """Suggestions on or off, and everything the user turned away, each with the way back."""
-        dialog = Adw.Dialog(title="Suggestions", content_width=480)
-        view = Adw.ToolbarView()
-        view.add_top_bar(dialog_header(dialog))
-        dialog.set_child(view)
-
-        def change(act):
-            state = self.advice_state()
-            act(state)
-            self.save_advice_state(state)
-            self.refresh_advice()
-            fill()
-
-        def row(title, subtitle, back):
-            button = Gtk.Button(label="Bring back", valign=Gtk.Align.CENTER)
-            button.connect("clicked", lambda *_: change(back))
-            one = Adw.ActionRow(title=title, subtitle=subtitle)
-            one.add_suffix(button)
-            return one
-
-        def fill():
-            state = self.advice_state()
-            page = Adw.PreferencesPage()
-            main = Adw.PreferencesGroup(description=(
-                "The system looks itself over now and then and notes what may be worth your attention. "
-                "It waits behind the bell on the desktop. Nothing goes to the agent until you send it to the chat."))
-            switch = Adw.SwitchRow(title="Suggest things for this system", active=not state["off"])
-            switch.connect("notify::active", lambda *_: change(lambda s: s.update(off=not switch.get_active())))
-            main.add(switch)
-            page.add(main)
-            hidden = Adw.PreferencesGroup(title="Not suggested any more")
-            for kind in state["never"]:
-                hidden.add(row(ADVICE_KINDS.get(kind, kind), "You chose not to be told about these again",
-                               lambda s, kind=kind: s["never"].remove(kind)))
-            try:
-                with open(ADVICE_PATH) as f:
-                    titles = {s["id"]: s.get("title") for s in json.load(f) if isinstance(s, dict) and s.get("id")}
-            except (OSError, ValueError):
-                titles = {}
-            for key, when in sorted(state["until"].items(), key=lambda item: item[1]):
-                if when > time.time():
-                    hidden.add(row(titles.get(key) or key, f"Put off until {told_when(when)}",
-                                   lambda s, key=key: s["until"].pop(key, None)))
-            if not state["never"] and not any(when > time.time() for when in state["until"].values()):
-                hidden.add(Adw.ActionRow(title="Nothing is hidden", subtitle="What you turn away is listed here"))
-            page.add(hidden)
-            view.set_content(page)
-
-        fill()
-        dialog.present(self)
 
     def go_to_workspace(self, index):
         """Show the conversation of a workspace: the one last looked at there, or a new one."""

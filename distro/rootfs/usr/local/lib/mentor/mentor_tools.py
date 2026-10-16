@@ -1695,8 +1695,8 @@ def problem_report(a):
         shown.pop("last", None)
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(shown, f)
-        return 0, (f"Sent: report number {number}, to Mentor's maker only. Tell the user in one sentence that it was sent, "
-                   "that it names no one, and that when an update fixes it, the update's card will say so. It is listed "
+        return 0, (f"Sent: report number {number}, to the Mentor repair center only. Tell the user in one sentence that it was sent to the Mentor repair center, "
+                   "anonymously, and that when an update fixes it, the update's card will say so. It is listed "
                    "in Mentor Settings, Updates, under the problems they reported.")
 
     title = " ".join(str(a.get("title") or "").split())[:100]
@@ -1713,10 +1713,10 @@ def problem_report(a):
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump(shown, f)
-    return 0, ("NOT SENT YET. This is exactly what would be sent, privately, to Mentor's maker (not to the public site, and "
+    return 0, ("NOT SENT YET. This is exactly what would be sent, privately, to the Mentor repair center (where Mentor's maker reads it; not to the public site, and "
                "with nothing that names the user: their home folder is ~, and keys, passwords and emails are taken out). "
                "Show the user the title and the whole text below as it is, say in one or two plain sentences what is in "
-               "it, and ask whether to send it. Only after they answer yes, in a new message, call this again with "
+               "it, and ask in these words: \"Send this to the Mentor repair center anonymously?\" Only after they answer yes, in a new message, call this again with "
                f"confirmed set to true.\n\nTitle: {title}\n\n----- THE REPORT -----\n" + text)
 
 
@@ -2516,7 +2516,7 @@ TOOLS = {
         _schema({"path": _STR, "category": _STR, "new_category": {"type": "object"},
                  "confirmed": {"type": "boolean"}}, ["path"]), recipe_share),
     "problem_report": (
-        "Tell Mentor's maker that something does not work as expected, so the next update can fix it. For when the "
+        "Tell the Mentor repair center (Mentor's maker) that something does not work as expected, so the next update can fix it. For when the "
         "user says something is wrong (with Mentor itself or the system), after you have asked what happened and "
         "looked a little yourself. Two steps: without `confirmed` it puts the report together (the user's words, "
         "what you found, the version, Mentor's checks and recent errors, with the user's name, keys and passwords "

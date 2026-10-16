@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 
 sys.path.insert(0, "/usr/local/lib/mentor")
 import gi
@@ -29,12 +30,13 @@ import mentor_tools
 import mentor_update
 
 CHAT = "/usr/local/bin/mentor-chat"
+ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"  # what the bell holds now (mentor-advisor)
 VERSION_PATH = "/etc/mentor/version"
 UPDATE_STATE = "/var/lib/mentor/updates/state.json"
 UPDATE_WAITING = "/var/lib/mentor/updates/update.json"
 UPDATES_INCLUDED = "/etc/mentor/updates-included.json"
 REPORTS = os.path.join(GLib.get_user_state_dir(), "mentor", "reports.json")  # sent by problem_report
-REPORT_REQUEST = ("Something in Mentor is not working as expected and I want to tell Mentor's maker, so an update can fix "
+REPORT_REQUEST = ("Something in Mentor is not working as expected and I want to tell the Mentor repair center, so an update can fix "
                   "it. Ask me in one short question what is wrong, look a little yourself, then use problem_report: show "
                   "me the report as it is and wait for my yes before sending. /etc/mentor/UPDATES.md says how.")
 MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
@@ -138,8 +140,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         state = mentor_tools._advice_state()
         off = set(mentor_settings.get("watch_off") or [])
         tell = Adw.PreferencesGroup(title="What Mentor tells me")
-        tell.add(switch("Tips and news", "Behind the bell on the desktop", not state["off"],
-                        lambda on: self.save_advice(lambda s: s.update(off=not on))))
         tell.add(switch("Warnings when something is wrong", "A yellow or red card in the chat",
                         not set(WATCHES) <= off, self.all_warnings))
         page.add(tell)
@@ -153,11 +153,8 @@ class SettingsWindow(Adw.ApplicationWindow):
 
 
         more = Adw.PreferencesGroup()
-        fold = Adw.ExpanderRow(title="More choices", subtitle="Pick which tips and warnings you want")
+        fold = Adw.ExpanderRow(title="More choices", subtitle="Pick which warnings you want, and a few more")
         self.watch_rows = {}
-        for kind, title in KINDS.items():
-            fold.add_row(switch(title, "", kind not in state["never"], lambda on, kind=kind: self.save_advice(
-                lambda s: s.update(never=[k for k in s["never"] if k != kind] + ([] if on else [kind])))))
         for key, title in WATCHES.items():
             row = switch("Warn me about " + title, "", key not in off,
                          lambda on, key=key: self.busy or self.one_warning(key, on))
@@ -178,6 +175,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         # Two tabs: these settings, and Mentor's own updates with their history (the user's wish).
         self.tabs = Adw.ViewStack()
         self.tabs.add_titled_with_icon(page, "settings", "Settings", "emblem-system-symbolic")
+        self.tabs.add_titled_with_icon(self.suggestions_page(), "suggestions", "Suggestions", "starred-symbolic")
         self.tabs.add_titled_with_icon(self.updates_page(), "updates", "Updates", "software-update-available-symbolic")
         header = Adw.HeaderBar()
         header.set_title_widget(Adw.ViewSwitcher(stack=self.tabs, policy=Adw.ViewSwitcherPolicy.WIDE))
@@ -255,6 +253,71 @@ class SettingsWindow(Adw.ApplicationWindow):
             row.set_active(wanted)
         self.busy = False
 
+    # --- suggestions (their own tab; they were a window of the desktop's menu) ------------------------
+
+    def suggestions_page(self):
+        """The bell's suggestions: on or off, which kinds, and everything the user turned away, each with
+        the way back. Kept in ~/.config/mentor/advice.json, which the desktop watches (SUGGESTIONS.md)."""
+        page = WidePage()
+        main = Adw.PreferencesGroup(description=(
+            "The system looks itself over now and then and notes what may be worth your attention. It waits behind "
+            "the bell on the desktop. Nothing goes to the assistant until you send it to the chat."))
+        state = mentor_tools._advice_state()
+        main.add(switch("Suggest things for this system", "Behind the bell on the desktop", not state["off"],
+                        lambda on: self.save_advice(lambda s: s.update(off=not on))))
+        page.add(main)
+        kinds = Adw.PreferencesGroup(title="What to suggest")
+        self.kind_rows = {}
+        for kind, title in KINDS.items():
+            row = switch(title, "", kind not in state["never"], lambda on, kind=kind: self.busy or self.save_advice(
+                lambda s: s.update(never=[k for k in s["never"] if k != kind] + ([] if on else [kind]))) or self.show_hidden())
+            kinds.add(row)
+            self.kind_rows[kind] = row
+        page.add(kinds)
+        self.hidden = Adw.PreferencesGroup(title="Not suggested any more")
+        self.hidden_rows = []
+        page.add(self.hidden)
+        self.show_hidden()
+        return page
+
+    def show_hidden(self):
+        """What the user turned away: kinds they never want, and suggestions put off until a day."""
+        for row in self.hidden_rows:
+            self.hidden.remove(row)
+        self.hidden_rows = []
+        state = mentor_tools._advice_state()
+        self.busy = True
+        for kind, row in self.kind_rows.items():
+            row.set_active(kind not in state["never"])
+        self.busy = False
+
+        def bring_back(change):
+            self.save_advice(change)
+            self.show_hidden()
+
+        def add(title, subtitle, change):
+            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            row.add_suffix(button("Bring back", lambda: bring_back(change)))
+            self.hidden.add(row)
+            self.hidden_rows.append(row)
+
+        for kind in state["never"]:
+            add(KINDS.get(kind, kind), "You chose not to be told about these again",
+                lambda s, kind=kind: s.update(never=[k for k in s["never"] if k != kind]))
+        try:
+            with open(ADVICE_PATH) as f:
+                titles = {s["id"]: s.get("title") for s in json.load(f) if isinstance(s, dict) and s.get("id")}
+        except (OSError, ValueError):
+            titles = {}
+        for key, when in sorted(state.get("until", {}).items(), key=lambda item: item[1]):
+            if when > time.time():
+                add(titles.get(key) or key, "Put off until " + time.strftime("%-d %B", time.localtime(when)),
+                    lambda s, key=key: s["until"].pop(key, None))
+        if not self.hidden_rows:
+            row = Adw.ActionRow(title="Nothing is hidden", subtitle="What you turn away is listed here")
+            self.hidden.add(row)
+            self.hidden_rows.append(row)
+
     # --- updates (their own tab) ---------------------------------------------------------
 
     def updates_page(self):
@@ -285,7 +348,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         page.add(self.history)
         # The problems this user reported to Mentor's maker (problem_report), and which update fixed each.
         self.reports = Adw.PreferencesGroup(title="Problems you reported",
-                                            description="Only Mentor's maker reads them. An update that fixes one says so")
+                                            description="Only the Mentor repair center reads them. An update that fixes one says so")
         report = Adw.ActionRow(title="Something is not working as expected?",
                                subtitle="Mentor puts a short report together, shows it to you, and sends it only if you say so")
         report.add_suffix(button("Report a problem", lambda: ask(REPORT_REQUEST)))
@@ -585,9 +648,13 @@ class SettingsApp(Adw.Application):
             Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                       Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             self.window = SettingsWindow(self)
-        if "updates" in command_line.get_arguments()[1:]:  # mentor settings updates: straight to that tab
+        asked = command_line.get_arguments()[1:]
+        if "updates" in asked:  # mentor settings updates: straight to that tab
             self.window.tabs.set_visible_child_name("updates")
             self.window.show_update()
+        elif "suggestions" in asked:
+            self.window.tabs.set_visible_child_name("suggestions")
+            self.window.show_hidden()
         self.window.present()
         return 0
 

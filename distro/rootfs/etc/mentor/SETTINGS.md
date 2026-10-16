@@ -4,7 +4,7 @@ This is for the agent, written so that a small model can follow it. Mentor is fo
 
 ## What the user has
 
-A window, **Mentor Settings**: in the application grid, in the right-click menu of the desktop ("Mentor Settings…"), and `mentor settings` in a terminal.
+A window, **Mentor Settings**: in the application grid, and `mentor settings` in a terminal (`mentor settings suggestions` or `updates` opens that tab). It has three tabs: **Settings**, **Suggestions** (the bell's suggestions: on or off, which kinds, and what was turned away, each with Bring back) and **Updates**.
 
 | On the page | What it does |
 |---|---|
@@ -15,10 +15,10 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | "Everything looks fine" or "2 things need a look", with "Let Mentor look" | what the safety check finds, handed to you in one request |
 | "Change my password" | a Console window on `passwd` |
 | **What Mentor tells me** | |
-| "Tips and news" | the bell on the desktop, all of it |
+| (tab Suggestions) "Suggest things for this system", "What to suggest", "Not suggested any more" | the bell on the desktop: all of it on or off, each kind, and what was turned away with Bring back |
 | "Warnings when something is wrong" | the yellow and red cards in the chat, all of them |
 | **What Mentor did** "Show" | the journal (JOURNAL.md), to read and search |
-| **More choices** (folded away) | each kind of tip (updates, a filling disk, something that stopped, news of the system, news of the desktop, new applications, new projects on GitHub); each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "Show the exact command when my password is asked" |
+| **More choices** (folded away) | each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "Show the exact command when my password is asked" |
 
 The window has two tabs: **Settings** (the table above) and **Updates** (`mentor settings updates` opens it): which Mentor this is ("Mentor 15.10.26.00"), an update that is waiting with **What's new?** and **Update**, "Look for an update now", and **Every update** this Mentor had, by year and then month (rows that open), newest first, each with **Ask Mentor**, and **Problems you reported** with **Report a problem** and each report's state, "Sent, not fixed yet" or "Fixed in Mentor NAME" (UPDATES.md).
 
@@ -54,7 +54,6 @@ A key that is not in `settings.json` has its first value.
 |---|---|---|
 | The window | `/usr/local/bin/mentor-settings` | GTK 4 and libadwaita: one `Adw.PreferencesPage` in `SettingsWindow`; `check` and `checked` fill the safety rows off the window's thread; `on_firewall`; `save_advice`, `one_warning`, `all_warnings`; `show_changes` (the journal in an `Adw.Dialog`). One window: a second start shows the same one |
 | Its place in the application grid | `/usr/share/applications/org.mentor.Settings.desktop` | |
-| Its place on the desktop's menu | `on_right_click` in `mentor-chat` ("Mentor Settings…", action `win.mentor-settings`) | |
 | `mentor settings` | `/usr/local/bin/mentor` | starts the window |
 | The file of choices | `/usr/local/lib/mentor/mentor_settings.py` | `load()`, `get(key)`, `put(key, value)`, `DEFAULTS` |
 | Who reads `watch_off` | `main` and `group` in `mentor-watch` | a finding whose group is switched off is not raised |
@@ -74,13 +73,12 @@ It leans on: `python-gobject`, `gtk4`, `libadwaita` (`Adw.PreferencesPage`, `Adw
 | Check | Good answer |
 |---|---|
 | `mentor settings` | the window; "Checking…" turns into "Everything looks fine" or "N things need a look" |
-| switch "Tips and news" off, then `cat ~/.config/mentor/advice.json` | `"off": true`; on again: `false` |
+| switch "Suggest things for this system" (tab Suggestions) off, then `cat ~/.config/mentor/advice.json` | `"off": true`; on again: `false` |
 | under More choices, switch "New projects on GitHub" off, then the same | `"never": ["github"]` |
 | switch "Warnings when something is wrong" off, then `cat ~/.config/mentor/settings.json` | `"watch_off"` with all five names; on again: `[]` |
 | `python3 -c "import sys; sys.path.insert(0,'/usr/local/lib/mentor'); import mentor_settings as s; print(s.load())"` | the choices, with the first values for what was never set |
 | the firewall's switch, off and on | the password is asked, with a sentence saying what for; `systemctl is-active nftables` says `inactive`, then `active`; `mentor journal -n 2` has both |
 | "Show" | the journal, or "Nothing yet…" |
-| right-click on the desktop | "Mentor Settings…" in the menu |
 | `journalctl -b --user -o cat \| grep -B2 -A14 Traceback` | nothing from `mentor-settings` |
 
 ## When it is broken
