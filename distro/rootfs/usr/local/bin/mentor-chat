@@ -2688,7 +2688,6 @@ class DesktopWindow(Adw.ApplicationWindow):
                               ("report-problem", lambda *_: self.report_problem()),
                               # What the desktop's menu has on stock GNOME.
                               ("background", lambda *_: self.spawn(["gnome-control-center", "background"])),
-                              ("displays", lambda *_: self.spawn(["gnome-control-center", "display"])),
                               ("settings", lambda *_: self.spawn(["gnome-control-center"]))):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", handler)
@@ -2777,8 +2776,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             if self.current and not self.current.untouched and not self.current.busy:
                 menu.append("Clear chat", "win.clear-chat")
         # History is the button at the top left (beside +), not here.
-        # Suggestions and Mentor Settings are not here: Mentor Settings is in the applications, and has the
-        # bell's suggestions as a tab (the user's wish, 2026-10-16).
+        # Suggestions are a tab of Mentor Settings, which is in the GNOME section below (the user's wish, 2026-10-16).
         # For this chat: what went wrong here goes to Mentor's maker, after the user has read it. Its own
         # section, last of Mentor's, above GNOME's own (the user's wish).
         if not self.chat_hidden and self.current and not self.current.busy:
@@ -2787,7 +2785,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             menu.append_section(None, report)
         system = Gio.Menu()
         system.append("Change Background\u2026", "win.background")
-        system.append("Display Settings", "win.displays")
+        # Mentor Settings beside GNOME's own Settings; Display Settings is one click inside Settings (the user's wish).
+        system.append("Mentor Settings\u2026", "win.mentor-settings")
         system.append("Settings", "win.settings")
         menu.append_section(None, system)
         self.context_menu.set_menu_model(menu)

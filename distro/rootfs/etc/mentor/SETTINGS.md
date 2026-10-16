@@ -4,7 +4,7 @@ This is for the agent, written so that a small model can follow it. Mentor is fo
 
 ## What the user has
 
-A window, **Mentor Settings**: in the application grid, and `mentor settings` in a terminal (`mentor settings suggestions` or `updates` opens that tab). It has three tabs: **Settings**, **Suggestions** (the bell's suggestions: on or off, which kinds, and what was turned away, each with Bring back) and **Updates**.
+A window, **Mentor Settings**: in the application grid, in the right-click menu of the desktop ("Mentor Settings…", beside GNOME's Settings), and `mentor settings` in a terminal (`mentor settings suggestions` or `updates` opens that tab). It has three tabs: **Settings**, **Suggestions** (the bell's suggestions: on or off, which kinds, and what was turned away, each with Bring back) and **Updates**.
 
 | On the page | What it does |
 |---|---|

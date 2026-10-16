@@ -52,5 +52,11 @@
     "name": "16.10.26.04",
     "summary": "Every card in the chat can now be talked about, update cards no longer pop up, and switching a recipe off asks first.",
     "published": "2026-10-16 09:35"
+  },
+  {
+    "version": 202610160639,
+    "name": "16.10.26.05",
+    "summary": "Mentor Settings is back in the desktop menu, next to Settings, and the menu now stays exactly as it is.",
+    "published": "2026-10-16 09:39"
   }
 ]
