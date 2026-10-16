@@ -406,7 +406,7 @@ def cmd_notice(args):
     """Tell the user something in the assistant's chat: a yellow card for a warning, a red one
     for a problem. For what the agent builds to speak with (see /etc/mentor/ASSISTANT.md)."""
     print(mentor_tools.leave_notice(args.level, args.title, args.text, args.prompt, update=args.update,
-                                    action=args.action))
+                                    action=args.action, quiet=args.quiet))
 
 
 def cmd_update(args):
@@ -557,6 +557,7 @@ p.add_argument("text", nargs="?", default="")
 p.add_argument("--prompt", help="what goes to the agent when the user presses Let Mentor look")
 p.add_argument("--update", help=argparse.SUPPRESS)  # the updater's card, with its Update button
 p.add_argument("--action", help="the label of the button that hands the prompt to the agent (Let Mentor look)")
+p.add_argument("--quiet", action="store_true", help="only the card in the chat, no pop-up notification")
 p.set_defaults(func=cmd_notice)
 p = sub.add_parser("update", help="which version of Mentor this is, and whether an update is waiting")
 p.set_defaults(func=cmd_update)

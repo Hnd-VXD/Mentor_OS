@@ -46,5 +46,11 @@
     "name": "16.10.26.03",
     "summary": "In the Recipes app, switching a recipe off only switches it off, and a widget's switch works at once.",
     "published": "2026-10-16 09:12"
+  },
+  {
+    "version": 202610160635,
+    "name": "16.10.26.04",
+    "summary": "Every card in the chat can now be talked about, update cards no longer pop up, and switching a recipe off asks first.",
+    "published": "2026-10-16 09:35"
   }
 ]

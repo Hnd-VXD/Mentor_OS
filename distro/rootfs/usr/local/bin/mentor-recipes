@@ -344,6 +344,26 @@ class RecipesWindow(Adw.ApplicationWindow):
         def flipped(widget, _param):
             if widget.get_active() == state["on"]:
                 return
+            if not widget.get_active():
+                # Off asks first (the user's wish, 2026-10-16); on does not.
+                dialog = Adw.AlertDialog(heading=f"Switch off “{title}”?",
+                                         body="It stops working until you switch it on again here. Nothing is deleted.")
+                dialog.add_response("cancel", "Cancel")
+                dialog.add_response("off", "Switch off")
+                dialog.set_default_response("cancel")
+                dialog.set_close_response("cancel")
+
+                def answered(_dialog, response):
+                    if response == "off":
+                        go(widget)
+                    else:
+                        widget.set_active(state["on"])  # as it was; flipped sees no change
+                dialog.connect("response", answered)
+                dialog.present(row.get_root())
+                return
+            go(widget)
+
+        def go(widget):
             switch.set_sensitive(False)
             if uuid:
                 wanted = widget.get_active()

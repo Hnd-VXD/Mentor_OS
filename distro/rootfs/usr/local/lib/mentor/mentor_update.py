@@ -235,7 +235,8 @@ def notice(level, title, text, *extra):
     uid, gid, name = user
     argv = ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups", "env", f"HOME={pwd.getpwuid(uid).pw_dir}",
             f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "PATH=/usr/local/bin:/usr/bin",
-            "/usr/local/bin/mentor", "notice", level, title, text, *extra]
+            # Quiet: the card waits in the chat; GNOME's pop-up is not wanted for updates (the user's wish).
+            "/usr/local/bin/mentor", "notice", "--quiet", level, title, text, *extra]
     return subprocess.run(argv, capture_output=True, timeout=30).returncode == 0
 
 

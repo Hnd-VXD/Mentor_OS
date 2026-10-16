@@ -1664,6 +1664,17 @@ class Conversation(Gtk.Box):
             quiet.add_css_class("flat")
             quiet.connect("clicked", lambda *_: (silence(), self.messages.remove(card)))
             buttons.append(quiet)
+        # Every card can be taken into a conversation (the user's wish, 2026-10-16): one with nothing of its
+        # own to send gets a plain request about what it says. It goes to a new conversation (for_request).
+        if not prompt:
+            if update:
+                prompt, action = (f"An update of Mentor is waiting: “{title}”. What it brings: {text}\n\nTell me "
+                                  "as simply as you can what it changes for me. Do not install it: I decide with the "
+                                  "Update button."), "What's new?"
+            else:
+                prompt, action = (f"Mentor showed me this card: “{title}”. {text}\n\nTell me in plain words "
+                                  "what it means and whether I need to do anything. Do not change anything before I "
+                                  "agree."), "Talk about it"
         if prompt:
             look = Gtk.Button(label=action)
             look.add_css_class("pill")
@@ -3724,7 +3735,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             names.sort(key=lambda name: os.path.getmtime(os.path.join(NOTICES_DIR, name)))
         except OSError:
             return GLib.SOURCE_REMOVE
-        shown = []
+        shown, loud = [], []
         for name in names:
             path = os.path.join(NOTICES_DIR, name)
             try:
@@ -3737,6 +3748,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             if not title or not self.current:
                 continue
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
+            if notice.get("quiet") is not True:  # a quiet one is only a card: no pop-up for it
+                loud.append((title, text))
             self.current.add_notice(notice.get("level") if notice.get("level") in ("problem", "idea") else "warning", title, text, prompt,
                                     auto=notice.get("auto") is True,
                                     update=notice.get("update") if isinstance(notice.get("update"), str) else None,
@@ -3744,9 +3757,9 @@ class DesktopWindow(Adw.ApplicationWindow):
             shown.append((title, text))
         if shown:
             self.show_chat()
-            if not self.is_active():  # the desktop is covered: say that there is something on it
-                notification = Gio.Notification.new(shown[-1][0])
-                notification.set_body(shown[-1][1] if len(shown[-1][1]) <= 160 else shown[-1][1][:159] + "…")
+            if loud and not self.is_active():  # the desktop is covered: say that there is something on it
+                notification = Gio.Notification.new(loud[-1][0])
+                notification.set_body(loud[-1][1] if len(loud[-1][1]) <= 160 else loud[-1][1][:159] + "…")
                 notification.set_default_action("app.show")
                 self.get_application().send_notification("notice", notification)
         return GLib.SOURCE_REMOVE
