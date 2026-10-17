@@ -41,9 +41,28 @@ SECRETS = [
 ]
 
 
+GREEK = {"α": "a", "β": "v", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "i", "θ": "th", "ι": "i", "κ": "k",
+         "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p", "ρ": "r", "σ": "s", "ς": "s", "τ": "t",
+         "υ": "y", "φ": "f", "χ": "ch", "ψ": "ps", "ω": "o"}
+
+
+def latin(text):
+    """Lower-case Latin letters, digits and dashes for a name: accents dropped, Greek written in Latin
+    ("Ρύθμιση ήχου" is rythmisi-ichou). Other scripts are left out. For file names (recipes, web apps)."""
+    import unicodedata
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+    plain = plain.replace("ου", "ou")
+    return re.sub(r"[^a-z0-9]+", "-", "".join(GREEK.get(c, c) for c in plain)).strip("-")
+
+
 def slug(title):
-    text = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return text[:60] or "recipe"
+    """The file name of a recipe. A title in a script latin() leaves out gets a name of its own too,
+    so that two recipes never share one file."""
+    import hashlib
+    text = latin(title)[:60].strip("-")
+    if not text and title.strip():
+        text = "recipe-" + hashlib.sha256(title.strip().encode()).hexdigest()[:8]
+    return text or "recipe"
 
 
 def scan(text):

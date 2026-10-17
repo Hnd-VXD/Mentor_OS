@@ -184,5 +184,11 @@
     "name": "17.10.26.18",
     "summary": "The assistant recovers from its own small mistakes: when it asks a tool for something in the wrong form, it is told and tries again, instead of stopping in the middle of your request.",
     "published": "2026-10-18 02:12"
+  },
+  {
+    "version": 202610172319,
+    "name": "17.10.26.19",
+    "summary": "Recipes and web apps with Greek names each get a file of their own, undoing a change that is not there no longer asks for your password, and the assistant keeps going when its engine says something unexpected.",
+    "published": "2026-10-18 02:21"
   }
 ]

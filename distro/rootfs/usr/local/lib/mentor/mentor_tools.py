@@ -774,6 +774,14 @@ def change_list(a):
 
 
 def change_undo(a):
+    # Looked at first, so that nobody types their password for a change that is not there.
+    try:
+        with open(os.path.join(CHANGES, os.path.basename(str(a["id"])), "manifest.json")) as f:
+            state = json.load(f).get("state")
+    except (OSError, ValueError):
+        return 1, f"There is no applied change {a['id']!r}. The changes:\n" + change_list({})[1]
+    if state == "undone":
+        return 1, f"The change {a['id']} was undone already."
     stop = _explained("shell", a, "Mentor wants to undo a change it made to the system earlier: the files go "
                       "back to how they were before it.", f"change {a['id']}")
     if stop:
@@ -1587,7 +1595,7 @@ def _webapp_icon(url, slug, icon_url=None):
 
 
 def _webapp_slug(name):
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return mentor_recipes.latin(name)  # Greek names too: two of them on one site are two apps
 
 
 def webapp_install(a):

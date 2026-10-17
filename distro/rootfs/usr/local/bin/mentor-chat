@@ -2323,7 +2323,11 @@ class Conversation(Gtk.Box):
         except ValueError:
             event = None
         if isinstance(event, dict):
-            {"codex": self.on_codex_event, "gemini": self.on_agy_event}.get(self.engine, self.on_event)(event)
+            try:
+                {"codex": self.on_codex_event, "gemini": self.on_agy_event}.get(self.engine, self.on_event)(event)
+            except Exception as e:  # an event in a shape not met before: the rest of the answer still comes
+                print(f"mentor-chat: an event of {self.engine} was not understood: {type(e).__name__}: {e}",
+                      file=sys.stderr)
         elif line.strip() and self.engine != "codex":  # Codex logs to the same place; its events say enough
             self.stray_output.append(line)
         stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, process)

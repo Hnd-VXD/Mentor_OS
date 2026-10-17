@@ -54,6 +54,11 @@ def main():
         except ValueError:
             reply = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
         else:
+            if not isinstance(message, dict):  # one bad line must not end the server, and every tool with it
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": None,
+                                             "error": {"code": -32600, "message": "invalid request"}}) + "\n")
+                sys.stdout.flush()
+                continue
             if "id" not in message:
                 continue  # notification
             reply = {"jsonrpc": "2.0", "id": message["id"]}

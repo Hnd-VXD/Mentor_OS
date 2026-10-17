@@ -436,7 +436,10 @@ def serve():
             except ValueError:
                 continue
             if isinstance(message, dict):
-                handle(message)
+                try:
+                    handle(message)
+                except Exception as e:  # one odd message must not end the link (time zone, volume, Hello)
+                    log(f"a message from Mentor.exe could not be handled: {type(e).__name__}: {e}")
 
 
 def main():
