@@ -23,6 +23,14 @@ import time
 
 SINK = "mentor_speakers"
 LOOP = "mentor-volume-loop"
+# The laptop's volume keys reach Windows and, through QEMU, this system too: one press moved the volume
+# twice (seen 2026-10-17). While joined, Windows' keys are the ones: GNOME's own volume keys are emptied
+# here, and the user's own values put back afterwards (kept in KEYS_KEPT meanwhile, also over a crash).
+MEDIA_KEYS = "org.gnome.settings-daemon.plugins.media-keys"
+VOLUME_KEYS = [f"volume-{what}{kind}-static" for what in ("up", "down") for kind in ("", "-quiet", "-precise")] + \
+              ["volume-mute-static", "volume-mute-quiet-static"]
+KEYS_KEPT = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor",
+                         "volume-keys.json")
 lock = threading.Lock()
 applied = None  # (volume, mute) last set from Windows: its echo is not sent back
 
@@ -70,7 +78,43 @@ def same(a, b):
     return a and b and abs(a[0] - b[0]) < 0.011 and a[1] == b[1]
 
 
+def keys_off():
+    if not os.path.exists(KEYS_KEPT):  # kept from before a crash: those are the user's
+        kept = {key: subprocess.run(["gsettings", "get", MEDIA_KEYS, key], capture_output=True, text=True).stdout.strip()
+                for key in VOLUME_KEYS}
+        os.makedirs(os.path.dirname(KEYS_KEPT), exist_ok=True)
+        with open(KEYS_KEPT, "w") as f:
+            json.dump(kept, f)
+    for key in VOLUME_KEYS:
+        subprocess.run(["gsettings", "set", MEDIA_KEYS, key, "@as []"], capture_output=True)
+    media_keys_again()
+
+
+def media_keys_again():
+    """GNOME's media-keys service reads its volume keys only when it starts (GNOME 51): started again here.
+    The unit refuses a restart; its target starts it."""
+    subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "/usr/lib/gsd-media-keys"], capture_output=True)
+    time.sleep(1)
+    subprocess.run(["systemctl", "--user", "start", "org.gnome.SettingsDaemon.MediaKeys.target"], capture_output=True,
+                   timeout=20)
+
+
+def keys_back():
+    try:
+        with open(KEYS_KEPT) as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        return
+    for key in VOLUME_KEYS:
+        value = kept.get(key)
+        subprocess.run(["gsettings", "set", MEDIA_KEYS, key, value] if value else
+                       ["gsettings", "reset", MEDIA_KEYS, key], capture_output=True)
+    os.unlink(KEYS_KEPT)
+    media_keys_again()
+
+
 def set_up(real):
+    keys_off()
     if SINK not in sinks():
         subprocess.run(["pw-cli", "create-node", "adapter",
                         "{ factory.name=support.null-audio-sink node.name=%s node.description=\"Speakers\" "
@@ -92,6 +136,7 @@ def set_up(real):
 
 
 def take_down(real, loop):
+    keys_back()
     now = state()
     if real:
         pactl("set-default-sink", real)

@@ -142,5 +142,11 @@
     "name": "17.10.26.09",
     "summary": "Your laptop's volume keys, Windows' volume and Mentor's volume are now one and the same (with the newest Mentor program on Windows).",
     "published": "2026-10-17 23:30"
+  },
+  {
+    "version": 202610172044,
+    "name": "17.10.26.10",
+    "summary": "Your laptop's volume keys, Windows' volume and Mentor's volume are one and the same, one step per key press (with the newest Mentor program on Windows).",
+    "published": "2026-10-17 23:45"
   }
 ]

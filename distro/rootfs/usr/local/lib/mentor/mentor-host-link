@@ -334,7 +334,8 @@ class Volume:
             uid, gid, name = user
             self.helper = subprocess.Popen(
                 ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups", "env", f"HOME={pwd.getpwuid(uid).pw_dir}",
-                 f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "PATH=/usr/local/bin:/usr/bin", VOLUME_HELPER],
+                 f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}", f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+                 "PATH=/usr/local/bin:/usr/bin", VOLUME_HELPER],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             helper = self.helper
         threading.Thread(target=self.read, args=(helper,), daemon=True).start()
