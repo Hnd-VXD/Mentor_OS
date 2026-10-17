@@ -284,7 +284,18 @@ def desktop_check(a):
     return 0, out  # things that need attention are a finding, not a failure of the tool
 
 
+UPGRADE_FREE_BYTES = 10 << 30  # as Omarchy's omarchy-update-requires-free-space
+INITCPIO_FAILED = "[mentor: the initramfs was not made]"  # mentor_core.system_upgrade's last line then
+
+
 def system_upgrade(a):
+    disk = os.statvfs("/")
+    free = disk.f_bavail * disk.f_frsize
+    if free < UPGRADE_FREE_BYTES:
+        return 1, (f"Nothing was upgraded. An upgrade needs about 10 GB free on the disk and only "
+                   f"{free / (1 << 30):.1f} GB is free. Tell the user this in one plain sentence, and offer to "
+                   "make room (pacman's package cache with `paccache -rk1`, old flatpak runtimes with "
+                   "`flatpak uninstall --unused`, large files they no longer need) before trying again.")
     jump = None if a.get("gnome_major_ok") else _gnome_jump()
     if jump:
         installed, coming, supported = jump
@@ -315,6 +326,16 @@ def system_upgrade(a):
         return stop
     note = _restore_point("Before a full system upgrade")
     code, out = _privileged(HELPER, "system_upgrade", {}, timeout=3600)
+    if INITCPIO_FAILED in out:
+        leave_notice("problem", "The update did not finish making the start-up files",
+                     "Mentor should not be restarted until this is fixed, or it may not start.",
+                     prompt="The last system upgrade did not make the initramfs (mkinitcpio). Find out why "
+                            "(/var/log/pacman.log, mkinitcpio -P in the sandbox) and fix it before any restart.")
+        out += ("\n[The initramfs was not made (mkinitcpio's hook ran without \"image generation successful\"). "
+                "A red card now tells the user. Do not suggest a restart and do not call system_restart: say in "
+                "one plain sentence that the update needs one more fix before Mentor is restarted, then find "
+                "why from the output above and /var/log/pacman.log and make it with `mkinitcpio -P` in the "
+                "sandbox (BOOT.md).]")
     return code, f"{note}\n{out}"
 
 
@@ -2361,7 +2382,8 @@ TOOLS = {
         "Remove packages and their unneeded dependencies with pacman. Asks the user for approval.",
         _schema({"packages": _PACKAGES, "explain": _EXPLAIN}, ["packages"]), package_remove),
     "system_upgrade": (
-        "Upgrade every package on the system (pacman -Syu). Asks the user for approval. Can take several minutes. "
+        "Upgrade every package on the system (archlinux-keyring first, then pacman -Su in the same run). Asks the "
+        "user for approval. Can take several minutes. Refuses with less than about 10 GB free on /. "
         "When the upgrade would bring a new major version of GNOME it stops first and tells you what that means "
         "for this system: pass that on, and call again with gnome_major_ok only after the user has said to go ahead.",
         _schema({"gnome_major_ok": {"type": "boolean", "description":

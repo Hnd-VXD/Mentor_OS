@@ -105,8 +105,51 @@ def pkg_remove(args, policy):
     return ["pacman", "-Rns", "--noconfirm", "--", *names]
 
 
+# The last line system_upgrade prints when the initramfs was not made (mentor_tools reads it).
+INITCPIO_FAILED = "[mentor: the initramfs was not made]"
+
+
+def _initcpio_made(lines):
+    text = "".join(lines)
+    return bool(re.search(r"(?i)image generation successful", text)) and not re.search(r"==> ERROR|command failed", text)
+
+
+def _pacman_watched(argv):
+    """Run pacman with its output passed on as it comes. Returns (exit code, whether mkinitcpio's
+    hook ran, whether every image it made says it was made)."""
+    ran = made = False
+    section = None
+    with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          cwd="/", text=True, errors="replace", env={**os.environ, "LC_ALL": "C"}) as p:
+        for line in p.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if "Updating linux initcpios" in line:
+                ran, section = True, []
+            elif section is not None and re.match(r"^\(\s*\d+/\d+\) ", line):  # the next hook
+                made, section = made or _initcpio_made(section), None
+            elif section is not None:
+                section.append(line)
+    if section is not None:  # it was the last hook
+        made = made or _initcpio_made(section)
+    return p.returncode, ran, made
+
+
 def system_upgrade(args, policy):
-    return ["pacman", "-Syu", "--noconfirm"]
+    # The signing keys first (as Omarchy's omarchy-update-keyring): a Mentor that sat unused for
+    # months otherwise stops at "invalid or corrupted package (PGP signature)". The full -Su
+    # follows in the same run, so the refreshed databases never leave a partial upgrade.
+    print("Refreshing the signing keys (archlinux-keyring)...", flush=True)
+    code = subprocess.run(["pacman", "-Sy", "--needed", "--noconfirm", "archlinux-keyring"],
+                          stdin=subprocess.DEVNULL, cwd="/").returncode
+    if code != 0:
+        print("mentor: the signing keys (archlinux-keyring) could not be refreshed. Nothing was upgraded.", flush=True)
+        return code
+    code, ran, made = _pacman_watched(["pacman", "-Su", "--noconfirm"])
+    # As Omarchy's omarchy-update-analyze-logs: an initramfs that was not made does not start.
+    if ran and not made:
+        print(INITCPIO_FAILED, flush=True)
+    return code
 
 
 def service(args, policy):

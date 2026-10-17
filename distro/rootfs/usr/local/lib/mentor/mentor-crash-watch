@@ -1,0 +1,102 @@
+#!/usr/bin/python3
+"""Tell the user, in the chat, when a program crashes.
+
+Runs for as long as the user is logged in (mentor-crash-watch.service) and follows the journal
+for the record systemd-coredump writes for every program that crashed (MESSAGE_ID below). Each
+crash becomes one yellow card, "Firefox closed unexpectedly", whose Let Mentor look hands the
+agent what was written down. One program is shown at most once each SAME_AGAIN seconds, so a
+program that crashes over and over is one card, not a pile; Mentor's own short-lived helpers
+are left out. See /etc/mentor/FREEZES.md, "When a program crashes".
+
+The idea comes from Omarchy's bin/omarchy-crash-watch (github.com/omacom/omarchy, MIT).
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_tools
+
+COREDUMP = "fc2e22bc6ee647b6b90729ab34a250b1"  # systemd-coredump's "Process … dumped core"
+SAME_AGAIN = 60  # seconds before the same program gets another card
+FIELDS = ("COREDUMP_COMM", "COREDUMP_EXE", "COREDUMP_SIGNAL", "COREDUMP_SIGNAL_NAME", "COREDUMP_PID",
+          "COREDUMP_UID", "COREDUMP_CMDLINE", "COREDUMP_CGROUP", "COREDUMP_UNIT", "COREDUMP_USER_UNIT",
+          "COREDUMP_TIMESTAMP")
+OURS = ("/usr/local/lib/mentor/", "/usr/local/bin/mentor")  # Mentor's helpers: their own faults go elsewhere
+SIGNALS = {4: "SIGILL", 5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 11: "SIGSEGV", 31: "SIGSYS"}
+
+
+def ours(crash):
+    """A helper of Mentor's (they are Python, so the program is python and the script is in the command line).
+    mentor-chat, the assistant, is not one: its crash is worth a card."""
+    found = [crash.get("COREDUMP_EXE") or ""] + (crash.get("COREDUMP_CMDLINE") or "").split()[:2]
+    return any(part.startswith(OURS) and not part.endswith("/mentor-chat") for part in found)
+
+
+def app_name(crash):
+    """What the user would call it: the app's name from its .desktop file where the cgroup names one
+    (app-gnome-firefox-1234.scope), else the program's own name."""
+    comm = crash.get("COREDUMP_COMM") or os.path.basename(crash.get("COREDUMP_EXE") or "") or "A program"
+    found = re.search(r"/app-(?:gnome-|flatpak-)?(.+?)-\d+\.(?:scope|service)", crash.get("COREDUMP_CGROUP") or "")
+    if not found:
+        return comm
+    app = found.group(1).encode().decode("unicode_escape")
+    for folder in ("/usr/share/applications", "/usr/local/share/applications",
+                   "/var/lib/flatpak/exports/share/applications",
+                   os.path.expanduser("~/.local/share/applications")):
+        try:
+            with open(os.path.join(folder, app + ".desktop")) as f:
+                name = re.search(r"(?m)^Name=(.+)$", f.read())
+            if name:
+                return name.group(1).strip()
+        except OSError:
+            pass
+    return comm
+
+
+def tell(crash):
+    name = app_name(crash)
+    signal = crash.get("COREDUMP_SIGNAL_NAME") or SIGNALS.get(int(crash.get("COREDUMP_SIGNAL") or 0), "")
+    details = {key.removeprefix("COREDUMP_").lower(): value for key, value in crash.items() if value}
+    if signal:
+        details["signal_name"] = signal
+    pid = crash.get("COREDUMP_PID") or ""
+    prompt = ("A program crashed just now, and the system wrote down this about it:\n\n"
+              f"{json.dumps(details, indent=1)}\n\n"
+              f"`coredumpctl info {pid}` has the rest (where in the program it stopped), and the journal around "
+              "that time what happened before. Explain in two or three short sentences, in simple words, what "
+              "most likely happened and whether I should do anything. /etc/mentor/FREEZES.md says how to read it.")
+    mentor_tools.leave_notice("warning", f"{name} closed unexpectedly",
+                              "It stopped working by itself. Mentor can look at why.", prompt)
+    print(f"crash of {crash.get('COREDUMP_EXE') or name} ({signal or crash.get('COREDUMP_SIGNAL')}), pid {pid}",
+          flush=True)
+
+
+def main():
+    following = subprocess.Popen(
+        ["journalctl", "-f", "-n", "0", "-o", "json", "--output-fields=" + ",".join(FIELDS), f"MESSAGE_ID={COREDUMP}"],
+        stdout=subprocess.PIPE, text=True, errors="replace")
+    shown = {}  # program -> when its last card was left
+    for line in following.stdout:
+        try:
+            entry = json.loads(line)
+            crash = {key: entry[key] for key in FIELDS if isinstance(entry.get(key), str)}
+            if ours(crash):
+                continue
+            program = crash.get("COREDUMP_EXE") or crash.get("COREDUMP_COMM") or ""
+            now = time.monotonic()
+            if now - shown.get(program, -SAME_AGAIN) < SAME_AGAIN:
+                print(f"crash of {program} again within a minute: no new card", flush=True)
+                continue
+            shown = {p: when for p, when in shown.items() if now - when < SAME_AGAIN}
+            shown[program] = now
+            tell(crash)
+        except Exception as e:  # one record that could not be handled must not end the watching
+            print(f"mentor-crash-watch: {e}", file=sys.stderr, flush=True)
+    return 1  # journalctl ended: systemd starts this again
+
+
+sys.exit(main())

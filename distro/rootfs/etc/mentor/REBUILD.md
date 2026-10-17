@@ -20,7 +20,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
 | `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
-| `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall |
+| `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall; when a program crashes: the card and how to look at it |
 | `UPDATES.md` | updates of Mentor itself: the daily look, the signature, the card, how one is installed and tried |
 | `ASKBAR.md` | the assistant's text box lifted over the program in front (Alt+Space, Super+Z), with a picture of the screen for the agent |
 | `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
@@ -188,6 +188,8 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/etc/systemd/user/mentor-firewall-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | SECURITY.md |
 | `/usr/local/lib/mentor/mentor-recipe-watch` | starts looking at a recipe by itself when one is downloaded, wherever the browser saves it; says "not for you" when a program it needs is missing | user | `systemctl --user restart mentor-recipe-watch` | RECIPES.md |
 | `/etc/systemd/user/mentor-recipe-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | RECIPES.md |
+| `/usr/local/lib/mentor/mentor-crash-watch` | a yellow card in the chat when a program crashes (from systemd-coredump's record in the journal), the same program at most once a minute | user | `systemctl --user restart mentor-crash-watch` | FREEZES.md |
+| `/etc/systemd/user/mentor-crash-watch.service` | runs it while the user is logged in | yes | `systemctl --user daemon-reload` | FREEZES.md |
 | `/etc/systemd/user/mentor-watch.service`, `.timer` | runs it three minutes after login and every six hours | yes | `systemctl --user daemon-reload` | SUGGESTIONS.md |
 
 ## What was done when the system was built, besides the files
@@ -215,6 +217,7 @@ systemctl enable mentor-power-button.service  # the power button powers off
 systemctl enable mentor-sentinel.service      # the watch on freezes
 systemctl enable mentor-emergency-key.service # Ctrl+Alt+Backspace
 systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service
+systemctl --global enable mentor-crash-watch.service   # a card when a program crashes
 
 # Where the root side writes its log
 install -d -m 755 /var/log/mentor
@@ -241,7 +244,7 @@ Run these in order. Each line says what a good answer looks like.
 | `mentor journal -n 3` | the last changes under their requests, or that none is written yet |
 | `mentor security` | "ok  the firewall refuses what comes in…"; findings are for the user to hear of |
 | `systemctl is-enabled mentor-advisor.timer mentor-boot-check.service` | `enabled` twice |
-| `systemctl --user is-enabled mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service` | `enabled` three times |
+| `systemctl --user is-enabled mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service mentor-crash-watch.service` | `enabled` four times |
 | `systemctl is-active mentor-root.socket` | `active` |
 | `pgrep -af bin/mentor-chat` | one line: the assistant is running |
 | `pgrep -af lib/mentor/mentor-clipboard` | one line |

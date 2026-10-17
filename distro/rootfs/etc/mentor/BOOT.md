@@ -53,7 +53,7 @@ The program is `/usr/local/lib/mentor/mentor_boot.py`, run as `/usr/local/lib/me
 ## A new kernel, step by step
 
 1. Before upgrading, run boot_status and say to the user what will happen: the new kernel is tried once; if the desktop does not come up in three minutes, the old one starts again by itself and nothing is lost.
-2. Upgrade (system_upgrade). The pacman hook runs `arm`: the trial entry is written.
+2. Upgrade (system_upgrade). The pacman hook runs `arm`: the trial entry is written. If system_upgrade ends with "the initramfs was not made" (mkinitcpio's hook ran without "image generation successful"), it has left a red card: do not restart. Find why in its output and `/var/log/pacman.log`, run `mkinitcpio -P` in the sandbox until it succeeds, sandbox_apply, and only then go on to step 3.
 3. Ask for a restart (system_restart). Do not restart twice in a hurry: the first start is the trial.
 4. After the restart, run boot_status. `"phase": "ok"` and a `"good"` entry with the new version means it was kept. A `"last_restore"` entry means it failed and the old one is running: read its `"why"`, then `journalctl -b -1 -p err` for what went wrong in the failed start. A kernel that failed is remembered (`"failed"`) and not tried again until it changes.
 5. If the desktop itself is what failed (the extension does not load on the new GNOME), the fault is in DESKTOP.md's territory, not here. This part did its work by going back.

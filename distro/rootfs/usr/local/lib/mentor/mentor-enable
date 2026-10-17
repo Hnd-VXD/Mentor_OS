@@ -8,6 +8,8 @@ set -e
 dconf update
 systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service \
     mentor-taskbar-quiet.service
+# A card in the chat when a program crashes (etc/mentor/FREEZES.md).
+systemctl --global enable mentor-crash-watch.service
 systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 # Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service

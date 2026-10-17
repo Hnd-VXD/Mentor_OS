@@ -1,4 +1,4 @@
-# When the desktop freezes
+# When the desktop freezes, and when a program crashes
 
 This is for the agent. It says what Mentor does about a desktop that stops answering, how to read what it wrote down, and how to make each part again.
 
@@ -52,3 +52,19 @@ What to tell the user: what was behind it in their words ("Settings was making p
 1. Files: copy the files above back from `/etc/mentor/source/rootfs/` (`sudo mentor restore PATH`), `chmod 755` the watch and the key.
 2. `systemctl daemon-reload && systemctl enable --now mentor-sentinel mentor-emergency-key`; `systemctl --user daemon-reload` for the slice.
 3. Check with the table above. To test without waiting for a real freeze: `kill -STOP $(pgrep -x gnome-shell); sleep 8; kill -CONT $(pgrep -x gnome-shell)` as root gives a `graphics` record and a card (the screen stands still for those 8 seconds: only with the user's agreement). The key: Ctrl+Alt+Backspace (in a test VM, QMP `send-key` ctrl, alt, backspace).
+
+## When a program crashes
+
+A crash is a program that stopped by itself because of a fault of its own (it touched memory it does not own, or gave up: SIGSEGV, SIGABRT, SIGBUS…). The system's own `systemd-coredump` writes each one down; Mentor only tells the user. The idea comes from Omarchy's `omarchy-crash-watch` (github.com/omacom/omarchy, MIT).
+
+**What the user sees**: a yellow card in the chat, "Firefox closed unexpectedly", with "It stopped working by itself. Mentor can look at why." and Let Mentor look, which sends you what was written down: the program (`comm`, `exe`, `cmdline`), the `signal` and `signal_name`, `pid`, `uid`, the app's `cgroup` and `unit`. The same program gets a card at most once a minute, however often it crashes; Mentor's own helpers (`/usr/local/lib/mentor/*`, the `mentor` command) never get one. The assistant (mentor-chat) does: its card is shown when it is back.
+
+**When you are handed one**: `coredumpctl info PID` (as the user; it is in group `wheel`, which may read the system's journal) says where in the program it stopped (the stack trace of the thread that crashed); `journalctl -b --since "TIME - 2 min" --until TIME` what happened before; `coredumpctl list` whether it happened before. Tell the user in two or three short sentences, in simple words: what crashed, the likely reason if the record shows one (often a bug in the program, a new version that broke, the graphics card, memory running out: then `/var/log/mentor/freezes.jsonl` too), and whether they need to do anything. Usually it is enough to open it again. When it keeps happening, offer what would help (an update of the program, the graphics card off in the launcher for a test, a report to its makers) and do it only after their yes.
+
+| What | Where | How to tell it works |
+|---|---|---|
+| The watch | `/usr/local/lib/mentor/mentor-crash-watch` (mode 755), started by `/etc/systemd/user/mentor-crash-watch.service` for every user (`systemctl --global enable`, in `mentor-enable`) | `systemctl --user is-active mentor-crash-watch`; `journalctl --user -u mentor-crash-watch -o cat` prints one line for each crash, and "again within a minute: no new card" for a repeat |
+| What it follows | `journalctl -f -o json MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1` (systemd-coredump's record), the fields `COREDUMP_*` in `FIELDS`. `SAME_AGAIN` (60) is the minute; `OURS` the helpers left out; `app_name` names the program from its `.desktop` file when its cgroup is an app's | `coredumpctl list` shows the same crashes |
+| What it leaves | a notice, `mentor_tools.leave_notice("warning", …, prompt)` (ASSISTANT.md, the notices folder) | the card in the chat |
+
+**Making it again**: `sudo mentor restore /usr/local/lib/mentor/mentor-crash-watch` and `sudo mentor restore /etc/systemd/user/mentor-crash-watch.service`; then `sudo systemctl --global enable mentor-crash-watch.service` and, as the user, `systemctl --user daemon-reload && systemctl --user start mentor-crash-watch`. Check: `sleep 300 & kill -SEGV $!`, and within a few seconds a card "sleep closed unexpectedly" is in the chat; a second time within the minute gives no new card. No card, and `coredumpctl list` does not show it either: the system did not record it (`cat /proc/sys/kernel/core_pattern` must name `systemd-coredump`; `/usr/lib/sysctl.d/50-coredump.conf`).

@@ -94,5 +94,11 @@
     "name": "17.10.26.01",
     "summary": "Mouse-look now works in 3D games: Mentor switches to a game mouse by itself while a game is in front. The Recipes app can delete a recipe.",
     "published": "2026-10-17 16:57"
+  },
+  {
+    "version": 202610171443,
+    "name": "17.10.26.02",
+    "summary": "Mentor now tells you in the chat when a program crashes, and full system upgrades are safer: fresh signing keys first, a free-space check, and a check of the start-up files.",
+    "published": "2026-10-17 18:00"
   }
 ]

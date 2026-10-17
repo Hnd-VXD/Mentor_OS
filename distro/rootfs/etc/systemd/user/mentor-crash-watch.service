@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor tells in the chat when a program crashes
+Documentation=file:///etc/mentor/FREEZES.md
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-crash-watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
