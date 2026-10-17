@@ -378,6 +378,10 @@ static class Program
                         + ",window-close=off",
             "-device", "qemu-xhci",
             "-device", "usb-tablet",
+            // The game mouse: one that only moves, for games that hold the pointer and turn
+            // the view with it (they get nothing from the tablet's positions). The tablet stays
+            // the one QEMU uses until the system inside asks for this one (HostBridge.KeepMouse).
+            "-device", "virtio-mouse-pci",
             "-device", "virtio-rng-pci",
             "-device", "virtio-serial-pci",
             "-chardev", "socket,id=clipboard,host=127.0.0.1,port=" + clipboardPort + ",server=on,wait=off",
@@ -644,6 +648,8 @@ class LauncherException : Exception
 //    second chardev; see VmWindow
 //  - how the start went: {"boot": "ok"|"trial"|"restoring"} on that chardev; see BootWatch
 //  - {"restore-point": "why"} on it asks for a snapshot of the disk, and gets an answer
+//  - {"game-mouse": true|false} on it switches QEMU between the tablet and the game mouse,
+//    and gets {"game-mouse": what is in use now, "ok": ...} back; see KeepMouse
 class HostBridge : Form
 {
     const int WM_CLIPBOARDUPDATE = 0x031D;
@@ -678,6 +684,8 @@ class HostBridge : Form
     bool sized;  // a sharp window has been given its size
     StartSplash splash;
     int frozenFor;  // looks in a row at which QEMU's window did not answer
+    bool gameMouse;  // the system inside asked for the game mouse (a game is in front)
+    bool noGameMouse;  // this QEMU has none (an older Mentor.exe's command line, or one given by hand)
     const int RevealAnyway = 45;  // seconds, for a system that never reports its desktop
 
     public HostBridge(int clipboardPort, int controlPort, Process qemu, string modeFile,
@@ -722,12 +730,14 @@ class HostBridge : Form
                 VmWindow.SetFullscreen(qemu, value is bool ? (bool)value : !VmWindow.IsFullscreen(qemu));
             if (message.TryGetValue("boot", out value)) OnBoot(value as string);
             if (message.TryGetValue("restore-point", out value)) OnRestorePoint(value as string);
+            if (message.TryGetValue("game-mouse", out value)) OnGameMouse(value is bool && (bool)value);
         });
         DateTime started = DateTime.UtcNow;
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
         timer.Tick += (s, e) => {
             // QEMU's window is Mentor's on the taskbar: the owl and "Mentor", not QEMU's icon and name.
             VmWindow.Brand(qemu);
+            KeepMouse();
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
             if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained &&
@@ -839,6 +849,53 @@ class HostBridge : Form
         answer["ok"] = error == null;
         if (error == null) answer["name"] = points.Newest.name;
         else answer["error"] = error;
+        Answer(answer);
+    }
+
+    void OnGameMouse(bool on)
+    {
+        gameMouse = on;
+        string error = KeepMouse();
+        var answer = new Dictionary<string, object> { { "game-mouse", gameMouse && error == null }, { "ok", error == null } };
+        if (error != null) answer["error"] = error;
+        Answer(answer);
+    }
+
+    // Makes the pointer QEMU uses the one asked for: the tablet (where the pointer is on the
+    // host is where it is inside: the desktop) or the game mouse (only movement). QEMU's window
+    // follows by itself: with the game mouse it holds the pointer after a click in it, and lets
+    // it go with Ctrl+Alt+G (in full screen it keeps it until the tablet is back). Looked at on
+    // every tick, as the system inside can make its mice the one in use when it starts them.
+    // Returns null when it is so, otherwise why not.
+    string KeepMouse()
+    {
+        if (noGameMouse) return gameMouse ? "this QEMU has no game mouse" : null;
+        object result;
+        string error = qmp.Execute("query-mice", null, 2000, out result);
+        if (error != null) return error;
+        var mice = result as System.Collections.IList;  // ArrayList or object[], as the serializer likes
+        if (mice == null) return "QEMU did not list its mice";
+        // The machine's own PS/2 mouse moves only as well, but it is the game mouse that is meant.
+        Dictionary<string, object> wanted = null;
+        bool foundGame = false;
+        foreach (object item in mice)
+        {
+            var mouse = item as Dictionary<string, object>;
+            if (mouse == null || !(mouse["absolute"] is bool)) continue;
+            bool absolute = (bool)mouse["absolute"], game = !absolute && ((mouse["name"] as string) ?? "").Contains("Virtio");
+            if (game) foundGame = true;
+            if (gameMouse ? game : absolute) wanted = wanted ?? mouse;
+        }
+        if (!foundGame) noGameMouse = true;
+        if (wanted == null) return gameMouse ? "this QEMU has no game mouse" : "this QEMU has no tablet";
+        if (wanted["current"] is bool && (bool)wanted["current"]) return null;
+        return qmp.Execute("human-monitor-command", new Dictionary<string, object> {
+            { "command-line", "mouse_set " + Convert.ToInt32(wanted["index"]) } }, 2000);
+    }
+
+    // One line back to the system inside, on the control channel.
+    void Answer(Dictionary<string, object> answer)
+    {
         byte[] line = Encoding.UTF8.GetBytes(json.Serialize(answer) + "\n");
         lock (sendLock)
         {
@@ -1417,6 +1474,14 @@ class Qmp
     // Runs one command. Returns null when it worked, otherwise what went wrong.
     public string Execute(string command, Dictionary<string, object> arguments, int timeoutMs)
     {
+        object unused;
+        return Execute(command, arguments, timeoutMs, out unused);
+    }
+
+    // The same, with what the command gave back ("return") when it worked.
+    public string Execute(string command, Dictionary<string, object> arguments, int timeoutMs, out object result)
+    {
+        result = null;
         lock (sendLock)
         {
             if (stream == null) return "QEMU is not reachable";
@@ -1438,7 +1503,11 @@ class Qmp
                 }
                 Dictionary<string, object> answer = answers.Dequeue();
                 object error, description;
-                if (!answer.TryGetValue("error", out error)) return null;
+                if (!answer.TryGetValue("error", out error))
+                {
+                    answer.TryGetValue("return", out result);
+                    return null;
+                }
                 var details = error as Dictionary<string, object>;
                 return details != null && details.TryGetValue("desc", out description) ? description as string : "QEMU refused";
             }
