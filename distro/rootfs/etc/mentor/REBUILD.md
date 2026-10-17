@@ -123,6 +123,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/share/nautilus-python/extensions/mentor.py` | "Ask Mentor…" in Files | yes | `nautilus -q` | DESKTOP.md |
 | `/usr/share/backgrounds/mentor/*.jpg`, `/usr/share/gnome-background-properties/mentor.xml` | the wallpapers and their list in Settings | yes | at once | DESKTOP.md |
 | `/etc/chromium/policies/managed/mentor.json` | Chromium comes with uBlock Origin Lite | yes | next start of Chromium | DESKTOP.md |
+| `/etc/chromium-flags.conf` | `--no-first-run`: no blank "Additional Terms of Service" window at Chromium's first start | yes | next start of Chromium | DESKTOP.md |
 | `/usr/local/share/applications/*.desktop` | hides the launchers of developer tools that came as dependencies; puts OpenCode in the app grid | yes | at once | DESKTOP.md |
 | `/usr/local/lib/mentor/mentor-clipboard`, `mentor-clipboard-files` | the clipboard shared with Windows, files included | user | login | DESKTOP.md |
 | `/etc/xdg/autostart/mentor-clipboard.desktop` | starts it at login, on X11 (`GDK_BACKEND=x11`) | yes | login | DESKTOP.md |

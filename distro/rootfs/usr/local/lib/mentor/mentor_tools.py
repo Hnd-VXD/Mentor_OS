@@ -38,6 +38,15 @@ def _find_session():
             os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
         if os.path.exists(f"{runtime}/wayland-0"):
             os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
+            # Without it Chromium chose X11, found no display and ended: app_open and the web apps did not
+            # open with such an engine (2026-10-18). X11 programs get GNOME's Xwayland the same way.
+            os.environ.setdefault("XDG_SESSION_TYPE", "wayland")
+            os.environ.setdefault("XDG_CURRENT_DESKTOP", "GNOME")
+            if os.path.exists("/tmp/.X11-unix/X0"):
+                os.environ.setdefault("DISPLAY", ":0")
+            auth = sorted(f for f in os.listdir(runtime) if f.startswith(".mutter-Xwaylandauth."))
+            if auth:
+                os.environ.setdefault("XAUTHORITY", f"{runtime}/{auth[-1]}")
 
 
 _find_session()
@@ -1597,6 +1606,9 @@ def webapp_install(a):
                 f"Icon={icon or 'applications-internet'}\nTerminal=false\nStartupNotify=true\n"
                 f"StartupWMClass={wm_class}\nCategories=Network;\nX-Mentor-WebApp={url}\n")
     os.replace(target + ".new", target)
+    # GNOME notices a new launcher 3 to 5 seconds later; a window opened before that stays a Chromium window
+    # with no icon of its own for good (2026-10-18: "make it an app and open it" did just that).
+    time.sleep(6)
     return 0, (f"Made the app “{name}” ({url}), opening in {browser}'s app mode. It is in the app grid now "
                f"({os.path.basename(target)}). Icon: " + (f"{icon_source}." if icon else
                "a plain web icon (the site had none that could be used; icon_url can give one)."))

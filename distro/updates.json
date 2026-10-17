@@ -172,5 +172,11 @@
     "name": "17.10.26.16",
     "summary": "Clearer recipe checks: the list of what a recipe would run is complete and holds only commands.",
     "published": "2026-10-18 01:41"
+  },
+  {
+    "version": 202610172250,
+    "name": "17.10.26.17",
+    "summary": "Chromium and apps open smoothly: no empty terms window the first time, and the assistant can open them with every engine.",
+    "published": "2026-10-18 01:53"
   }
 ]
