@@ -130,5 +130,11 @@
     "name": "17.10.26.07",
     "summary": "Maximizing Mentor's window or making it full screen no longer shows everything small for a moment.",
     "published": "2026-10-17 22:42"
+  },
+  {
+    "version": 202610171950,
+    "name": "17.10.26.08",
+    "summary": "Mentor follows your Windows time zone, and you can approve its password questions with Windows Hello (with the new Mentor program on Windows).",
+    "published": "2026-10-17 22:53"
   }
 ]
