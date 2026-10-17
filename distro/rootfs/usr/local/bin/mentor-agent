@@ -213,7 +213,11 @@ def main():
                     save()
                     return finish(str(e), e.kind)
 
-        calls = message.get("tool_calls") or []
+        calls = [c for c in message.get("tool_calls") or [] if isinstance(c, dict)]
+        for c in calls:  # sent back as the API wants them: arguments as JSON text
+            f = c.get("function")
+            if isinstance(f, dict) and isinstance(f.get("arguments"), (dict, list)):
+                f["arguments"] = json.dumps(f["arguments"])
         text = (message.get("content") or "").strip() if isinstance(message.get("content"), str) else ""
         kept = {"role": "assistant", "content": message.get("content") or ""}
         if calls:
@@ -228,12 +232,14 @@ def main():
 
         seen = []
         for call in calls:
-            name = call.get("function", {}).get("name", "")
+            name = str((call.get("function") or {}).get("name") or "")
             try:
-                arguments = json.loads(call["function"].get("arguments") or "{}")
+                arguments = call["function"].get("arguments") or "{}"
+                if isinstance(arguments, str):  # JSON text, as OpenAI sends it; some servers send the object itself
+                    arguments = json.loads(arguments)
                 if not isinstance(arguments, dict):
                     raise ValueError
-            except (KeyError, ValueError):
+            except (KeyError, ValueError, TypeError, AttributeError):
                 arguments, bad = {}, True
             else:
                 bad = False

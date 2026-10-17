@@ -178,5 +178,11 @@
     "name": "17.10.26.17",
     "summary": "Chromium and apps open smoothly: no empty terms window the first time, and the assistant can open them with every engine.",
     "published": "2026-10-18 01:53"
+  },
+  {
+    "version": 202610172310,
+    "name": "17.10.26.18",
+    "summary": "The assistant recovers from its own small mistakes: when it asks a tool for something in the wrong form, it is told and tries again, instead of stopping in the middle of your request.",
+    "published": "2026-10-18 02:12"
   }
 ]

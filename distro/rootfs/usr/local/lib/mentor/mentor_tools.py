@@ -591,10 +591,17 @@ def _flathub():
 
 def flatpak_search(a):
     code, out = _flathub()
-    return (code, out) if code else _run(["flatpak", "search", "--columns=application,name,description", a["query"]], timeout=300)
+    return (code, out) if code else _run(["flatpak", "search", "--columns=application,name,description", "--", a["query"]], timeout=300)
+
+
+def _flatpak_id(app_id):
+    """An app id like org.gimp.GIMP, never something flatpak would take for an option."""
+    return re.fullmatch(r"[A-Za-z_][\w.-]*(/[\w./-]*)?", app_id) is not None
 
 
 def flatpak_install(a):
+    if not _flatpak_id(a["app_id"]):
+        return 1, f"{a['app_id']!r} is not a Flatpak app id (like org.gimp.GIMP)"
     code, out = _flathub()
     if code:
         return code, out
@@ -602,6 +609,8 @@ def flatpak_install(a):
 
 
 def flatpak_remove(a):
+    if not _flatpak_id(a["app_id"]):
+        return 1, f"{a['app_id']!r} is not a Flatpak app id (like org.gimp.GIMP)"
     return _run(["flatpak", "uninstall", "--user", "--noninteractive", "-y", a["app_id"]], timeout=600)
 
 
@@ -610,7 +619,7 @@ def extension_list(a):
 
 
 def extension_set(a):
-    code, out = _run(["gnome-extensions", "enable" if a["enabled"] else "disable", a["uuid"]])
+    code, out = _run(["gnome-extensions", "enable" if a["enabled"] else "disable", "--", a["uuid"]])
     folders = [os.path.expanduser(f"~/.local/share/gnome-shell/extensions/{a['uuid']}"),
                f"/usr/share/gnome-shell/extensions/{a['uuid']}"]
     if code == 0 or not any(os.path.isfile(os.path.join(f, "metadata.json")) for f in folders):
@@ -641,8 +650,14 @@ def _sandbox():
     return os.environ.get("MENTOR_SANDBOX") or "default"
 
 
+def _seconds(a, default):
+    """timeout_seconds as asked; 0 or less (as in "no limit") is the usual time."""
+    seconds = int(a.get("timeout_seconds") or default)
+    return seconds if seconds > 0 else default
+
+
 def sandbox_run(a):
-    timeout = int(a.get("timeout_seconds", 600))
+    timeout = _seconds(a, 600)
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
     stop = _explained("sandbox", a, "Mentor wants to try something out in its sandbox: a copy of your system "
                       "for practising. Nothing on the real system changes until you have seen it and said yes.",
@@ -856,7 +871,7 @@ def app_open(a):
 
 def terminal_run(a):
     """Run a command in a Console window the user can watch, and report what it printed."""
-    timeout = int(a.get("timeout_seconds", 120))
+    timeout = _seconds(a, 120)
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "command", a.get("command"))
     runtime = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
     with tempfile.NamedTemporaryFile(prefix="mentor-terminal-", suffix=".log", dir=runtime, delete=False) as f:
@@ -914,7 +929,7 @@ def screen_capture(a):
 
 def extension_status(a):
     uuid = a["uuid"]
-    code, info = _run(["gnome-extensions", "info", uuid])
+    code, info = _run(["gnome-extensions", "info", "--", uuid])
     if code:
         return code, info + ("\nA new extension is only found by the shell at the next login."
                              if "not exist" in info or "doesn" in info else "")
@@ -2077,7 +2092,7 @@ def run_command(a):
                    "command waiting until its window is closed, and goes when your turn ends. Open it with "
                    f"app_open {app[1]}, its options in `arguments` (for example --new-window); then look once "
                    f"with screen_capture. `{app[0]} --help` is fine here.")
-    return _run(["bash", "-c", a["command"]], timeout=int(a.get("timeout_seconds", 120)))
+    return _run(["bash", "-c", a["command"]], timeout=_seconds(a, 120))
 
 
 def run_root_command(a):
@@ -2702,7 +2717,7 @@ PEEK_FOLDER = "~/.cache/mentor/peek"
 def package_peek(a):
     """The files in a package, or one of them, installed or not: from the package itself."""
     name = str(a["package"]).strip()
-    if not re.fullmatch(r"[a-z0-9@._+-]+", name):
+    if not re.fullmatch(r"[a-z0-9@_+][a-z0-9@._+-]*", name):
         return 1, "not a package name"
     path = str(a.get("path") or "").strip()
     if _run(["pacman", "-Qq", name], timeout=30)[0] == 0:  # installed: its files are here
@@ -3419,15 +3434,82 @@ def call(name, arguments):
     return call_with_image(name, arguments)[:2]
 
 
+def _one_argument(key, value, kind):
+    """One argument as its schema wants it: numbers written as text and the like are taken, the rest refused."""
+    want = kind.get("type")
+    if want == "string":
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = str(value)
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be text")
+        if kind.get("enum") and value not in kind["enum"]:
+            match = [choice for choice in kind["enum"] if choice.lower() == value.strip().lower()]
+            if not match:
+                raise ValueError(f"{key} must be one of: {', '.join(kind['enum'])}")
+            value = match[0]
+    elif want in ("integer", "number"):
+        if isinstance(value, str):
+            try:
+                value = float(value.strip())
+            except ValueError:
+                raise ValueError(f"{key} must be a number") from None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or abs(value) > 1e15:
+            raise ValueError(f"{key} must be a number")
+        if want == "integer":
+            if value != int(value):
+                raise ValueError(f"{key} must be a whole number")
+            value = int(value)
+    elif want == "boolean":
+        if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+            value = value.strip().lower() == "true"
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} must be true or false")
+    elif want == "array":
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError(f"{key} must be a list")
+        if kind.get("items"):
+            value = [_one_argument(key, item, kind["items"]) for item in value]
+    elif want == "object" and not isinstance(value, dict):
+        raise ValueError(f"{key} must be an object")
+    return value
+
+
+def _checked_arguments(name, arguments):
+    """The arguments of a call, checked against the tool's schema. A null stands for leaving it out."""
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        raise ValueError("the arguments must be a JSON object")
+    schema = TOOLS[name][1]
+    properties = schema.get("properties") or {}
+    checked = {}
+    for key, value in arguments.items():
+        if value is None:
+            continue
+        checked[key] = _one_argument(key, value, properties[key]) if key in properties else value
+    for key in schema.get("required") or ():
+        if key not in checked:
+            raise ValueError(f"missing argument: {key}")
+    return checked
+
+
 def call_with_image(name, arguments):
     """Run a tool. Returns (ok, text, JPEG bytes or None)."""
     if name not in TOOLS:
         return False, f"unknown tool: {name}", None
     _noted.clear()
     try:
-        code, out, *image = TOOLS[name][2](arguments or {})
+        arguments = _checked_arguments(name, arguments)
+    except ValueError as e:
+        return False, f"{e}. Call {name} again with the right arguments.", None
+    try:
+        code, out, *image = TOOLS[name][2](arguments)
     except KeyError as e:
         return False, f"missing argument: {e.args[0]}", None
-    _journal(name, arguments or {}, code, out)
+    except Exception as e:  # a tool's own mistake must not end the agent's answer
+        return False, f"{name} failed: {type(e).__name__}: {e}", None
+    _journal(name, arguments, code, out)
     out = out.strip() or "(no output)"
     return code == 0, out if code == 0 else f"{out}\n[exit code {code}]", image[0] if image else None
