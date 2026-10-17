@@ -1,0 +1,87 @@
+#!/usr/bin/python3 -I
+"""Windows Hello in place of the password, for PAM (pam_exec, first in /etc/pam.d/polkit-1 and sudo).
+
+Exits 0 when the user said yes on Windows (face, finger or PIN), so PAM goes no further; anything else
+exits 1, and PAM asks for the password as always. Asks only when the user switched Windows Hello on in
+Mentor.exe ("Sound, USB and sign-in"), which mentor-host-link marks with /run/mentor-hello/on, so with
+it off this costs nothing. The question goes to mentor-host-link (/run/mentor-hello/socket), which
+passes it to Mentor.exe. Nothing there is trusted unless the folder and the files are root's and no one
+else may write them: anyone may write /run/mentor, so it is not used. See /etc/mentor/WINDOWS.md,
+"Windows Hello".
+"""
+import json
+import os
+import socket
+import stat
+import sys
+import time
+
+RUN = "/run/mentor-hello"
+ON = RUN + "/on"
+SOCKET = RUN + "/socket"
+WHY = RUN + "/why"  # the sentence of mentor-rootd's request now being asked about
+WAIT = 120
+
+
+def why():
+    """What the permission is for, in a few words, for Windows' prompt."""
+    service = os.environ.get("PAM_SERVICE", "")
+    if service == "sudo":
+        try:
+            with open(f"/proc/{os.getppid()}/cmdline", "rb") as f:
+                words = [w.decode(errors="replace") for w in f.read().split(b"\0")][:-1]  # empty ones count
+            if words and os.path.basename(words[0]) == "sudo":
+                words = words[1:]
+            # sudo's own options are not what is run: -S, -p "", -u USER and the like.
+            while words and words[0].startswith("-"):
+                option = words.pop(0)
+                if option in ("-p", "-u", "-g", "-C", "-D", "-h", "-U", "-r", "-t", "-T", "-R") and words:
+                    words.pop(0)
+                if option == "--":
+                    break
+            return "run as administrator: " + " ".join(words)[:150]
+        except OSError:
+            return "run something as administrator"
+    try:
+        with open(WHY) as f:
+            hint = json.load(f)
+        if time.time() - float(hint.get("time", 0)) < 60 and hint.get("text"):
+            return str(hint["text"])[:200]
+    except (OSError, ValueError, TypeError):
+        pass
+    return "make a change to the system"
+
+
+def roots(path):
+    """Whether `path` is root's and no one else may change it."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return st.st_uid == 0 and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def main():
+    if os.environ.get("PAM_TYPE") != "auth" or os.geteuid() != 0:
+        return 1
+    try:
+        folder = os.lstat(RUN)
+    except OSError:
+        return 1  # Windows Hello is off, or the link is not running
+    if not stat.S_ISDIR(folder.st_mode) or folder.st_uid != 0 or folder.st_mode & 0o077:
+        return 1
+    if not (roots(ON) and roots(SOCKET) and stat.S_ISSOCK(os.lstat(SOCKET).st_mode)):
+        return 1
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(WAIT)
+            s.connect(SOCKET)
+            s.sendall((json.dumps({"why": why(), "user": os.environ.get("PAM_USER", "")}) + "\n").encode())
+            answer = s.makefile("rb").readline(4096)
+        return 0 if json.loads(answer).get("ok") is True else 1
+    except (OSError, ValueError, AttributeError):
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

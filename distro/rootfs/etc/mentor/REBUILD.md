@@ -28,6 +28,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `SECURITY.md` | the firewall, the checks of the user's safety, the warning after outside text, the words before a password |
 | `JOURNAL.md` | the journal: what was changed on this system, when and after which request; when to read it |
 | `AGENT.md` | what every engine is told; the rules of work |
+| `WINDOWS.md` | Mentor.exe on Windows and what of it reaches this system: its updates, Windows' sleep, the link to it (time zone, Windows Hello, cards), sound and microphone, Speed, USB devices, backups, the diagnostics file |
 
 `/etc/mentor` is closed to you: you read these files, you cannot change them. What you make or change that they do not say yet, write in `~/.local/share/mentor/notes.md`, and read that file together with them.
 
@@ -153,7 +154,9 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor_update.py`, `/usr/local/lib/mentor/mentor-update`, `/usr/local/lib/mentor/mentor-enable`, `/usr/local/lib/systemd/system/mentor-update-check.service`, `mentor-update-check.timer`, `mentor-update-apply.service`, `/etc/polkit-1/rules.d/50-mentor-update.rules`, `/etc/mentor/update-signers` | updates of Mentor itself; the setup an image and every update share | root | the next look (timer) | UPDATES.md |
 | `/etc/systemd/user/mentor-taskbar-quiet.service`, `/usr/local/lib/mentor/mentor-taskbar-quiet` | no "Dash to Panel has been updated!" notice | user | the next login | DESKTOP.md |
 | `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf`, `/etc/systemd/user/service.d/10-mentor-no-watchdog.conf` | no service is killed as hung after Windows slept | root | next start | BOOT.md |
-| `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence | user | next call | TOOLS.md |
+| `/usr/local/lib/mentor/mentor-rootd` | asks for the password in place of pkexec, so that the dialog can say what for in the agent's own sentence; leaves that sentence for Windows Hello's prompt (`hello_hint`) | user | next call | TOOLS.md, WINDOWS.md |
+| `/usr/local/lib/mentor/mentor-host-link`, `/usr/local/lib/systemd/system/mentor-host-link.service`, `/etc/udev/rules.d/70-mentor-host.rules` | the root-only link to Mentor.exe on Windows: the time zone follows Windows', Windows Hello, cards from Mentor.exe, the logs for its diagnostics file. `chmod 755` the first | user | `systemctl daemon-reload; udevadm control --reload; udevadm trigger --subsystem-match=virtio-ports` | WINDOWS.md |
+| `/usr/local/lib/mentor/mentor-hello`, `/etc/pam.d/polkit-1`, `/etc/pam.d/sudo` | Windows Hello in place of the password when the user switched it on in Mentor.exe; the password always works. `chmod 755` the first | user | at once | WINDOWS.md |
 | `/usr/local/lib/systemd/system/mentor-root.socket`, `mentor-root@.service` | where the tools reach it (`/run/mentor-root.sock`), one start for each request | user | `systemctl daemon-reload` | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_sandbox.py` | the sandbox: try on a copy, preview, apply, undo | user | next call | TOOLS.md |
 | `/usr/local/lib/mentor/mentor-review` | the preview window of a change | user | next preview | TOOLS.md |

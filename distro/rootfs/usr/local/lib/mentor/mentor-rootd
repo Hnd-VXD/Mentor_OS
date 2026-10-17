@@ -24,6 +24,7 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 
 import gi
 
@@ -118,6 +119,21 @@ def asker(pid, uid):
     return pid
 
 
+def hello_hint(sentence):
+    """What this request is for, for Windows Hello's prompt when the user has it on in Mentor.exe
+    (mentor-hello reads it; /etc/mentor/WINDOWS.md, "Windows Hello")."""
+    folder = "/run/mentor-hello"  # root's alone, made by mentor-host-link; not there: Hello is not in use
+    try:
+        if os.lstat(folder).st_uid != 0:
+            return
+        fd = os.open(folder + "/why.new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"time": time.time(), "text": sentence}, f)
+        os.replace(folder + "/why.new", folder + "/why")
+    except OSError:
+        pass
+
+
 def approved(connection, subject, action, details):
     """Ask polkit, and take the question back when the caller goes away while the password
     dialog is open (the user pressed Stop, the engine gave up on the tool): a dialog left behind
@@ -176,7 +192,9 @@ def main():
     # or the chat window it runs under (asker).
     subject = Polkit.UnixProcess.new_for_owner(asker(pid, uid), 0, uid)
     details = Polkit.Details.new()
-    details.insert("polkit.message", said(action, args, request.get("explain"), bool(request.get("exact"))))
+    sentence = said(action, args, request.get("explain"), bool(request.get("exact")))
+    details.insert("polkit.message", sentence)
+    hello_hint(sentence)
     authorized, dismissed, why = approved(connection, subject, DOORS[helper], details)
     if not authorized:
         # As pkexec tells them apart: 126 the user said no, 127 they may not say yes.

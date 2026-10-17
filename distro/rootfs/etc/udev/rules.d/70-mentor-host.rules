@@ -1,0 +1,3 @@
+# The link to Mentor.exe on Windows (a Mentor.exe of 2026-10-18 or later makes it): its service starts
+# when the port is there. The port stays root's only. /etc/mentor/WINDOWS.md
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.mentor.host", TAG+="systemd", ENV{SYSTEMD_WANTS}+="mentor-host-link.service"

@@ -1,0 +1,378 @@
+#!/usr/bin/python3
+"""Mentor's root link to its launcher on Windows (Mentor.exe), over the virtio port org.mentor.host.
+
+What goes over it, one JSON object a line:
+  - The time zone, the same as Windows'. Mentor.exe sends {"timezone": "Europe/Athens"} (the IANA
+    name of Windows' zone) whenever Windows' zone changes, and in answer to {"want": "timezone"},
+    which this sends when it starts and every WANT_EVERY seconds (Mentor.exe also takes it as "the
+    system inside is listening" and sends what it kept for it). A zone chosen inside Mentor wins: once
+    the zone is not the one this last set, the user (or the agent, at their request) has chosen
+    another, and Windows is no longer followed until `mentor-host-link follow`.
+  - Windows Hello: {"hello-on": true|false} says whether the user switched it on in Mentor.exe
+    (kept as /run/mentor-hello/on); mentor-hello (PAM) asks on /run/mentor-hello/socket, and the
+    question goes on as {"hello": ID, "why": "..."}, answered by {"hello": ID, "ok": true|false}.
+    /run/mentor-hello is root's alone (0700), unlike /run/mentor, where anyone may write: what is
+    in it says yes to a password.
+  - Cards in the chat: {"notice": {"level": "warning"|"problem", "title", "text", "prompt"?}} from
+    Mentor.exe (a USB device it could not give, for one) is left for the desktop's user (`mentor notice`).
+  - The diagnostics file (Mentor.exe's tray icon): {"diagnostics": ID} is answered with
+    {"diagnostics": ID, "data": "<base64 .tar.gz>"}: the journal, failed services, /var/log/mentor.
+
+Started by udev when the port is there (etc/udev/rules.d/70-mentor-host.rules): only a Mentor.exe of
+2026-10-18 or later makes it. Runs as root; the port is root's only. See /etc/mentor/WINDOWS.md.
+
+    mentor-host-link            the service
+    mentor-host-link follow     follow Windows' zone again (as root)
+    mentor-host-link status     what it does now
+"""
+import json
+import os
+import pwd
+import re
+import select
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+PORT = "/dev/virtio-ports/org.mentor.host"
+STATE = "/var/lib/mentor/host-timezone.json"
+ZONEINFO = "/usr/share/zoneinfo/"
+WANT_EVERY = 600
+# The zone an image is built with (distro/config.env): a system still on it has had no zone chosen.
+BUILT_ZONE = "Europe/Athens"
+ZONE_NAME = re.compile(r"^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$")
+RUN = "/run/mentor-hello"
+HELLO_ON = RUN + "/on"
+HELLO_SOCKET = RUN + "/socket"
+HELLO_WAIT = 110  # seconds for the user to answer Windows Hello (mentor-hello waits 120)
+
+
+def log(text):
+    print(text, flush=True)
+
+
+def load():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save(state):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE)
+
+
+def current_zone():
+    try:
+        link = os.readlink("/etc/localtime")
+    except OSError:
+        return None
+    return link.split("zoneinfo/", 1)[1] if "zoneinfo/" in link else None
+
+
+def set_zone(zone):
+    result = subprocess.run(["timedatectl", "set-timezone", zone], capture_output=True, text=True)
+    if result.returncode != 0:
+        log(f"could not set the time zone {zone}: {result.stderr.strip()}")
+        return False
+    return True
+
+
+def windows_zone(zone, state):
+    """Windows' zone is `zone`: make it Mentor's too, unless the user has chosen one."""
+    if not isinstance(zone, str) or not ZONE_NAME.match(zone) or ".." in zone \
+            or not os.path.isfile(ZONEINFO + zone):
+        log(f"Windows' time zone {zone!r} is not one this system knows; left as it is")
+        return
+    state["windows"] = zone
+    now = current_zone()
+    if state.get("following") is False:
+        save(state)
+        return
+    applied = state.get("applied")
+    # A zone that is neither the one set from here nor the one the image came with was chosen inside.
+    if (applied and now != applied) or \
+            (not applied and now not in (None, BUILT_ZONE, "UTC", zone) and not same_clock(now, zone)):
+        state.update(following=False, chosen=now)
+        save(state)
+        log(f"the time zone {now} was chosen inside Mentor; Windows' ({zone}) is not followed any more")
+        return
+    # Windows names one city for a zone it shares with others (Bucharest for Athens too, unless the
+    # region in Windows' settings is Greece): a zone that keeps the same time stays.
+    if now != zone and now and same_clock(now, zone):
+        zone = now
+    elif now != zone:
+        if not set_zone(zone):
+            return
+        log(f"time zone set to {zone}, as on Windows")
+    state.update(following=True, applied=zone)
+    save(state)
+
+
+def same_clock(a, b):
+    """Whether zones a and b show the same time from now on (looked at every 6 hours for 400 days)."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    try:
+        za, zb = ZoneInfo(a), ZoneInfo(b)
+    except Exception:
+        return False
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    for hours in range(0, 24 * 400, 6):
+        moment = start + timedelta(hours=hours)
+        if moment.astimezone(za).utcoffset() != moment.astimezone(zb).utcoffset():
+            return False
+    return True
+
+
+class Link:
+    """The port, written from more than one thread, and the Windows Hello questions waiting for an answer."""
+
+    def __init__(self):
+        self.fd = None
+        self.lock = threading.Lock()
+        self.waiting = {}  # question id -> [threading.Event, answer]
+        self.notices = []  # cards waiting for someone to be logged in
+
+    def send(self, message):
+        data = (json.dumps(message) + "\n").encode()
+        with self.lock:
+            if self.fd is None:
+                return False
+            try:
+                while data:  # the port takes a large line in pieces
+                    try:
+                        data = data[os.write(self.fd, data):]
+                    except BlockingIOError:
+                        if not select.select([], [self.fd], [], 30)[1]:
+                            return False
+                return True
+            except OSError:
+                return False  # Mentor.exe is not there now; it says everything again when it comes back
+
+
+LINK = Link()
+
+
+def root_only():
+    """/run/mentor-hello, made root's alone (and made so again, should anyone have changed it)."""
+    os.makedirs(RUN, mode=0o700, exist_ok=True)
+    os.chown(RUN, 0, 0)
+    os.chmod(RUN, 0o700)
+
+
+def hello_on(on):
+    root_only()
+    if on:
+        with open(HELLO_ON, "w") as f:
+            f.write("1\n")
+    elif os.path.exists(HELLO_ON):
+        os.remove(HELLO_ON)
+
+
+def hello_server():
+    """Answers mentor-hello: one question a connection, passed to Mentor.exe and back."""
+    root_only()
+    if os.path.exists(HELLO_SOCKET):
+        os.remove(HELLO_SOCKET)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o077)  # root's only: the socket says yes to a password
+    server.bind(HELLO_SOCKET)
+    os.umask(old)
+    server.listen(4)
+    while True:
+        connection, _ = server.accept()
+        threading.Thread(target=hello_question, args=(connection,), daemon=True).start()
+
+
+def hello_question(connection):
+    ok = False
+    try:
+        connection.settimeout(5)
+        request = json.loads(connection.makefile("rb").readline(8192))
+        ident = os.urandom(8).hex()
+        waiting = [threading.Event(), None]
+        LINK.waiting[ident] = waiting
+        if LINK.send({"hello": ident, "why": str(request.get("why", ""))[:200]}) and waiting[0].wait(HELLO_WAIT):
+            ok = waiting[1] is True
+        LINK.waiting.pop(ident, None)
+        log(f"Windows Hello for {request.get('why', '')!r}: {'yes' if ok else 'no'}")
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        connection.sendall((json.dumps({"ok": ok}) + "\n").encode())
+    except OSError:
+        pass
+    connection.close()
+
+
+def desktop_user():
+    """The user with a graphical session: (uid, gid, name), or None."""
+    out = subprocess.run(["loginctl", "list-sessions", "--no-legend"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[1].isdigit() and int(parts[1]) >= 1000:
+            kind = subprocess.run(["loginctl", "show-session", parts[0], "-p", "Type", "--value"],
+                                  capture_output=True, text=True).stdout.strip()
+            if kind in ("wayland", "x11"):
+                p = pwd.getpwuid(int(parts[1]))
+                return p.pw_uid, p.pw_gid, p.pw_name
+    return None
+
+
+def leave_notices():
+    """The cards Mentor.exe sent, for the desktop's user; kept until someone is logged in."""
+    user = desktop_user() if LINK.notices else None
+    while user and LINK.notices:
+        notice = LINK.notices.pop(0)
+        uid, gid, name = user
+        argv = ["/usr/local/bin/mentor", "notice", notice["level"], notice["title"], notice["text"]]
+        if notice.get("prompt"):
+            argv += ["--prompt", notice["prompt"]]
+        subprocess.run(["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups", "env",
+                        f"HOME={pwd.getpwuid(uid).pw_dir}", f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}",
+                        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus", "PATH=/usr/local/bin:/usr/bin",
+                        *argv], capture_output=True, timeout=30)
+        log(f"card left: {notice['title']}")
+
+
+def diagnostics(ident):
+    """The system's side of Mentor.exe's diagnostics file (its tray icon): what it wrote down, as a
+    .tar.gz sent back in one line. Nothing else is done with it; the file is the user's."""
+    import base64
+    import io
+    import tarfile
+
+    def run(*argv):
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=60).stdout
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"{argv[0]}: {e}\n"
+
+    parts = {
+        "journal-this-start.txt": run("journalctl", "-b", "-o", "short-iso", "--no-pager", "-n", "20000"),
+        "journal-start-before.txt": run("journalctl", "-b", "-1", "-o", "short-iso", "--no-pager", "-n", "5000"),
+        "failed-services.txt": run("systemctl", "--failed", "--no-pager"),
+        "system.txt": "\n".join([
+            run("cat", "/etc/mentor/version-name", "/etc/mentor/version"), run("uname", "-a"), run("df", "-h"),
+            run("free", "-h"), run("timedatectl"), run("systemctl", "is-system-running"),
+            run("/usr/local/lib/mentor/mentor-host-link", "status")]),
+    }
+    try:
+        for name in sorted(os.listdir("/var/log/mentor")):
+            path = os.path.join("/var/log/mentor", name)
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    f.seek(max(0, os.path.getsize(path) - (2 << 20)))  # the last 2 MB of each
+                    parts["var-log-mentor/" + name] = f.read().decode(errors="replace")
+    except OSError:
+        pass
+    packed = io.BytesIO()
+    with tarfile.open(fileobj=packed, mode="w:gz") as tar:
+        for name, text in parts.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime = len(data), time.time()
+            tar.addfile(info, io.BytesIO(data))
+    data = packed.getvalue()
+    if len(data) > (24 << 20):
+        LINK.send({"diagnostics": ident, "error": f"the system's logs came to {len(data) >> 20} MB, too many to send"})
+        return
+    LINK.send({"diagnostics": ident, "data": base64.b64encode(data).decode()})
+    log(f"diagnostics sent ({len(data) >> 10} KB)")
+
+
+def handle(message):
+    if "diagnostics" in message and isinstance(message["diagnostics"], str) and "data" not in message:
+        threading.Thread(target=diagnostics, args=(message["diagnostics"][:40],), daemon=True).start()
+    if "timezone" in message:
+        windows_zone(message["timezone"], load())  # read again: `follow` may have changed it
+    if "hello-on" in message:
+        hello_on(message["hello-on"] is True)
+    if "hello" in message and "ok" in message:
+        waiting = LINK.waiting.get(str(message["hello"]))
+        if waiting:
+            waiting[1] = message["ok"] is True
+            waiting[0].set()
+    notice = message.get("notice")
+    if isinstance(notice, dict) and isinstance(notice.get("title"), str):
+        LINK.notices.append({"level": "problem" if notice.get("level") == "problem" else "warning",
+                             "title": notice["title"][:120], "text": str(notice.get("text", ""))[:400],
+                             "prompt": str(notice.get("prompt", ""))[:4000]})
+        leave_notices()
+        if LINK.notices:
+            log(f"card waiting for someone to log in: {notice['title']}")
+
+
+def serve():
+    while not os.path.exists(PORT):
+        time.sleep(5)
+    hello_on(False)  # until Mentor.exe says so
+    fd = os.open(PORT, os.O_RDWR | os.O_NONBLOCK)
+    LINK.fd = fd
+    threading.Thread(target=hello_server, daemon=True).start()
+    log("link to Mentor.exe open")
+    buffer, asked = b"", None
+    while True:
+        if asked is None or time.monotonic() - asked > WANT_EVERY:
+            LINK.send({"want": "timezone"})
+            asked = time.monotonic()
+        ready, _, _ = select.select([fd], [], [], 30)
+        leave_notices()
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError as e:
+            log(f"reading the link: {e}")
+            time.sleep(5)
+            continue
+        if not data:  # Mentor.exe is not connected: look again in a moment
+            if asked is not None:
+                hello_on(False)
+            time.sleep(2)
+            asked = None  # and ask as soon as it is
+            continue
+        buffer += data
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(message, dict):
+                handle(message)
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else "serve"
+    if command == "follow":
+        state = load()
+        state.update(following=True)
+        state.pop("chosen", None)
+        state.pop("applied", None)
+        zone = state.get("windows")
+        if zone and os.path.isfile(ZONEINFO + zone) and set_zone(zone):
+            state["applied"] = zone
+        save(state)
+        print(f"Following Windows' time zone again{': ' + zone if zone else ''}.")
+        return 0
+    if command == "status":
+        state = load()
+        print(json.dumps({"now": current_zone(), **state}, indent=1))
+        return 0
+    serve()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

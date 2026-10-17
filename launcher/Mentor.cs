@@ -4,7 +4,21 @@
 //   Mentor.exe [--memory GB] [--cpus N] [--cpu MODEL] [--reset] [--iso FILE]
 //               [--fullscreen | --windowed] [--no-accel] [--vm-dir DIR] [--image FILE]
 //               [--restore] [--yes] [--boot-timeout SECONDS] [--gpu] [--vulkan] [--repair]
-//               [-- extra qemu arguments]
+//               [--no-update] [-- extra qemu arguments]
+//   Mentor.exe --backup FILE.zip | --restore-backup FILE.zip | --move FOLDER   (Backup.cs, no window)
+//
+// --no-update: no looking for a newer Mentor.exe (SelfUpdate.cs) this time.
+// For tests that must show nothing on the screen: MENTOR_NO_TRAY=1 (no tray icon), MENTOR_HELLO_TEST=yes|no
+// (Windows Hello answered so at once, without its prompt), MENTOR_DIAGNOSTICS_TEST=FOLDER (the diagnostics
+// file made by itself there after the start), MENTOR_LAUNCHER_UPDATES and MENTOR_RELEASE (other addresses
+// to download from).
+//
+// What else it does, each in its own file (after Try Omarchy for Windows, github.com/omacom/try-omarchy-windows,
+// MIT): SelfUpdate.cs (a newer signed Mentor.exe), Power.cs (Windows' sleep and shutdown), TimeZone.cs and
+// HostLink.cs (the root-only link to the system inside: time zone, Windows Hello, cards), Devices.cs (sound
+// devices), Resources.cs (how much of the computer: Balanced, Maximum, Manual), Tray.cs and Diagnostics.cs
+// (the icon in the notification area), Backup.cs (backup, restore, moving), Hello.cs, Usb.cs,
+// LauncherWindow.cs and SettingsDialog.cs (the windows).
 //
 // --repair (the "Repair" button) starts the system without its desktop, on a text screen
 // where the user talks to the agent, for when the desktop no longer comes up: the kernel
@@ -65,23 +79,64 @@ static class Program
     const string Title = "Mentor";
     public static int Freezes;  // starts in a row that froze with the graphics card drawing
     public static bool SoundFailed;  // QEMU would not start with sound: the next start is without
+    public static string LogFile;  // vm\launcher.log: what the launcher did, for the diagnostics file
+    // Where this installation is, for the tray icon's commands and the diagnostics file.
+    public static string Root, VmDir, Image, QemuDir, SettingsFile;
+    public static bool Own;
+    public static RestorePoints Points;
+    public static BootWatch Watch;
+    public static bool HelloOn;  // Windows Hello is switched on and set up (Hello.cs)
+    public static readonly string HelloTest = Environment.GetEnvironmentVariable("MENTOR_HELLO_TEST");  // "yes" or "no"
+    public static string Usb = "";  // the USB device to give the system at its start (Usb.cs)
+    static Tray tray;
+
+    // One line in launcher.log.
+    public static void Note(string text)
+    {
+        if (LogFile == null) return;
+        try
+        {
+            if (File.Exists(LogFile) && new FileInfo(LogFile).Length > 512 * 1024)
+            {
+                File.Copy(LogFile, LogFile + ".old", true);
+                File.Delete(LogFile);
+            }
+            File.AppendAllText(LogFile, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + text + "\r\n");
+        }
+        catch (Exception) { }
+    }
 
     [DllImport("winmm.dll")] static extern uint waveOutGetNumDevs();
     [DllImport("winmm.dll")] static extern uint waveInGetNumDevs();
 
-    // How the system's sound reaches Windows. DirectSound, the usual way, refuses to start at
-    // all on a computer without a microphone ("Could not initialize DirectSoundCapture"), and
-    // QEMU then stops: there SDL plays the sound, without a microphone. With nothing to play
-    // on either, or after a start that failed over sound, the system gets a sound card that
-    // goes nowhere.
-    static string[] Sound()
+    // The sound devices chosen in the launcher window ("Devices…"): "" is Windows' default, and the
+    // microphone can be "off". By SDL's names; see Devices.cs.
+    public static string Speaker = "", Microphone = "";
+
+    // How the system's sound reaches Windows.
+    // With Mentor's own QEMU (Try Omarchy's runtime), through SDL, always with a microphone: its SDL
+    // keeps the microphone going when none is plugged in, and opens the devices chosen in the launcher
+    // window (OMARCHY_SDL_*_DEVICE_NAME), or Windows' default ones when they are gone. "Off" leaves the
+    // system without a microphone.
+    // With the installer's QEMU, DirectSound, which refuses to start at all on a computer without a
+    // microphone ("Could not initialize DirectSoundCapture"), and QEMU then stops: there SDL plays the
+    // sound, without a microphone.
+    // With nothing to play on, or after a start that failed over sound, the system gets a sound card
+    // that goes nowhere (its microphone hears nothing).
+    static string[] Sound(bool own)
     {
         uint speakers = 0, microphones = 0;
         try { speakers = waveOutGetNumDevs(); microphones = waveInGetNumDevs(); }
         catch (Exception) { }
+        bool hear = Microphone != "off";
+        Environment.SetEnvironmentVariable("OMARCHY_SDL_OUTPUT_DEVICE_NAME", own && Speaker != "" ? Speaker : null);
+        Environment.SetEnvironmentVariable("OMARCHY_SDL_INPUT_DEVICE_NAME", own && hear && Microphone != "" ? Microphone : null);
+        string codec = hear ? "hda-duplex,audiodev=snd" : "hda-output,audiodev=snd";
         if (SoundFailed || speakers == 0)
-            return new[] { "-audiodev", "none,id=snd", "-device", "ich9-intel-hda", "-device", "hda-output,audiodev=snd" };
-        if (microphones == 0)
+            return new[] { "-audiodev", "none,id=snd", "-device", "ich9-intel-hda", "-device", own ? codec : "hda-output,audiodev=snd" };
+        if (own)
+            return new[] { "-audiodev", "sdl,id=snd" + (hear ? "" : ",in.voices=0"), "-device", "ich9-intel-hda", "-device", codec };
+        if (microphones == 0 || !hear)
             return new[] { "-audiodev", "sdl,id=snd", "-device", "ich9-intel-hda", "-device", "hda-output,audiodev=snd" };
         return new[] { "-audiodev", "dsound,id=snd", "-device", "ich9-intel-hda", "-device", "hda-duplex,audiodev=snd" };
     }
@@ -104,6 +159,13 @@ static class Program
 
     static int Run(string[] args)
     {
+        // For checking the self-update's signature check: Mentor.exe --check-signature FILE SIG NAMESPACE.
+        if (args.Length == 4 && args[0] == "--check-signature")
+        {
+            string why = SshSignature.Check(File.ReadAllBytes(args[1]), File.ReadAllBytes(args[2]), args[3], LauncherBuild.Signer);
+            Console.Error.WriteLine(why ?? "good");
+            return why == null ? 0 : 1;
+        }
         // The desktop is rendered on the CPU, so it gets half of the host's cores (4 to 8).
         int memoryGB = 6, cpus = Math.Max(4, Math.Min(8, Environment.ProcessorCount / 2));
         // 'max' passes the host's CPU features through. The bare qemu64 model has no
@@ -114,15 +176,19 @@ static class Program
         // always: it used to be a choice ("Sharp text", --sharp), and nobody wanted it off.
         bool sharp = true;
         int bootTimeout = 480;
-        bool repair = false;
+        bool repair = false, update = true, explicitMemory = false, explicitCpus = false;
+        string backupTo = null, restoreFrom = null, moveTo = null;
         bool? fullscreen = null;
         var extra = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
-                case "--memory": memoryGB = int.Parse(Value(args, ref i)); break;
-                case "--cpus": cpus = int.Parse(Value(args, ref i)); break;
+                case "--memory": memoryGB = int.Parse(Value(args, ref i)); explicitMemory = true; break;
+                case "--cpus": cpus = int.Parse(Value(args, ref i)); explicitCpus = true; break;
+                case "--backup": backupTo = Path.GetFullPath(Value(args, ref i)); break;
+                case "--restore-backup": restoreFrom = Path.GetFullPath(Value(args, ref i)); break;
+                case "--move": moveTo = Path.GetFullPath(Value(args, ref i)); break;
                 case "--cpu": cpu = Value(args, ref i); break;
                 case "--iso": iso = Path.GetFullPath(Value(args, ref i)); break;
                 case "--vm-dir": vmDir = Path.GetFullPath(Value(args, ref i)); break;
@@ -138,6 +204,7 @@ static class Program
                 case "--vulkan": vulkan = true; break;
                 case "--boot-timeout": bootTimeout = int.Parse(Value(args, ref i)); break;
                 case "--repair": repair = true; break;
+                case "--no-update": update = false; break;
                 case "--":
                     for (i++; i < args.Length; i++) extra.Add(args[i]);
                     break;
@@ -151,8 +218,24 @@ static class Program
         string disk = Path.Combine(vmDir, "disk.qcow2");
         string vars = Path.Combine(vmDir, "efivars.fd");
 
-        if (AlreadyRunning(vmDir, args.Length == 0)) return 0;
+        bool job = backupTo != null || restoreFrom != null || moveTo != null;
+        // A newer Mentor.exe that was downloaded last time is put in place now, and this one makes way for it.
+        if (update && !job && SelfUpdate.AtStart(root, args, Running(vmDir) != null)) return 0;
+        if (update && !job) SelfUpdate.CheckInBackground();
+        if (!job && AlreadyRunning(vmDir, args.Length == 0)) return 0;
         string qemuDir = FindQemu(root);
+        Root = root; VmDir = vmDir; Image = image; QemuDir = qemuDir;
+        SettingsFile = Path.Combine(root, "Mentor.settings");
+        if (job)
+        {
+            // From the command line: done without a window; the exit code says how it went.
+            if (Directory.Exists(vmDir)) LogFile = Path.Combine(vmDir, "launcher.log");
+            string error = backupTo != null ? Backup.MakeTo(null, backupTo, root, vmDir, image)
+                         : restoreFrom != null ? Backup.RestoreFile(null, restoreFrom, root, vmDir, image)
+                         : MoveMentor.Move(null, root, Path.Combine(moveTo, "Mentor"));
+            if (error != null) Console.Error.WriteLine(error);
+            return error == null ? 0 : 1;
+        }
         // Mentor's own QEMU (the WINQ-EMU runtime, in the qemu folder beside this program) differs
         // from the one QEMU's installer puts on a computer: it has a graphics path that works
         // from the first moment, gives memory back to Windows, and only an SDL window.
@@ -168,27 +251,30 @@ static class Program
         string modeFile = Path.Combine(vmDir, "fullscreen");  // exists = start in full screen
         var points = new RestorePoints(Path.Combine(qemuDir, "qemu-img.exe"), vmDir, disk, vars);
         var watch = new BootWatch(vmDir);
+        Own = own; Points = points; Watch = watch;
+        Settings settings = Settings.Load(SettingsFile);
         if (args.Length == 0)
         {
-            Settings settings = Settings.Load(Path.Combine(root, "Mentor.settings"));
-            if (settings.memory > 0) memoryGB = settings.memory;
-            if (settings.cpus > 0) cpus = settings.cpus;
-            using (var window = new LauncherWindow(memoryGB, cpus, settings.gpu, settings.vulkan && own, own,
-                                                   File.Exists(modeFile), points, watch, vmDir, image))
+            using (var window = new LauncherWindow(settings, own, File.Exists(modeFile), points, watch, vmDir, image,
+                                                   root, qemuDir, false))
             {
                 if (window.ShowDialog() != DialogResult.OK) return 0;
-                settings.memory = memoryGB = window.Memory;
-                settings.cpus = cpus = window.Cpus;
-                settings.gpu = gpu = window.Gpu;
-                if (own) settings.vulkan = vulkan = window.Vulkan;
+                gpu = settings.gpu;
+                if (own) vulkan = settings.vulkan;
                 fullscreen = window.Fullscreen;
                 repair = window.Repair;
             }
             settings.Save();
         }
+        // These come from the settings however Mentor is started (also with options, as from a shortcut).
+        Speaker = settings.speaker;
+        Microphone = settings.microphone;
+        Usb = settings.usb;
+        HelloOn = settings.hello && WindowsHello.Available() || HelloTest != null;
 
         if (reset && Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
         Directory.CreateDirectory(vmDir);
+        LogFile = Path.Combine(vmDir, "launcher.log");
         if (!File.Exists(disk))
         {
             // The VM writes to an overlay, so the built image stays pristine and --reset is instant.
@@ -255,11 +341,34 @@ static class Program
                 extraNow.Add("type=11,value=io.systemd.boot.kernel-cmdline-extra=systemd.unit=mentor-repair.target mentor.repair=1");
                 timeout = 0;
             }
-            again = RunVm(qemuDir, firmware, vars, disk, iso, cpu, cpus, memoryGB, accel, extraNow, modeFile,
+            // How much of the computer: worked out again at every start, as what Windows has free changes.
+            int[] plan = Resources.Plan(settings.profile, settings.memory > 0 ? settings.memory : memoryGB,
+                                        settings.cpus > 0 ? settings.cpus : cpus);
+            int memoryNow = explicitMemory ? memoryGB : plan[0], cpusNow = explicitCpus ? cpus : plan[1];
+            Note("starting with " + memoryNow + " GB and " + cpusNow + " processors (" + settings.profile + ")");
+            if (tray == null && Environment.GetEnvironmentVariable("MENTOR_NO_TRAY") != "1") tray = new Tray();
+            SelfUpdate.RunStarting();
+            again = RunVm(qemuDir, firmware, vars, disk, iso, cpu, cpusNow, memoryNow, accel, extraNow, modeFile,
                           watch, points, timeout, gpu && !repair, sharp, own, vulkan && own && gpu && !repair);
+            SelfUpdate.RunEnded();
             repair = false;  // a restart from the repair screen is an ordinary start
         }
+        if (tray != null) tray.Dispose();
         return 0;
+    }
+
+    // The QEMU running from this folder: its process id and the port of its monitor, or null.
+    public static int[] Running(string vmDir)
+    {
+        try
+        {
+            string[] parts = File.ReadAllText(Path.Combine(vmDir, "running")).Split(' ');
+            int pid = int.Parse(parts[0]), port = int.Parse(parts[1]);
+            if (!Process.GetProcessById(pid).ProcessName.StartsWith("qemu-system", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return new[] { pid, port };
+        }
+        catch (Exception) { return null; }  // no such file, or what it names is gone: not running
     }
 
     // Mentor is running from this folder already: its window cannot be closed, so this is
@@ -267,21 +376,14 @@ static class Program
     static bool AlreadyRunning(string vmDir, bool ask)
     {
         string running = Path.Combine(vmDir, "running");
-        int pid, port;
-        try
-        {
-            string[] parts = File.ReadAllText(running).Split(' ');
-            pid = int.Parse(parts[0]);
-            port = int.Parse(parts[1]);
-            if (!Process.GetProcessById(pid).ProcessName.StartsWith("qemu-system", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException();
-        }
-        catch (Exception)  // no such file, or what it names is gone: not running
+        int[] found = Running(vmDir);
+        if (found == null)
         {
             try { File.Delete(running); }
             catch (IOException) { }
             return false;
         }
+        int port = found[1];
         if (!ask) throw new LauncherException("Mentor is already running from this folder.");
         DialogResult choice = MessageBox.Show(
             "Mentor is already running.\n\n" +
@@ -330,7 +432,7 @@ static class Program
                       BootWatch watch, RestorePoints points, int bootTimeout, bool gpu, bool sharp,
                       bool own, bool vulkan)
     {
-        int clipboardPort = FreePort(), controlPort = FreePort(), qmpPort = FreePort(), stopPort = FreePort();
+        int clipboardPort = FreePort(), controlPort = FreePort(), qmpPort = FreePort(), stopPort = FreePort(), hostPort = FreePort();
         string running = Path.Combine(Path.GetDirectoryName(modeFile), "running");
         // The resolution the system inside starts with: the one its window is going to have,
         // so that it does not change in front of the user once the desktop is up. In real
@@ -376,7 +478,7 @@ static class Program
                             // the start minutes long: there it goes full screen later (HostBridge.OnBoot).
                             : "gtk,show-menubar=off,grab-on-hover=on" + (File.Exists(modeFile) && !sharp ? ",full-screen=on" : ""))
                         + ",window-close=off",
-            "-device", "qemu-xhci",
+            "-device", "qemu-xhci,id=xhci",
             "-device", "usb-tablet",
             // The game mouse: one that only moves, for games that hold the pointer and turn
             // the view with it (they get nothing from the tablet's positions). The tablet stays
@@ -388,6 +490,9 @@ static class Program
             "-device", "virtserialport,chardev=clipboard,name=org.mentor.clipboard",
             "-chardev", "socket,id=control,host=127.0.0.1,port=" + controlPort + ",server=on,wait=off",
             "-device", "virtserialport,chardev=control,name=org.mentor.control",
+            // The root-only link to the system inside: Windows' time zone (mentor-host-link there).
+            "-chardev", "socket,id=host,host=127.0.0.1,port=" + hostPort + ",server=on,wait=off",
+            "-device", "virtserialport,chardev=host,name=org.mentor.host",
             "-no-reboot",
             "-qmp", "tcp:127.0.0.1:" + qmpPort + ",server=on,wait=off",
             "-qmp", "tcp:127.0.0.1:" + stopPort + ",server=on,wait=off",
@@ -420,7 +525,7 @@ static class Program
         // Nor with Mentor's own QEMU, whose window does not freeze when it is there from the start.
         bool waitMinimized = gpu && !own && !extra.Contains("-display");
         if (gpu && !own && !waitMinimized && File.Exists(modeFile)) q.Add("-full-screen");
-        if (!extra.Contains("-audiodev")) q.AddRange(Sound());
+        if (!extra.Contains("-audiodev")) q.AddRange(Sound(own));
         var stderr = new StringBuilder();
         string program = Path.Combine(qemuDir, "qemu-system-x86_64w.exe");
         string said = Path.Combine(Path.GetDirectoryName(modeFile), "qemu-said.txt");
@@ -445,7 +550,7 @@ static class Program
         }
         var qmp = new Qmp(qmpPort);
         watch.Begin();
-        var bridge = new HostBridge(clipboardPort, controlPort, qemu, modeFile, qmp, watch, points, bootTimeout,
+        var bridge = new HostBridge(clipboardPort, controlPort, hostPort, qemu, modeFile, qmp, watch, points, bootTimeout,
                                     waitMinimized, File.Exists(modeFile), sharp, own);
         qemu.EnableRaisingEvents = true;
         // Closing the window ends Application.Run below. Not Application.Exit():
@@ -463,7 +568,9 @@ static class Program
         try { File.WriteAllText(running, qemu.Id + " " + stopPort); }
         catch (IOException) { }
 
+        if (tray != null) tray.Attach(bridge);
         Application.Run(bridge);
+        if (tray != null) tray.Detach();
 
         qemu.WaitForExit();
         try { File.Delete(running); }
@@ -493,7 +600,8 @@ static class Program
         // must not keep the system from starting: once more, without.
         string complaint = stderr.ToString();
         if (qemu.ExitCode != 0 && !bridge.TimedOut && !bridge.Revealed && !SoundFailed &&
-            (complaint.Contains("DirectSound") || complaint.Contains("audio driver") || complaint.Contains("audiodev")))
+            (complaint.Contains("DirectSound") || complaint.Contains("audio driver") || complaint.Contains("audiodev") ||
+             complaint.Contains("sdl_openaudiodevice") || complaint.Contains("SDL failed to initialize audio")))
         {
             SoundFailed = true;
             return true;  // start it again
@@ -687,8 +795,10 @@ class HostBridge : Form
     bool gameMouse;  // the system inside asked for the game mouse (a game is in front)
     bool noGameMouse;  // this QEMU has none (an older Mentor.exe's command line, or one given by hand)
     const int RevealAnyway = 45;  // seconds, for a system that never reports its desktop
+    public HostLink Link;  // the root-only link to the system inside (org.mentor.host)
+    PowerWatch power;  // Windows going to sleep, waking, shutting down
 
-    public HostBridge(int clipboardPort, int controlPort, Process qemu, string modeFile,
+    public HostBridge(int clipboardPort, int controlPort, int hostPort, Process qemu, string modeFile,
                       Qmp qmp, BootWatch watch, RestorePoints points, int bootTimeout,
                       bool waitMinimized, bool wantFullscreen, bool sharp, bool late)
     {
@@ -732,12 +842,16 @@ class HostBridge : Form
             if (message.TryGetValue("restore-point", out value)) OnRestorePoint(value as string);
             if (message.TryGetValue("game-mouse", out value)) OnGameMouse(value is bool && (bool)value);
         });
+        Link = new HostLink(this, hostPort, qemu, qmp);
+        power = new PowerWatch(this, qmp, qemu);
+        power.Woke += () => Link.Again();
         DateTime started = DateTime.UtcNow;
         var timer = new System.Windows.Forms.Timer { Interval = 2000 };
         timer.Tick += (s, e) => {
             // QEMU's window is Mentor's on the taskbar: the owl and "Mentor", not QEMU's icon and name.
             VmWindow.Brand(qemu);
             KeepMouse();
+            Link.Tick();
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
             if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained &&
@@ -780,6 +894,20 @@ class HostBridge : Form
     }
 
     protected override void SetVisibleCore(bool value) { base.SetVisibleCore(false); }
+
+    // The tray icon's "Open Mentor": QEMU's window to the front.
+    public void ShowVm()
+    {
+        if (qemu.HasExited) return;
+        VmWindow.Restore(qemu);
+    }
+
+    // The tray icon's "Shut down Mentor": its power button, as from its own menu.
+    public void ShutDown()
+    {
+        Program.Note("shut down from the tray icon");
+        qmp.Execute("system_powerdown", null, 3000);
+    }
 
     // Brings QEMU's window up from the taskbar, where it waited for the guest to get past
     // its first uses of the graphics card. That is when the desktop is up: brought up
@@ -824,7 +952,15 @@ class HostBridge : Form
             }
             return;
         }
-        if (how == "ok") Reveal();
+        if (how == "ok") { Reveal(); SelfUpdate.Commit(); }
+        // For a test: the diagnostics file made by itself, into this folder, a while after the start.
+        string diagnosticsTest = Environment.GetEnvironmentVariable("MENTOR_DIAGNOSTICS_TEST");
+        if (how == "ok" && !string.IsNullOrEmpty(diagnosticsTest))
+        {
+            var later = new System.Windows.Forms.Timer { Interval = 20000 };
+            later.Tick += (s, e) => { later.Stop(); Diagnostics.MakeInBackground(Link, path => Program.Note("test diagnostics: " + path), diagnosticsTest); };
+            later.Start();
+        }
         if (how == "ok" && (sharp || late))
         {
             // Should the window not have got its size or its full screen at the start (a system
@@ -915,6 +1051,7 @@ class HostBridge : Form
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == WM_CLIPBOARDUPDATE) SendClipboard();
+        if (power != null && power.Handle(ref m)) return;
         base.WndProc(ref m);
     }
 
@@ -1704,34 +1841,6 @@ static class RestoreDialog
     }
 }
 
-// What the launcher window remembers between starts.
-class Settings
-{
-    public int memory, cpus;
-    public bool gpu, vulkan;
-    string path;
-
-    public static Settings Load(string path)
-    {
-        Settings settings = null;
-        try { settings = new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(path)); }
-        catch (IOException) { }
-        catch (ArgumentException) { }
-        catch (InvalidOperationException) { }
-        if (settings == null) settings = new Settings();
-        settings.path = path;
-        return settings;
-    }
-
-    public void Save()
-    {
-        var values = new Dictionary<string, object> { { "memory", memory }, { "cpus", cpus }, { "gpu", gpu }, { "vulkan", vulkan } };
-        try { File.WriteAllText(path, new JavaScriptSerializer().Serialize(values)); }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-    }
-}
-
 // An on/off switch.
 class Toggle : Painted
 {
@@ -1827,203 +1936,6 @@ class Slider : Painted
         using (var fill = new SolidBrush(Theme.Accent)) g.FillPath(fill, done);
         g.FillEllipse(Brushes.White, at, middle - knob / 2f, knob, knob);
         if (Focused) using (var ring = new Pen(Theme.AccentHot, 2f)) g.DrawEllipse(ring, at + 1f, middle - knob / 2f + 1f, knob - 2f, knob - 2f);
-    }
-}
-
-// The window a double click on Mentor.exe opens: start, with the few choices worth having at hand.
-class LauncherWindow : Form
-{
-    [StructLayout(LayoutKind.Sequential)]
-    struct MemoryStatus
-    {
-        public uint length, load;
-        public ulong totalPhysical, availablePhysical, totalPageFile, availablePageFile, totalVirtual, availableVirtual, extended;
-    }
-    [DllImport("kernel32.dll")] static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
-
-    readonly Toggle gpu = new Toggle(), fullscreen = new Toggle(), vulkan = new Toggle();
-    readonly Slider memory = new Slider(), cpus = new Slider();
-
-    public bool Gpu { get { return gpu.Checked; } }
-    public bool Vulkan { get { return vulkan.Checked && gpu.Checked; } }
-    public bool Fullscreen { get { return fullscreen.Checked; } }
-    public bool Repair { get; private set; }
-    public int Memory { get { return memory.Value; } }
-    public int Cpus { get { return cpus.Value; } }
-
-    static Label Words(string text, int left, int top, int width, float size, Color colour, bool onCard)
-    {
-        return new Label { Text = text, Left = left, Top = top, Width = width, Height = (int)(size * 2.3f), ForeColor = colour,
-                           BackColor = onCard ? Theme.Card : Theme.Back, Font = Theme.Font(size, FontStyle.Regular) };
-    }
-
-    public LauncherWindow(int memoryGB, int cpuCount, bool useGpu, bool useVulkan, bool own,
-                          bool startFullscreen, RestorePoints points, BootWatch watch, string vmDir, string image)
-    {
-        Text = "Mentor";
-        AutoScaleMode = AutoScaleMode.None;  // sized by Theme.Fit, below
-        int more = own ? 62 : 0;  // the Vulkan row
-        ClientSize = new Size(440, 600 + more);  // with the buttons below folded away (Unfold)
-        FormBorderStyle = FormBorderStyle.FixedSingle;
-        StartPosition = FormStartPosition.CenterScreen;
-        MaximizeBox = false;
-        BackColor = Theme.Back;
-        ForeColor = Theme.Text;
-        Font = Theme.Font(9.5f, FontStyle.Regular);
-        KeyPreview = true;
-        Theme.Dress(this);
-
-        var emblem = new PictureBox { Left = 170, Top = 24, Width = 100, Height = 100, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Back };
-        try { emblem.Image = Image.FromStream(typeof(LauncherWindow).Assembly.GetManifestResourceStream("emblem.png")); }
-        catch (Exception) { }
-        var title = new Label { Text = "Mentor", Left = 0, Top = 130, Width = 440, Height = 40, TextAlign = ContentAlignment.MiddleCenter,
-                                Font = Theme.Font(20f, FontStyle.Bold), ForeColor = Theme.Text, BackColor = Theme.Back };
-        var subtitle = new Label { Text = "Agentic Linux", Left = 0, Top = 170, Width = 440, Height = 22, TextAlign = ContentAlignment.MiddleCenter,
-                                   ForeColor = Theme.Dim, BackColor = Theme.Back };
-        var start = new PillButton { Text = "Start Mentor", Primary = true, Result = DialogResult.OK,
-                                     Left = 28, Top = 210, Width = 384, Height = 52, Font = Theme.Font(12f, FontStyle.Bold) };
-
-        var card = new Card { Left = 28, Top = 282, Width = 384, Height = 262 + more };
-        gpu.Checked = useGpu;
-        vulkan.Checked = useVulkan;
-        fullscreen.Checked = startFullscreen;
-        foreach (Painted control in new Painted[] { gpu, vulkan, fullscreen, memory, cpus }) control.BackColor = Theme.Card;
-        gpu.SetBounds(322, 22, 44, 24);
-        vulkan.SetBounds(322, 84, 44, 24);
-        vulkan.Visible = own;
-        vulkan.Enabled = gpu.Checked;  // it is drawn by the graphics card or not at all
-        gpu.CheckedChanged += (s, e) => vulkan.Enabled = gpu.Checked;
-        fullscreen.SetBounds(322, 84 + more, 44, 24);
-
-        MemoryStatus status = new MemoryStatus { length = 64 };
-        int hostGB = GlobalMemoryStatusEx(ref status) ? (int)(status.totalPhysical >> 30) + 1 : 16;
-        memory.Minimum = 2;
-        memory.Maximum = Math.Max(4, Math.Min(64, hostGB * 3 / 4));
-        memory.Value = memoryGB;
-        cpus.Minimum = 1;
-        cpus.Maximum = Environment.ProcessorCount;
-        cpus.Value = cpuCount;
-        memory.SetBounds(16, 162 + more, 352, 26);
-        cpus.SetBounds(16, 222 + more, 352, 26);
-        Label memoryValue = Words("", 266, 138 + more, 100, 9.5f, Theme.Text, true);
-        Label cpuValue = Words("", 266, 198 + more, 100, 9.5f, Theme.Text, true);
-        memoryValue.TextAlign = cpuValue.TextAlign = ContentAlignment.TopRight;
-        EventHandler show = (s, e) => {
-            memoryValue.Text = memory.Value + " GB";
-            cpuValue.Text = cpus.Value + " of " + Environment.ProcessorCount;
-        };
-        memory.ValueChanged += show;
-        cpus.ValueChanged += show;
-        show(null, EventArgs.Empty);
-
-        card.Controls.AddRange(new Control[] {
-            Words("Graphics card", 18, 14, 290, 10.5f, Theme.Text, true),
-            Words(own ? "Smoother desktop, drawn by the graphics card." : "Smoother desktop. Experimental.",
-                  18, 37, 300, 8.5f, Theme.Dim, true), gpu,
-            new Label { Left = 18, Top = 68, Width = 348, Height = 1, BackColor = Theme.Line },
-            Words("Full screen", 18, 76 + more, 290, 10.5f, Theme.Text, true),
-            Words("Ctrl+Alt+F switches at any time.", 18, 99 + more, 290, 8.5f, Theme.Dim, true), fullscreen,
-            new Label { Left = 18, Top = 130 + more, Width = 348, Height = 1, BackColor = Theme.Line },
-            Words("Memory", 18, 138 + more, 200, 10.5f, Theme.Text, true), memoryValue, memory,
-            Words("Processors", 18, 198 + more, 200, 10.5f, Theme.Text, true), cpuValue, cpus,
-        });
-        if (own)
-            card.Controls.AddRange(new Control[] {
-                Words("Vulkan", 18, 76, 290, 10.5f, Theme.Text, true),
-                Words("For apps and games that draw with Vulkan. Experimental.", 18, 99, 300, 8.5f, Theme.Dim, true), vulkan,
-                new Label { Left = 18, Top = 130, Width = 348, Height = 1, BackColor = Theme.Line },
-            });
-
-        var restore = new PillButton { Text = "Restore points", Left = 28, Top = 598 + more, Width = 186, Height = 38 };
-        var fresh = new PillButton { Text = "Start over", Left = 226, Top = 598 + more, Width = 186, Height = 38 };
-        var mend = new PillButton { Text = "Repair", Left = 28, Top = 644 + more, Width = 186, Height = 38 };
-        var reinstall = new PillButton { Text = "Reinstall", Left = 226, Top = 644 + more, Width = 186, Height = 38 };
-
-        reinstall.Click += (s, e) => {
-            if (MessageBox.Show(this, "Reinstall Mentor from GitHub?\n\n" +
-                    "The newest Mentor is downloaded (about 2.3 GB) and put in place of this one.\n\n" +
-                    "Everything inside Mentor is deleted: your files in it, installed apps, settings, conversations, " +
-                    "recipes, the sign-ins to Claude, ChatGPT and Gemini, the NVIDIA key, and all restore points. " +
-                    "Copy anything you want to keep to Windows first.\n\n" +
-                    "Your files on Windows are not touched. Nothing is deleted until the download has arrived whole: " +
-                    "if it is stopped or fails, Mentor stays as it is.",
-                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                return;
-            if (Reinstall.Run(this, image, vmDir))
-            {
-                watch.Failures = 0;
-                MessageBox.Show(this, "Done. Mentor is the newest one now, and starts fresh: press Start Mentor.", Text);
-            }
-        };
-
-        mend.Click += (s, e) => {
-            if (MessageBox.Show(this, "Start Mentor in repair mode?\n\nFor when the desktop no longer comes up, or something " +
-                    "of Mentor's own is broken. The desktop is not started: you get a text screen where you talk to the " +
-                    "assistant, and it works from its instructions to find what is broken and mend it. Nothing is changed " +
-                    "without your say.\n\nType /restart there to start Mentor normally again.",
-                    Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-                return;
-            Repair = true;
-            DialogResult = DialogResult.OK;
-        };
-
-        restore.Click += (s, e) => {
-            List<RestorePoint> all = points.List();
-            if (all.Count == 0)
-            {
-                MessageBox.Show(this, "There are no restore points yet.\n\nOne is made before every change the " +
-                    "assistant applies to the system, and once a day after a start that worked.", Text);
-                return;
-            }
-            RestorePoint chosen = RestoreDialog.Ask(
-                "Go back to a restore point. Mentor's whole disk becomes what it was at that moment: " +
-                "everything changed inside Mentor since then is lost.", all, "Cancel");
-            if (chosen == null) return;
-            string error = points.Restore(chosen);
-            if (error != null)
-                MessageBox.Show(this, "Could not go back:\n\n" + error + "\n\nIf Mentor is running, close it first.",
-                                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            else
-            {
-                watch.Failures = 0;
-                MessageBox.Show(this, "Mentor is as it was on " + chosen.time + ".", Text);
-            }
-        };
-        fresh.Click += (s, e) => {
-            if (MessageBox.Show(this, "Start over from the system as it was built?\n\nEverything inside Mentor is " +
-                    "deleted: installed apps, files, settings, the sign-in to Claude and all restore points.",
-                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                return;
-            try
-            {
-                if (Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
-                MessageBox.Show(this, "Done. The next start is a fresh system.", Text);
-            }
-            catch (IOException error)
-            {
-                MessageBox.Show(this, "Could not delete it:\n\n" + error.Message + "\n\nIf Mentor is running, close it first.",
-                                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        };
-
-        // The rarer choices start folded away under one quiet line (2026-10-15): the window is about
-        // starting Mentor, and these are for when something went wrong.
-        var folded = new Control[] { restore, fresh, mend, reinstall };
-        foreach (Control button in folded) button.Visible = false;
-        var unfold = new Unfold { Text = "More options", Left = 28, Top = 560 + more, Width = 384, Height = 28 };
-        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, unfold, restore, fresh, mend, reinstall });
-        float factor = Theme.Fit(this);
-        unfold.Click += (s, e) => {
-            unfold.Open = !unfold.Open;
-            foreach (Control button in folded) button.Visible = unfold.Open;
-            ClientSize = new Size(ClientSize.Width, (int)Math.Round((unfold.Open ? 706 + more : 600 + more) * factor));
-            unfold.Invalidate();
-        };
-        ActiveControl = start;
-        KeyDown += (s, e) => {
-            if (e.KeyCode == Keys.Escape) Close();
-            if (e.KeyCode == Keys.Enter && !(ActiveControl is PillButton)) DialogResult = DialogResult.OK;
-        };
     }
 }
 

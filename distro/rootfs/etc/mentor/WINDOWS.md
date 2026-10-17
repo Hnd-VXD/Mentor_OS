@@ -1,0 +1,132 @@
+# Mentor.exe on Windows, and what of it reaches this system
+
+Mentor runs as a virtual machine on Windows. The program that starts it there is **Mentor.exe** (the "launcher"; its source is `launcher/` in the project, not in this system). You cannot see or change Windows from here, but the user will ask you about what Mentor.exe does, and some of it has a part inside this system. This file says what the launcher does, what the user sees, which files here belong to it, and how to make those again.
+
+Most of these features were made after Try Omarchy for Windows (github.com/omacom/try-omarchy-windows, MIT), which runs another Linux the same way.
+
+Where the user finds things on Windows, in plain words:
+- **The Mentor window** when Mentor.exe starts without anything else: "Start Mentor", the switches (Graphics card, Vulkan, Full screen), **Speed**, **Sound, USB and sign-in** (a "Change…" button), and **More options** (Restore points, Repair, Back up…, Restore a backup…, Move Mentor…, Reinstall, Start over).
+- **The Mentor icon in the Windows notification area** (bottom right, by the clock) while Mentor runs. Right click: Open Mentor, Settings…, Make a diagnostics file, Shut down Mentor.
+
+Everything chosen in the Mentor window is used from the next start of Mentor. When the user wants a choice there, tell them in one sentence where it is; you cannot change it for them.
+
+## 1. Mentor.exe keeps itself up to date
+
+At every start, Mentor.exe looks (at most twice a day) for a newer Mentor.exe in the GitHub release "updates" of Hnd-VXD/Mentor_OS. It takes one only if Mentor's maker signed it (with the same key as this system's updates, `/etc/mentor/update-signers`, namespace `mentor-launcher`) and the file is exactly the one signed. It downloads it while Mentor runs and puts it in place at the next start, without asking: the user sees nothing. If the new one does not start, or the system does not come up under it, the next start goes back to the one before by itself, and that version is not tried again.
+
+Nothing of this is inside this system. On Windows its record is `launcher-update\log.txt` beside Mentor.exe (it is in the diagnostics file, section 7). Updates of this system itself are another thing: UPDATES.md.
+
+## 2. When Windows sleeps, wakes, or shuts down
+
+A Mentor.exe from 2026-10-18 on pauses the system just before Windows sleeps and lets it go on when Windows wakes (QEMU's `stop` and `cont`), and when Windows shuts down or signs out it shuts this system down properly first (the power button, up to ten seconds). Before that, Windows froze the machine wherever it was. Either way the time that passed shows up here as a gap; BOOT.md, "When Windows sleeps", says how to recognise it (`mentor-sentinel: stall of N s, paused`) and why no service here has a watchdog. The clock here stays right across a pause; nothing has to correct it.
+
+## 3. The link to Mentor.exe: mentor-host-link
+
+A Mentor.exe from 2026-10-18 on gives this system a third channel, the virtio port `org.mentor.host` (`/dev/virtio-ports/org.mentor.host`), readable by root only (the other two, `org.mentor.clipboard` and `org.mentor.control`, are the user's). `mentor-host-link`, a root service, is at its other end. It carries, one JSON object a line:
+- Windows' time zone (section 4),
+- Windows Hello for passwords (section 8),
+- cards for the chat that Mentor.exe wants the user to see (a USB device it could not give, section 9),
+- the system's logs for the diagnostics file (section 7).
+
+The service is started by udev when the port is there, so with an older Mentor.exe it simply does not run.
+
+Its files:
+
+| File | What it is |
+|---|---|
+| `/usr/local/lib/mentor/mentor-host-link` | the service (Python), also `mentor-host-link status` and `mentor-host-link follow` |
+| `/usr/local/lib/systemd/system/mentor-host-link.service` | runs it, again after 5 s if it stops |
+| `/etc/udev/rules.d/70-mentor-host.rules` | starts the service when the port appears |
+
+Check that it works:
+1. `ls /dev/virtio-ports/` — good: `org.mentor.host` is listed. Not listed: Mentor.exe is older than 2026-10-18; nothing here can be done about it, the user gets the newer one by itself (section 1).
+2. `systemctl is-active mentor-host-link` — good: `active`.
+3. `journalctl -u mentor-host-link -b -o cat | tail` — good: `link to Mentor.exe open`, and no `Traceback`.
+
+Make it again (as root, in the sandbox first; these files are in `/usr/local/lib/mentor`, which only the user can write: give them the lines):
+1. `mentor verify` — see which of the three files is missing or changed.
+2. `sudo mentor restore /usr/local/lib/mentor/mentor-host-link /usr/local/lib/systemd/system/mentor-host-link.service /etc/udev/rules.d/70-mentor-host.rules`
+3. `sudo chmod 755 /usr/local/lib/mentor/mentor-host-link`
+4. `sudo systemctl daemon-reload`
+5. `sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=virtio-ports`
+6. Do the three checks above again.
+
+When it fails after a Python update: `journalctl -u mentor-host-link -b` shows the error; it uses only Python's own modules (json, os, select, socket, subprocess, threading, tarfile, zoneinfo) and the commands `timedatectl`, `loginctl`, `setpriv`, `journalctl`, `systemctl`.
+
+## 4. The time zone follows Windows'
+
+Mentor.exe sends Windows' time zone by the name Linux knows it by (Windows' "GTB Standard Time" is `Europe/Bucharest` or `Europe/Athens`, depending on the country in Windows' region settings), when the link opens and whenever it changes on Windows. mentor-host-link sets it with `timedatectl set-timezone`. A zone that shows exactly the same time as the one already set is left as it is (Athens stays Athens when Windows says Bucharest).
+
+**A zone chosen inside Mentor wins.** When the zone here is not the one mentor-host-link last set (the user chose another in GNOME Settings, or asked you to), Windows' is no longer followed. Its record is `/var/lib/mentor/host-timezone.json`: `following`, `applied` (what it last set), `windows` (what Windows says), `chosen` (the user's).
+
+- What it does now: `mentor-host-link status` (good: `"following": true` and `now` the same as `windows`, or a zone with the same time).
+- The user wants Windows' zone followed again: they run (you cannot write `/var/lib/mentor`) `sudo /usr/local/lib/mentor/mentor-host-link follow`. It answers "Following Windows' time zone again: ZONE." and sets it.
+- The user wants a fixed zone: set it as usual (`timedatectl set-timezone Zone/City`, or GNOME Settings, Date & Time); following stops by itself.
+
+## 5. Sound, the microphone, and the camera
+
+With Mentor's own QEMU (every Mentor installed by MentorSetup.exe), sound goes through SDL and the system always has a microphone input, also when Windows has none plugged in (it then hears silence until one is plugged in). In the Mentor window, **Sound, USB and sign-in** chooses:
+- **Sound**: "Same as Windows" or one of Windows' speakers or headphones.
+- **Microphone**: "Same as Windows", one of Windows' microphones, or **Off**: then this system has no microphone at all (no app here can listen).
+A chosen device that is unplugged falls back to Windows' own until it is back.
+
+What you see here: one card `HDA Intel` (`cat /proc/asound/cards`). With PipeWire: `pactl list sinks short` and `pactl list sources short`; the microphone is the source that is not a `.monitor`. With the microphone Off there is no such source. When the user says the microphone does not work: 1) ask whether Mentor's microphone is Off in the Mentor window (Sound, USB and sign-in); 2) whether Windows lets apps use the microphone (Windows Settings, Privacy & security, Microphone: "Let desktop apps access your microphone" on); 3) `pactl list sources short` here, and the input volume in GNOME Settings, Sound.
+
+**There is no camera.** Mentor's QEMU cannot pass a camera to this system: it has no virtual camera, and giving it the camera as a USB device (section 9) works only when the camera's Windows driver is WinUSB, which a camera's is not. Tell the user so in one sentence when they ask; video calls work with the microphone, without a picture of them.
+
+## 6. Speed: how much of the computer Mentor gets
+
+In the Mentor window, **Speed**:
+- **Balanced** (the default): half of the processors, 4 to 8, and a third of the memory, 4 to 8 GB, leaving Windows at least 2 GB of what is free when Mentor starts.
+- **Maximum**: what Windows is not using when Mentor starts, less room for Windows (two processors, or an eighth on larger computers; 4 GB of memory, or an eighth on larger computers). Never less than Balanced.
+- **Manual**: the two sliders, as before.
+It is worked out again at every start. Here, `nproc` and `free -g` show what this start got. When the user says Mentor is slow and Windows has plenty free, Maximum is the one to suggest; when Windows is slow while Mentor runs, Balanced. The change counts from the next start.
+
+## 7. The diagnostics file
+
+The tray icon's **Make a diagnostics file** puts `Mentor diagnostics DATE TIME.zip` on the user's Windows Desktop. It holds Mentor.exe's records (launcher.log, qemu.log, the self-update's log, the restore points' list, the settings, a description of the computer) and, asked over the link, this system's: `system-inside.tar.gz` with this start's journal and the one before, the failed services, `/var/log/mentor/*` and the versions. Nothing is sent anywhere: the user decides whether to share it. When the user asks how to send their problem to Mentor's maker, the problem report (`problem_report`, UPDATES.md) is the way; the diagnostics file is for when someone asks them for it.
+
+## 8. Windows Hello for passwords
+
+Opt-in, in the Mentor window: **Sound, USB and sign-in**, switch **Windows Hello** (only when Windows Hello is set up on Windows). Then when this system asks for the user's password (the password dialog for the agent's changes, `sudo`), Windows shows its own Windows Hello prompt (face, finger or PIN) with the words "Mentor wants to …", and a yes there is enough. Cancelled, refused, or Hello not answering: the password is asked as always. The password never stops working.
+
+How it works:
+1. `/etc/pam.d/polkit-1` and `/etc/pam.d/sudo` have one line first: `auth sufficient pam_exec.so quiet /usr/local/lib/mentor/mentor-hello`.
+2. `mentor-hello` (run as root by PAM) gives up at once (exit 1, the password follows) unless `/run/mentor-hello/on` exists. mentor-host-link makes that file when Mentor.exe says Hello is switched on, and removes it when the link closes. `/run/mentor-hello` is root's alone (0700); `mentor-hello` trusts nothing there that is not root's. (`/run/mentor` is not used for this: anyone may write there.)
+3. It asks mentor-host-link on `/run/mentor-hello/socket`, with what for: for `sudo`, the command; for the password dialog, the agent's sentence, which `mentor-rootd` leaves in `/run/mentor-hello/why`.
+4. mentor-host-link passes it to Mentor.exe, which shows the prompt, and passes back yes or no. One prompt at a time; after a no, none for 3 seconds.
+
+What it does not protect against: the prompt cannot prove which request it is for. A program running as the user could start its own `sudo` just before the user's. Tell the user, when they switch it on or ask: answer a Windows Hello prompt from Mentor only right after asking for something in Mentor; cancel one that comes by itself.
+
+Check it (with Windows Hello switched on in the Mentor window):
+1. `sudo ls -ld /run/mentor-hello` — good: `drwx------ ... root root`.
+2. `sudo ls /run/mentor-hello` — good: `on` and `socket`. No `on`: Hello is off in the Mentor window, or Mentor.exe is older.
+3. `journalctl -u mentor-host-link -b -o cat | grep "Windows Hello"` — one line for each prompt and its answer.
+
+Its files: `/usr/local/lib/mentor/mentor-hello`, `/etc/pam.d/polkit-1`, `/etc/pam.d/sudo`, and the hint in `/usr/local/lib/mentor/mentor-rootd` (`hello_hint`). Make them again (the user runs these; you cannot write them):
+1. `sudo mentor restore /usr/local/lib/mentor/mentor-hello /etc/pam.d/polkit-1 /etc/pam.d/sudo`
+2. `sudo chmod 755 /usr/local/lib/mentor/mentor-hello`
+3. Check with `sudo -k; sudo true`: with Hello on, a prompt on Windows; cancel it, and the password is asked.
+
+If passwords stop working at all after a change to these files (they should not: every failure falls through to the password), the user can still use repair mode (REPAIR.md) or the emergency console, and put the files back with step 1. Never remove `include system-auth` from either file.
+
+## 9. USB devices (experimental)
+
+In the Mentor window, **Sound, USB and sign-in**, **USB device**: one of the USB devices plugged into Windows, given to this system when Mentor starts; Windows cannot use it meanwhile. It is remembered by the USB port it is in: plugged in elsewhere, it is not given. Whether it works depends on its Windows driver: only a device whose driver is WinUSB (or libusbK) can be given. Most devices (cameras, Bluetooth, most phones and printers) have their own drivers, and Mentor installs none.
+
+When it could not be given, Mentor.exe says so in a yellow card here ("… could not be given to Mentor"), with the exact reason for you behind "Let Mentor look": "not plugged in at the same USB port" (plug it into the port where it was chosen, or choose it again), or anything else (its Windows driver keeps it: it stays usable in Windows). Explain that in one or two plain sentences.
+
+A device that was given: `lsusb` lists it here. To give it back to Windows, choose "None" in the Mentor window and restart Mentor.
+
+## 10. Back up, restore, move
+
+In the Mentor window, **More options** (Mentor must be shut down; the buttons say so otherwise):
+- **Back up…**: everything of Mentor in one .zip where the user chooses: the disk with everything done inside Mentor and its restore points, the system image it is made on, the firmware's settings. About the size of Mentor's disk plus 2 to 3 GB. It is not locked with a password: it holds the user's files and sign-ins, so it must be kept somewhere private.
+- **Restore a backup…**: puts Mentor back as it is in such a file. Every file in it is checked first; a damaged backup changes nothing. What is in Mentor now is replaced.
+- **Move Mentor…**: the whole installation to another folder or drive (a folder "Mentor" is made there). Copied, checked, then used from there; the shortcuts follow, and the old copy is removed.
+
+Restore points (inside the disk) go along with a backup and a move; going back to one is still "Restore points". None of this can be done from inside Mentor. When the user asks how to keep everything safe before a big change, a backup is the answer for "everything, to a file", a restore point for "go back to this morning".
+
+## 11. When the user asks "what version is Mentor?"
+
+This system's version: `cat /etc/mentor/version-name` (and UPDATES.md). Mentor.exe's version is not visible from here; it is in the diagnostics file (`about.txt`), and it keeps itself up to date (section 1).

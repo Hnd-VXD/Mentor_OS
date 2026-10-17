@@ -1,0 +1,9 @@
+[Unit]
+Description=Mentor: the link to Mentor.exe on Windows (the time zone follows Windows')
+Documentation=file:///etc/mentor/WINDOWS.md
+ConditionPathExists=/dev/virtio-ports/org.mentor.host
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-host-link
+Restart=always
+RestartSec=5
