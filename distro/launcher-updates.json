@@ -4,5 +4,11 @@
     "sha256": "164e79b09c0c6994e675ebd38679c6b34fd8b8820d79a893fc9fc31222e8e0f4",
     "summary": "A new Mentor window: speed choices, Windows sleep and time zone, sound and USB devices, Windows Hello, backups, and it updates itself.",
     "published": "2026-10-17 22:53"
+  },
+  {
+    "version": 202610172000,
+    "sha256": "a83f6c2a2a51c8565b6fb6caa9dc73d267d37969f81b4f1a06a245caa3f0b70e",
+    "summary": "The Mentor window says when a new version is ready, and after it was updated.",
+    "published": "2026-10-17 23:00"
   }
 ]

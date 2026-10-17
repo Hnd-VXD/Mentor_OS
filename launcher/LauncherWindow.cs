@@ -173,6 +173,21 @@ class LauncherWindow : Form
         Place(emblem, 170, 24, 100, 100);
         Place(title, 0, 130, 440, 40);
         Place(subtitle, 0, 170, 440, 22);
+        // News of the launcher's own update, in the subtitle's place (SelfUpdate.Note): at once when it
+        // is known, or when the check in the background finds one while the window is open.
+        Action showNote = () => {
+            if (SelfUpdate.Note == null || running) return;
+            subtitle.Text = SelfUpdate.Note;
+            subtitle.ForeColor = Theme.AccentHot;
+        };
+        showNote();
+        Action noteChanged = () => {
+            try { if (IsHandleCreated && !IsDisposed) BeginInvoke(showNote); }
+            catch (Exception) { }
+        };
+        SelfUpdate.NoteChanged += noteChanged;
+        Shown += (s, e) => showNote();
+        FormClosed += (s, e) => SelfUpdate.NoteChanged -= noteChanged;
         Place(start, 28, 210, 384, 52);
 
         gpu.Checked = settings.gpu;

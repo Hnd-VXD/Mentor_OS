@@ -62,6 +62,21 @@ static class SelfUpdate
 
     public static long Version { get { return LauncherBuild.Version; } }
 
+    // One short line for the Mentor window (LauncherWindow shows it under the name): that this launcher
+    // was just put in place, or that a newer one is downloaded for the next start. Null: nothing to say.
+    // The user asked to be told both (2026-10-17); the update itself still needs no click.
+    public static string Note;
+    public static event Action NoteChanged;  // raised on the checking thread: the window Invokes
+    const string UpdatedNote = "Mentor was updated to its newest version.";
+    const string ReadyNote = "A new version is ready for the next time you open Mentor.";
+
+    static void SetNote(string note)
+    {
+        Note = note;
+        Action changed = NoteChanged;
+        if (changed != null) changed();
+    }
+
     static string PathOf(string name) { return Path.Combine(dir, name); }
 
     public static void Log(string text)
@@ -116,7 +131,11 @@ static class SelfUpdate
             trial = true;
             try { File.WriteAllText(PathOf("alive"), Version.ToString()); }
             catch (Exception) { }
-            if (state.tries == 0) return false;
+            if (state.tries == 0)
+            {
+                SetNote(UpdatedNote);  // the first start under it: until the system has come up
+                return false;
+            }
             // The last start under this launcher did not work out: back to the one before.
             Log("the start under this launcher did not work: going back to " + state.previous);
             return GoBack(state, args, true);
@@ -127,7 +146,11 @@ static class SelfUpdate
             try { File.Delete(PathOf("state.json")); }
             catch (Exception) { }
         }
-        if (busy) return false;
+        if (busy)
+        {
+            if (StagedNewer()) SetNote(ReadyNote);  // not swapped under a running system
+            return false;
+        }
         return TakeStaged(args);
     }
 
@@ -333,8 +356,20 @@ static class SelfUpdate
             File.WriteAllText(PathOf("staged.json"), new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
                 { "version", version }, { "file", file }, { "sha256", sha }, { "summary", info.ContainsKey("summary") ? info["summary"] : "" } }));
             Log("staged " + version + " for the next start");
+            SetNote(ReadyNote);
         }
         File.WriteAllText(PathOf("checked"), DateTime.UtcNow.ToString("o"));
+    }
+
+    static bool StagedNewer()
+    {
+        try
+        {
+            var staged = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(PathOf("staged.json")));
+            long version = Convert.ToInt64(staged["version"]);
+            return version > Version && !Failed(version) && File.Exists(PathOf(Path.GetFileName((string)staged["file"])));
+        }
+        catch (Exception) { return false; }
     }
 
     static bool IsStaged(long version, string sha)
