@@ -1,7 +1,7 @@
 #%PAM-1.0
 # sudo's own, with Windows Hello first: when the user switched it on in Mentor.exe and says yes on
 # Windows, no password is asked; otherwise the password, as always. /etc/mentor/WINDOWS.md, "Windows Hello".
-auth		sufficient	pam_exec.so quiet /usr/local/lib/mentor/mentor-hello
+auth		sufficient	pam_exec.so quiet quiet_log /usr/local/lib/mentor/mentor-hello
 auth		include		system-auth
 account		include		system-auth
 session		include		system-auth

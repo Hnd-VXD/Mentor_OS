@@ -22,5 +22,11 @@
     "sha256": "4925282f78cfa4249bae42778578a493f6b2dca7445a6e53fd9d480714049763",
     "summary": "One volume: Windows' volume and Mentor's are kept the same, mute too.",
     "published": "2026-10-17 23:30"
+  },
+  {
+    "version": 202610172213,
+    "sha256": "f97a9ec897736751c0dfac864aa7defd461997f35ef650d88146c682cfd6ced1",
+    "summary": "A small fix: after Mentor restarts, the launcher no longer keeps an old volume watch running.",
+    "published": "2026-10-18 01:13"
   }
 ]

@@ -843,6 +843,7 @@ class HostBridge : Form
             if (message.TryGetValue("game-mouse", out value)) OnGameMouse(value is bool && (bool)value);
         });
         Link = new HostLink(this, hostPort, qemu, qmp);
+        FormClosed += (s, e) => Link.Stop();  // a restart makes a new one; the old one stops watching
         power = new PowerWatch(this, qmp, qemu);
         power.Woke += () => Link.Again();
         DateTime started = DateTime.UtcNow;

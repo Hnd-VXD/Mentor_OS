@@ -640,8 +640,11 @@ def sandbox_run(a):
                       a["command"])
     if stop:
         return stop
-    return _privileged(SANDBOX, "sandbox_run", {"sandbox": _sandbox(), "command": a["command"], "timeout": timeout},
-                       timeout=timeout + 60)
+    code, out = _privileged(SANDBOX, "sandbox_run", {"sandbox": _sandbox(), "command": a["command"], "timeout": timeout},
+                            timeout=timeout + 60)
+    # systemd-nspawn's note on a future default comes with every run: noise for the agent (2026-10-18).
+    return code, "\n".join(line for line in out.splitlines()
+                           if not line.startswith("Note: in a future version of systemd-nspawn"))
 
 
 def _sandbox_report():
@@ -2277,6 +2280,11 @@ def _scrub(text):
     return text
 
 
+# Lines of Mentor's own doing that the logs keep as errors and that are not faults: its check that root still
+# needs a password (`sudo -n true`, SECURITY.md), and the Settings launcher of its own that wins over GNOME's.
+REPORT_NOISE = ("COMMAND=/usr/bin/true", "Ignoring duplicate name 'org.gnome.Settings'")
+
+
 def _report_facts():
     """What the maker needs besides the user's words: the version, whether Mentor's files are as built,
     what the self-check finds, and recent errors in the logs. Only Mentor's own checks and logs."""
@@ -2296,10 +2304,12 @@ def _report_facts():
     wrong = [line for line in out.splitlines() if line.strip() and not line.startswith("ok ")
              and "is in place" not in line]
     parts.append("### mentor doctor (what is not ok)\n" + ("\n".join(wrong[-15:]) or "everything ok"))
-    _code, out = _run(["journalctl", "--user", "-p", "err", "--since", "-3h", "-o", "short-iso", "--no-pager", "-n", "20"])
-    parts.append("### Errors in the user's session, last 3 hours\n" + (out.strip() or "none"))
+    _code, out = _run(["journalctl", "--user", "-p", "err", "--since", "-3h", "-o", "short-iso", "--no-pager", "-n", "60"])
+    session = [line for line in out.splitlines() if not any(n in line for n in REPORT_NOISE)]
+    parts.append("### Errors in the user's session, last 3 hours\n" + ("\n".join(session[-20:]) or "none"))
     _code, out = _run(["journalctl", "-b", "-p", "err", "--since", "-3h", "-o", "short-iso", "--no-pager", "-n", "300"])
-    mentor_lines = [line for line in out.splitlines() if "mentor" in line.lower()]
+    mentor_lines = [line for line in out.splitlines() if "mentor" in line.lower()
+                    and not any(n in line for n in REPORT_NOISE)]
     parts.append("### Errors of Mentor's system services, last 3 hours\n" + ("\n".join(mentor_lines[-15:]) or "none"))
     return version, "\n\n".join(parts)
 

@@ -33,6 +33,10 @@ SECRETS = [
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "a private key"),
     (re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)\b[\"']?\s*[=:]\s*[\"']?[^\s\"'<>$][^\s\"']{5,}"),
      "a password or key written out"),
+    # Written in words, as people do ("my password is hunter2", "κωδικός abc123"): only a word with a digit or a
+    # symbol in it, so that "a password is required" stays as it is (2026-10-18: "password hunter2" was kept).
+    (re.compile(r"(?i)\b(?:password|passwd|κωδικός|κωδικό|συνθηματικό)(?:\s+(?:is|was|είναι|ήταν))?\s+"
+                r"(?=[^\s,;]*[0-9!@#$%^&*+=?])[^\s,;]{4,}"), "a password written out"),
     (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "an email address"),
 ]
 
@@ -285,7 +289,9 @@ def looks_like_recipe(path):
 
 
 def _lines_in_code(text):
-    """[(line number, text)] of the lines inside fenced code blocks."""
+    """[(line number, text)] of the lines inside fenced code blocks, and of the code written inline in
+    single backticks elsewhere: a recipe with its commands inline kept them all out of the report's list
+    of commands, files and programs (2026-10-18), the inventory the user is shown."""
     out, inside = [], False
     for number, line in enumerate(text.splitlines(), 1):
         if line.strip().startswith("```"):
@@ -293,6 +299,8 @@ def _lines_in_code(text):
             continue
         if inside and line.strip():
             out.append((number, line))
+        elif not inside:
+            out += [(number, span) for span in re.findall(r"`([^`\n]+)`", line) if " " in span.strip()]
     return out
 
 
@@ -570,7 +578,10 @@ def parse_setup(text):
     """{"gnome": "51", "or_later": bool, "kernel": "6.12", "line": "…"} from the "Made on" row; {} when there is none."""
     m = SETUP_ROW.search(text)
     if not m:
-        return {}
+        # Without the row, a plain sentence near the top ("Made for GNOME 51, kernel 7.2.") counts too.
+        m = re.search(r"^(?!#)(.*\bGNOME\s+\d+.*)$", "\n".join(text.splitlines()[:15]), re.I | re.M)
+        if not m:
+            return {}
     out = {"line": m.group(1)}
     g = re.search(r"GNOME\s+(\d+)(?:\.\d+)*(\s+or\s+later)?", m.group(1), re.I)
     if g:

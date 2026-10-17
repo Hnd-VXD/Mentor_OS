@@ -154,5 +154,11 @@
     "name": "17.10.26.11",
     "summary": "Small fixes: zooming the chat works right after a start, cards no longer hide under the Super+Z box, and copying text from the screen is more reliable.",
     "published": "2026-10-18 00:46"
+  },
+  {
+    "version": 202610172211,
+    "name": "17.10.26.13",
+    "summary": "More small fixes: problem reports leave out passwords written in words, recipe checks list every command, and fewer false alarms in the logs.",
+    "published": "2026-10-18 01:13"
   }
 ]

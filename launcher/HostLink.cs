@@ -116,6 +116,9 @@ class HostLink
         }
     }
 
+    // This run of the system has ended: Windows' volume is no longer watched for it.
+    public void Stop() { volume.Stop(); }
+
     // Everything the system inside should know, again (it has just started listening, or Windows woke up).
     public void Again()
     {

@@ -55,6 +55,9 @@ class WindowsVolume
     bool sendAgain;            // send the current one even when unchanged (the system inside asks, "want")
     float lastVolume = -1;     // what was last sent or set
     bool lastMute;
+    volatile bool stopped;     // this run of the system has ended (each run has its own link)
+
+    public void Stop() { stopped = true; }
 
     public WindowsVolume(Func<Dictionary<string, object>, bool> send)
     {
@@ -80,7 +83,7 @@ class WindowsVolume
     {
         IAudioEndpointVolume endpoint = null;
         DateTime lookedUp = DateTime.MinValue;
-        while (true)
+        while (!stopped)
         {
             Thread.Sleep(200);
             try
