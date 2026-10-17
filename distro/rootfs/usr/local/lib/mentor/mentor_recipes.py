@@ -288,17 +288,24 @@ def looks_like_recipe(path):
     return "## Steps" in head and ("## Check that it works" in head or "## What you get" in head)
 
 
-def _lines_in_code(text):
+SHELL_FENCES = {"", "bash", "sh", "shell", "console", "zsh", "fish"}
+
+
+def _lines_in_code(text, commands_only=False):
     """[(line number, text)] of the lines inside fenced code blocks, and of the code written inline in
     single backticks elsewhere: a recipe with its commands inline kept them all out of the report's list
-    of commands, files and programs (2026-10-18), the inventory the user is shown."""
-    out, inside = [], False
+    of commands, files and programs (2026-10-18), the inventory the user is shown. With `commands_only`,
+    only blocks of a shell (```bash, or no language): the lines of a file the recipe writes (```javascript,
+    ```json) are not commands, and filled the list's 80 places before the real ones came (2026-10-18)."""
+    out, inside, shell = [], False, True
     for number, line in enumerate(text.splitlines(), 1):
         if line.strip().startswith("```"):
             inside = not inside
+            shell = line.strip()[3:].strip().lower() in SHELL_FENCES
             continue
         if inside and line.strip():
-            out.append((number, line))
+            if shell or not commands_only:
+                out.append((number, line))
         elif not inside:
             out += [(number, span) for span in re.findall(r"`([^`\n]+)`", line) if " " in span.strip()]
     return out
@@ -341,7 +348,7 @@ def inspect(path):
     counts = {s: sum(1 for it in unique if it[0] == s) for s in ("high", "medium", "low")}
 
     code = _lines_in_code(text)
-    commands = [(n, l.strip()) for n, l in code
+    commands = [(n, l.strip()) for n, l in _lines_in_code(text, commands_only=True)
                 if not l.strip().startswith("#") and re.match(r"^\s*(\$\s*)?[a-zA-Z./~]", l)][:80]
     written = []
     for _n, l in code:

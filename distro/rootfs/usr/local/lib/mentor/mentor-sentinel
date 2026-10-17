@@ -38,7 +38,8 @@ MEMORY_AFTER = 10  # seconds of a stall with memory exhausted before the largest
 MEMORY_LOW = 0.03  # memory is exhausted below this share available (or the kernel stalls on it)
 DEAD_SHELL = 60    # seconds without an answer: GNOME Shell is called dead (reported, not restarted)
 
-PINGER = r"""
+# Its first line is what `ps` shows of it: a name, not an anonymous script (2026-10-18).
+PINGER = r"""# mentor-sentinel: does the desktop still answer? (FREEZES.md)
 import sys, time
 from gi.repository import Gio, GLib
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)

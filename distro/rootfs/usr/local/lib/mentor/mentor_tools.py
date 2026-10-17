@@ -2164,7 +2164,8 @@ def recipe_hub_look(a):
     for main, subs in mentor_hub.tree(index):
         lines.append(f"- {main['id']}: {main['name']}. {main.get('description', '')}")
         lines += [f"    - {s['id']}: {s['name']}. {s.get('description', '')}" for s in subs]
-    words = [w for w in re.findall(r"[a-z0-9]+", str(a.get("search") or "").lower()) if len(w) > 2]
+    # `query` too: the name other search tools use, which a model may give instead (and saw nothing matched).
+    words = [w for w in re.findall(r"[a-z0-9]+", str(a.get("search") or a.get("query") or "").lower()) if len(w) > 2]
     if words:
         lines += ["", "## Recipes that match: " + " ".join(words)]
         found = [r for r in index["recipes"] if all(w in (r.get("title", "") + " " + r.get("summary", "") + " " + r.get("id", "")).lower() for w in words)]
