@@ -198,6 +198,12 @@ not search the system or read Mentor's own files for this: the recipe file says 
 `taken_away` (off) or `put_back` (on), the recipe's id or, for one of the user's own, its file name. Removing for good is a
 different request ("take it away", "uninstall"): that is the recipe's "Take it away again" section.
 
+### Deleting a recipe (the Recipes app, not you)
+
+Opening a row of the user's own recipes (Mine) or of one downloaded and not used yet shows **Delete** under what it does (`delete_button` and `delete` in `/usr/local/bin/mentor-recipes`, added 2026-10-17 at the user's request). It asks first ("Delete this recipe?", Keep it / Delete; the body adds that it is still switched on, when it is, and that it stays on the recipes site, when it is there). Delete erases the recipe's file for good with `os.remove`, not to the trash, and for one of the user's own clears its switched-off mark (`mentor_recipes.off_set(name, False)`), then lists the recipes again. It deletes only the recipe file: what the recipe set up on the computer stays (switch it off first, or "Take it away again"), and a copy on the site stays (Remove it from the site, in the same row). Recipes in "Used on this computer" have no Delete. If the user asks you to delete a recipe, point them to this button; do not delete recipe files yourself.
+
+To check it: open Recipes, Mine, open a row: Delete is there, red. Delete, then Keep it: nothing changes. Delete, then Delete: the row is gone and `ls ~/Documents/Mentor\ recipes/` no longer lists the file.
+
 ### Improving someone else's recipe (a fork)
 
 In the Recipes app, a recipe that was downloaded or used has **Improve**. It makes a copy among the user's own (Documents/Mentor

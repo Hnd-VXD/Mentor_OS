@@ -626,6 +626,96 @@ class FullScreenToggle extends QuickToggle {
     }
 });
 
+// The game mouse (DESKTOP.md, "The game mouse"): the launcher gives the system inside a pointer
+// that only moves, which games need to turn the view while they hold the pointer, instead of the
+// one that follows where the pointer is on the host. It is asked for while an app marked as a game
+// (Categories=Game in its desktop file, or listed in the settings) is in front and the overview is
+// not, and given back otherwise. The settings (`mentor game-mouse`, the game_mouse tool) can make
+// it always or never. Each request is `mentor game-mouse --send`, one at a time.
+const GAME_MOUSE_SETTINGS = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'game-mouse.json']);
+class GameMouse {
+    constructor() {
+        this._file = Gio.File.new_for_path(GAME_MOUSE_SETTINGS);
+        this._monitor = this._file.monitor_file(Gio.FileMonitorFlags.NONE, null);
+        this._overview = false;
+        this._sent = null;  // what the launcher was last asked for; null: nothing yet
+        this._busy = false;
+        this._signals = [
+            [this._monitor, this._monitor.connect('changed', () => this._read())],
+            [global.display, global.display.connect('notify::focus-window', () => this._sync())],
+            [Main.overview, Main.overview.connect('showing', () => {
+                this._overview = true;
+                this._sync();
+            })],
+            [Main.overview, Main.overview.connect('hiding', () => {
+                this._overview = false;
+                this._sync();
+            })],
+        ];
+        this._read();
+    }
+
+    _read() {
+        this._settings = {mode: 'auto', games: []};
+        try {
+            Object.assign(this._settings, JSON.parse(new TextDecoder().decode(this._file.load_contents(null)[1])));
+        } catch {
+            // none yet: auto
+        }
+        this._sync();
+    }
+
+    _front() {
+        const window = global.display.focus_window;
+        return window ? Shell.WindowTracker.get_default().get_window_app(window) : null;
+    }
+
+    _wanted(app) {
+        if (this._settings.mode === 'on' || this._settings.mode === 'off')
+            return this._settings.mode === 'on';
+        if (!app || this._overview)
+            return false;
+        const categories = (app.get_app_info()?.get_categories() ?? '').split(';');
+        return categories.includes('Game') || (this._settings.games ?? []).includes(app.get_id());
+    }
+
+    _sync() {
+        if (this._busy)
+            return;  // looked at again when the request under way is done
+        const app = this._front();
+        const on = this._wanted(app);
+        if (on === this._sent)  // the first look always asks: a launcher left on the game mouse by an earlier session
+            return;
+        this._busy = true;
+        this._send(on, app?.get_id() ?? '', () => {
+            this._busy = false;
+            this._sent = on;
+            if (!this._gone)
+                this._sync();
+        });
+    }
+
+    _send(on, front, done) {
+        try {
+            const process = Gio.Subprocess.new(['/usr/local/bin/mentor', 'game-mouse', '--send', on ? 'on' : 'off',
+                '--front', front], Gio.SubprocessFlags.NONE);
+            process.wait_async(null, () => done?.());
+        } catch (e) {
+            console.error(`mentor: game mouse: ${e.message}`);
+            done?.();
+        }
+    }
+
+    destroy() {
+        this._gone = true;
+        for (const [object, id] of this._signals)
+            object.disconnect(id);
+        this._monitor.cancel();
+        if (this._sent)  // the desktop's pointer back, as the lock screen and the next session expect it
+            this._send(false, '', null);
+    }
+}
+
 // On: a permanent taskbar at the bottom. Off: stock GNOME.
 const TaskbarToggle = GObject.registerClass(
 class TaskbarToggle extends QuickToggle {
@@ -801,6 +891,11 @@ export default class MentorExtension extends Extension {
             const indicator = new Indicator();
             Main.panel.statusArea.quickSettings.addExternalIndicator(indicator);
             return () => indicator.destroy();
+        });
+
+        this._part('game mouse', () => {
+            const gameMouse = new GameMouse();
+            return () => gameMouse.destroy();
         });
 
         // In the app grid, a click on the empty space around the icons leaves it, as a click

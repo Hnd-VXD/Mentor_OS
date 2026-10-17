@@ -536,6 +536,15 @@ p.set_defaults(func=cmd_connect)
 p = sub.add_parser("window", help="full screen or a normal window on the host")
 p.add_argument("mode", choices=sorted(mentor_tools.WINDOW_MODES))
 p.set_defaults(func=lambda args: run_tool("window_mode", {"mode": args.mode}))
+p = sub.add_parser("game-mouse", help="mouse-look in 3D games: auto (while a game is in front), on, off; nothing: how it stands")
+p.add_argument("mode", nargs="?", choices=sorted(mentor_tools.GAME_MOUSE_MODES))
+p.add_argument("--add-game", help="an app id to count as a game")
+p.add_argument("--remove-game", help="an app id to stop counting as a game")
+p.add_argument("--send", choices=("on", "off"), help=argparse.SUPPRESS)  # the shell extension, to the launcher
+p.add_argument("--front", default="", help=argparse.SUPPRESS)
+p.set_defaults(func=lambda args: mentor_tools.game_mouse_send(args.send == "on", args.front) if args.send else
+               run_tool("game_mouse", {k: v for k, v in (("mode", args.mode), ("add_game", args.add_game),
+                                                         ("remove_game", args.remove_game)) if v}))
 p = sub.add_parser("layout", help="desktop layout: a permanent taskbar, or stock GNOME")
 p.add_argument("layout", choices=sorted(mentor_tools.LAYOUTS))
 p.set_defaults(func=lambda args: run_tool("desktop_layout", {"layout": args.layout}))

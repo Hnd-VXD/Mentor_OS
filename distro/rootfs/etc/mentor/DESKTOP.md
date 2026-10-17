@@ -11,7 +11,7 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 - **Dash to Panel** (package `gnome-shell-extension-dash-to-panel`) is the taskbar; **AppIndicator support** the tray icons. Both are other people's extensions and break on their own schedule.
 - **No "Dash to Panel has been updated!"**: Dash to Panel announces itself whenever its version differs from the `extension-version` it stored, on a fresh install and after each upgrade. `mentor-taskbar-quiet.service` (a user oneshot before `graphical-session-pre.target`, script `/usr/local/lib/mentor/mentor-taskbar-quiet`) stores the version from its `metadata.json` before the shell starts. It cannot be done from Mentor's extension: GNOME enables Dash to Panel before it.
 - **Defaults** are in `/etc/dconf/db/local.d/00-mentor` (run `dconf update` after changing it): the enabled extensions, favourites, key bindings, wallpaper, dark style, animations off.
-- **The launcher on Windows** (Mentor.exe) talks to the system inside over two serial ports: `org.mentor.control` (start-up reports, full screen, restore points) and `org.mentor.clipboard` (text and files, and the window's full-screen state).
+- **The launcher on Windows** (Mentor.exe) talks to the system inside over two serial ports: `org.mentor.control` (start-up reports, full screen, restore points, the game mouse) and `org.mentor.clipboard` (text and files, and the window's full-screen state).
 
 ## The parts of the extension
 
@@ -21,6 +21,7 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 | `service` | Nothing to see: the D-Bus object `/org/mentor/Shell` (`org.mentor.Shell`: `Screenshot`, `Show`, `Restore`, `Toggle`, `Status`, `Ask`, `Windows`, `FocusWindow`, `CloseWindow`, `ScreenshotArea`, `ScreenshotWindow`) on the shell's session bus name. screen_capture, Super+A, the assistant, and the tools `windows` and `app_open` (TOOLS.md) use it. | `Shell.Screenshot`, `Gio.DBusExportedObject`. |
 | `start on the desktop` | A session begins on the desktop, not in the overview. | `Main.layoutManager._startingUp` (private), signal `startup-complete`, `Main.overview.hide()`. |
 | `system menu switches` | "Full Screen" and "Taskbar" in the system menu. Full Screen is lit while the window on Windows is full screen. | `QuickToggle`, `SystemIndicator`, `Main.panel.statusArea.quickSettings.addExternalIndicator`. The state comes from `/run/mentor/fullscreen`, written by mentor-clipboard. |
+| `game mouse` | Mouse-look works in 3D games: while an app marked as a game is in front, the launcher gives the system a mouse that only moves; otherwise the normal pointer. See "The game mouse" below. | `global.display` `notify::focus-window`, `Shell.WindowTracker.get_window_app`, `Shell.App.get_app_info().get_categories()`, `Main.overview` signals `showing` / `hiding`. Asks the launcher through `mentor game-mouse --send on|off`. |
 | `app grid click` | A click on the empty space of the app grid closes it; the click that closes an open folder does not. | `Main.overview._overview.controls.appDisplay` and its `_currentDialog` (both private), `Clutter.ClickGesture` (older: `ClickAction`). |
 | `search` | Typing in the overview offers "Ask Mentor" with the typed words. | The search provider interface of `Main.overview.searchController`. |
 | (in `desktop`) the text box over a program | The assistant's own text box, lifted out of the desktop by Alt+Space and Super+Z (`mentor-chat --ask`), is a second window of the assistant: `_adopt` makes it float above the others, on every workspace, in the middle of the bottom of the screen (`_float`). All of it is in ASKBAR.md. | `Meta.Window.make_above`, `stick`, `move_frame`, `Main.activateWindow`. |
@@ -160,3 +161,35 @@ The packages the desktop needs: `gnome-shell`, `gdm`, `gnome-shell-extension-das
 `/usr/local/lib/mentor/mentor-clipboard` talks to the launcher on Windows over the virtio port `org.mentor.clipboard` (`/dev/virtio-ports/org.mentor.clipboard`), one JSON object per line: `{"text": "..."}` for text; for copied files `{"files": id, "count": n, "bytes": total}`, then `{"dir": id, "name": path}` and `{"file": id, "name": path, "size": n}` with `{"chunk": id, "data": base64}` as many as needed, then `{"files-end": id}` (or `{"files-cancel": id}`; `{"files-refused": why}` when a copy is too large). It runs on X11 through Xwayland on purpose (`GDK_BACKEND=x11` in its autostart file): a Wayland program sees the clipboard only while it has the keyboard, an X11 one always, and GNOME mirrors the clipboard between the two. So it needs `xorg-xwayland` and GTK 3. Files that arrive are put on the clipboard by `mentor-clipboard-files` (GTK 4). The udev rule gives the logged-in user the two ports.
 
 Check: `pgrep -af lib/mentor/mentor-clipboard` (one line); `ls -l /dev/virtio-ports/` (the two ports, when started by the launcher; on a real computer there are none and the clipboard is simply not shared); its errors: `journalctl -b --user -o cat | grep -i -A8 mentor-clipboard`.
+
+## The game mouse
+
+**What the user has.** In 3D games (shooters such as QC:DE or GZDoom, anything that turns the view with the mouse) the view turns when they move the mouse. Nothing to switch on: it happens by itself while a game is in front, and the normal pointer is back as soon as they leave the game.
+
+**Why it is needed.** Mentor's window on Windows normally gives the system inside a *tablet*: it says where the pointer is, not how far it moved. That is what makes the pointer glide in and out of Mentor's window with no clicking. A game that holds the pointer (Wayland pointer lock) turns the view by how far the mouse moved, and a tablet never says that: menus work, the view does not move. The *game mouse* is a second pointer (QEMU `virtio-mouse-pci`, "QEMU Virtio Mouse") that only says how far it moved. Only one of the two is in use at a time; the launcher switches.
+
+**How it works.**
+1. The shell extension's part `game mouse` (`class GameMouse` in `extension.js`) watches the window in front. It wants the game mouse when the app in front has `Game` in the `Categories` of its desktop file, or its app id is in `games` in `~/.config/mentor/game-mouse.json`, and the overview is not open. `"mode": "on"` there wants it always, `"off"` never; `"auto"` (or no file) is the above.
+2. When what it wants changes, it runs `mentor game-mouse --send on` (or `off`) `--front APP-ID`. That sends `{"game-mouse": true}` on `org.mentor.control` and waits up to 5 seconds for the answer, `{"game-mouse": true, "ok": true}`. What came back is kept in `/run/user/UID/mentor-game-mouse.json` (`on`, `front`, `time`, and `error` when it did not work).
+3. Mentor.exe (`HostBridge.OnGameMouse`, `KeepMouse`) asks QEMU for its mice (QMP `query-mice`) and makes the one asked for the one in use (`human-monitor-command` `mouse_set N`). It checks again every 2 seconds.
+4. QEMU's window follows by itself. With the game mouse it **holds the Windows pointer after a click in Mentor's window**; in full screen it already holds it. **Ctrl+Alt+G** lets go of it in a normal window. In full screen it keeps the pointer until the game mouse is off, which is as soon as the user leaves the game (Super, Alt+Tab, or closing the game).
+
+**What to tell the user.** One sentence, in their language. Do not explain tablets or QEMU. For example:
+- When a game's view does not turn: "I switched on the game mouse: click once inside the game, and the view now turns with the mouse."
+- If they are stuck with the pointer inside Mentor's window: "Press Ctrl+Alt+G to get the pointer back to Windows."
+- If they ask why the pointer is "caught" in a game: "In games Mentor keeps the mouse inside so you can look around; leaving the game, or Ctrl+Alt+G, gives it back."
+
+**When the view still does not turn in a game.** Do these in order.
+1. `mentor game-mouse` (tool: `game_mouse` with no arguments). It prints the setting, what is in use now and what is in front.
+2. If it says `The launcher could not do it` and mentions a Mentor.exe from before the game mouse, the user's Mentor.exe is too old. Nothing inside Mentor can fix that. Tell them: "Your Mentor program on Windows needs updating for this: close Mentor, run MentorSetup.exe again and choose the same folder. It only fetches the new program, and nothing inside Mentor is lost." The download page is https://github.com/Hnd-VXD/Mentor_OS/releases/latest.
+3. If the game was not counted as a game (`Now: the normal pointer` while it was in front), find its app id. Ask the user to bring the game to the front, then use the `windows` tool. Then run `game_mouse` with `add_game` set to that id, for example `org.zdoom.GZDoom`. Tell the user to switch to the game again.
+4. If it is in use (`Now: the game mouse`) and the view still does not move, the user may not have clicked into Mentor's window yet. Ask them to click once inside the game.
+5. Still nothing: set `mode` `on`, so the game mouse is used for everything, and let the user try. Set it back to `auto` afterwards: with `on`, the pointer needs a click to enter Mentor's window and Ctrl+Alt+G to leave it.
+6. Never change the game's own settings, files or launch options for mouse-look.
+
+**Check that it works** (in a test system started by Mentor.exe):
+1. `gdbus call --session --dest org.gnome.Shell --object-path /org/mentor/Shell --method org.mentor.Shell.Status` must show `"game mouse": "ok"` in `parts`.
+2. `mentor game-mouse on`, wait 3 seconds, then `mentor game-mouse` must say `Now: the game mouse`. Then `mentor game-mouse auto`.
+3. `grep '^N: Name' /proc/bus/input/devices` lists `QEMU Virtio Mouse` (the game mouse) and `QEMU QEMU USB Tablet` (the normal pointer). Without the Virtio Mouse, the user's Mentor.exe is from before the game mouse (step 2 above).
+
+**If the part is broken** after a GNOME update (`mentor doctor` says `game mouse: broken: ...`), read the error. It leans only on `global.display` `notify::focus-window`, `Shell.WindowTracker.get_default().get_window_app(window)`, `app.get_app_info().get_categories()` and the overview's `showing` / `hiding` signals: look up what replaced them (`shell_source`) and adapt `GameMouse` in the sandbox. Until it is mended, `mentor game-mouse on` still works by hand: it only needs the launcher.

@@ -88,6 +88,8 @@ SYSTEM_PROMPT = (
     "'remove the dock', 'bring the taskbar back' mean this tool.\n"
     "- Full screen for the whole Mentor window (window_mode tool); the user can also press "
     "Ctrl+Alt+F or Super+F11, or use the Full Screen button in the system menu.\n"
+    "- The game mouse (game_mouse tool): when the view does not turn with the mouse in a game. "
+    "Read DESKTOP.md, The game mouse, first; never change the game for it.\n"
     "When a request plausibly means one of these, do it rather than asking which the user meant.\n\n"
     "Changes to the system itself (configuration, building or replacing parts of the OS, anything "
     "touching several system files) go through the sandbox: sandbox_run to do and test the work on a "
@@ -416,7 +418,17 @@ tabbar.agent-tabs, tabbar.agent-tabs .box { background: none; box-shadow: none; 
 tabbar.agent-tabs tab.working button.tab-close-button { opacity: 0; }
 tabbar.agent-tabs tab { min-height: 34px; border-radius: 12px; background: rgba(20, 22, 27, 0.7); color: #ffffff; }
 tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
+.zoom-level { padding: 4px 14px; border-radius: 99px; font-weight: 700;
+              background: rgba(20, 22, 27, 0.92); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.14); }
 """
+# The conversation can be shown larger or smaller (Ctrl and the mouse wheel, Ctrl + + - 0), in these
+# steps of percent; the column of cards (CHAT_WIDTH pixels at 100%) widens and narrows with the text.
+ZOOM_LEVELS = tuple(range(70, 201, 10))
+CHAT_WIDTH = 720
+
+
+def zoom_css(percent):
+    return f".chat-zoom {{ font-size: {percent}%; }}\n"
 # The steps card's gear turns while the agent works. Not a CSS animation: Mentor switches GNOME's
 # animations off (enable-animations=false, for speed in the VM), and GTK then leaves those still.
 # So it is turned a step at a time by a timer (Conversation.add_step), through these classes.
@@ -1048,9 +1060,14 @@ class Conversation(Gtk.Box):
 
         self.messages = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                                 margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        self.column = Adw.Clamp(maximum_size=720, child=self.messages)
+        self.column = Adw.Clamp(maximum_size=round(CHAT_WIDTH * window.zoom / 100), child=self.messages)
         self.scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
                                            child=self.column)
+        self.scroller.add_css_class("chat-zoom")
+        zoom = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL,
+                                         propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        zoom.connect("scroll", window.on_zoom_scroll)
+        self.scroller.add_controller(zoom)
         # Down the left side, a tick for each thing asked: where one is in the conversation,
         # what was asked there and when, and the way back to it.
         self.ticks = []  # (the tick, its popover, the message it leads to)
@@ -2602,6 +2619,14 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.remove_css_class("background")
         self.add_css_class("agent")
         self.settings = load_settings()
+        # The conversation's text size in percent (ZOOM_LEVELS), and the cards' width with it.
+        zoom = self.settings.get("zoom")
+        self.zoom = min(ZOOM_LEVELS, key=lambda level: abs(level - zoom)) if isinstance(zoom, (int, float)) else 100
+        self.zoom_rest = 0.0  # the part of a touchpad's scroll not yet a whole step
+        self.zoom_css = Gtk.CssProvider()
+        self.zoom_css.load_from_string(zoom_css(self.zoom))
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), self.zoom_css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
         # The surface is on every workspace, and each has its own conversation on it: the
         # shell says which one is in front (go_to_workspace).
         self.workspace = 0
@@ -2711,10 +2736,19 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.connect_page = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
         self.stack.add_named(self.connect_page, "sign-in")
 
+        # How large the conversation is shown (Ctrl and the mouse wheel, Ctrl + + - 0): said for a
+        # moment at the top right, under the bell (the middle of the top row is the tabs'), while it changes.
+        self.zoom_shown = Gtk.Label(halign=Gtk.Align.END, valign=Gtk.Align.START, margin_top=64, margin_end=16,
+                                    can_target=False, visible=False)
+        self.zoom_shown.add_css_class("zoom-level")
+        self.zoom_timer = 0
+
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(top)
         content.append(self.stack)
-        self.set_content(content)
+        layered = Gtk.Overlay(child=content)
+        layered.add_overlay(self.zoom_shown)
+        self.set_content(layered)
 
         # Right-click on the desktop opens the assistant's own menu.
         self.chat_hidden = False
@@ -2748,6 +2782,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", lambda _c, keyval, *_: keyval == Gdk.KEY_Escape and app.shell("Restore") is None)
         self.add_controller(keys)
+        zoom_keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        zoom_keys.connect("key-pressed", self.on_zoom_key)
+        self.add_controller(zoom_keys)
         # Signing in happens in a terminal; look again when the user comes back.
         self.connect("notify::is-active", self.on_focus)
         self.connect("close-request", lambda *_: True)  # the desktop is not something one closes
@@ -2887,6 +2924,67 @@ class DesktopWindow(Adw.ApplicationWindow):
     def focus_entry(self):
         if self.current and self.stack.get_visible_child_name() == "chat":
             self.current.entry.grab_focus()
+
+    def on_zoom_scroll(self, controller, _dx, dy):
+        """Ctrl and the mouse wheel over the conversation: larger (up) or smaller (down)."""
+        if not controller.get_current_event_state() & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        if controller.get_unit() == Gdk.ScrollUnit.SURFACE:  # a touchpad: pixels, not notches of a wheel
+            dy /= 40
+        self.zoom_rest -= dy
+        steps = int(self.zoom_rest)
+        if steps:
+            self.zoom_rest -= steps
+            self.set_zoom(self.zoom + 10 * steps)
+        return True  # not scrolled as well
+
+    def on_zoom_key(self, _controller, keyval, _keycode, state):
+        if not state & Gdk.ModifierType.CONTROL_MASK or self.stack.get_visible_child_name() != "chat":
+            return False
+        if keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add):
+            self.set_zoom(self.zoom + 10)
+        elif keyval in (Gdk.KEY_minus, Gdk.KEY_underscore, Gdk.KEY_KP_Subtract):
+            self.set_zoom(self.zoom - 10)
+        elif keyval in (Gdk.KEY_0, Gdk.KEY_KP_0, Gdk.KEY_KP_Insert):
+            self.set_zoom(100)
+        else:
+            return False
+        return True
+
+    def set_zoom(self, percent):
+        """Show the conversations at this size (kept between 70% and 200%), and remember it."""
+        percent = min(max(percent, ZOOM_LEVELS[0]), ZOOM_LEVELS[-1])
+        self.zoom_shown.set_label(f"{percent}%")
+        self.zoom_shown.set_visible(True)
+        if self.zoom_timer:
+            GLib.source_remove(self.zoom_timer)
+        self.zoom_timer = GLib.timeout_add(1200, self.hide_zoom_shown)
+        if percent == self.zoom:
+            return
+        self.zoom = percent
+        # Each view stays on what it showed: the point at the middle of it is kept at the middle
+        # once the text has its new size (the end stays the end).
+        held = []
+        for conversation in self.conversations():
+            view = conversation.scroller.get_vadjustment()
+            at_end = view.get_value() + view.get_page_size() >= view.get_upper() - 2
+            held.append((view, at_end, (view.get_value() + view.get_page_size() / 2) / max(view.get_upper(), 1)))
+            conversation.column.set_maximum_size(round(CHAT_WIDTH * percent / 100))
+        self.zoom_css.load_from_string(zoom_css(percent))
+
+        def hold():
+            for view, at_end, middle in held:
+                top = view.get_upper() - view.get_page_size()
+                view.set_value(top if at_end else min(max(middle * view.get_upper() - view.get_page_size() / 2, 0), top))
+            return GLib.SOURCE_REMOVE
+        GLib.timeout_add(60, hold)
+        self.settings["zoom"] = percent
+        save_settings(self.settings)
+
+    def hide_zoom_shown(self):
+        self.zoom_timer = 0
+        self.zoom_shown.set_visible(False)
+        return GLib.SOURCE_REMOVE
 
     def new_conversation(self, first_run=False):
         conversation = Conversation(self, first_run)

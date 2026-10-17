@@ -82,5 +82,17 @@
     "name": "16.10.26.09",
     "summary": "The gear now turns while Mentor works on your request, and the bell opens narrow when it has no cards.",
     "published": "2026-10-16 23:34"
+  },
+  {
+    "version": 202610171031,
+    "name": "17.10.26.00",
+    "summary": "Make the chat's text larger or smaller with Ctrl and the mouse wheel (or Ctrl + + − 0); the cards widen with it, and Mentor remembers the size.",
+    "published": "2026-10-17 13:32"
+  },
+  {
+    "version": 202610171352,
+    "name": "17.10.26.01",
+    "summary": "Mouse-look now works in 3D games: Mentor switches to a game mouse by itself while a game is in front. The Recipes app can delete a recipe.",
+    "published": "2026-10-17 16:57"
   }
 ]

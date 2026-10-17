@@ -55,6 +55,13 @@ BOOT = f"{LIBDIR}/mentor-boot"
 # virtio-serial channel to the launcher on the host, which owns the VM's window.
 CONTROL_PORT = "/dev/virtio-ports/org.mentor.control"
 WINDOW_MODES = {"fullscreen": True, "windowed": False, "toggle": "toggle"}
+# The game mouse: what the shell extension follows, and what the launcher last said.
+GAME_MOUSE_SETTINGS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                                   "mentor", "game-mouse.json")
+GAME_MOUSE_STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "mentor-game-mouse.json")
+GAME_MOUSE_MODES = {"auto": "the game mouse while a game is in front, the normal pointer otherwise",
+                    "on": "the game mouse for everything, until set back to auto",
+                    "off": "never the game mouse"}
 # The two desktop layouts differ by one shell extension.
 TASKBAR_EXTENSION = "dash-to-panel@jderose9.github.com"
 LAYOUTS = {"taskbar": "enable", "normal": "disable"}
@@ -890,7 +897,18 @@ def session_logout(a):
 
 def _ask_host(message, timeout=20):
     """Send the launcher on the host a request and wait for its one-line answer."""
-    fd = os.open(CONTROL_PORT, os.O_RDWR | os.O_NONBLOCK)
+    for _ in range(25):  # the port opens for one program at a time: wait for another to be done with it
+        try:
+            fd = os.open(CONTROL_PORT, os.O_RDWR | os.O_NONBLOCK)
+            break
+        except BlockingIOError:
+            time.sleep(0.2)
+        except OSError as e:
+            if e.errno != 16:  # EBUSY
+                raise
+            time.sleep(0.2)
+    else:
+        raise OSError("the channel to the launcher stayed busy")
     try:
         try:
             while os.read(fd, 65536):  # an old answer nobody waited for
@@ -985,6 +1003,87 @@ def window_mode(a):
     except OSError as e:
         return 1, f"cannot reach the Mentor launcher on the host: {e}"
     return 0, f"asked the launcher for: {mode}"
+
+
+def _game_mouse_settings():
+    settings = {"mode": "auto", "games": []}
+    try:
+        with open(GAME_MOUSE_SETTINGS) as f:
+            settings.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return settings
+
+
+def game_mouse_send(on, front=""):
+    """For the shell extension: ask the launcher for the game mouse (on) or the tablet, and keep
+    what it said in GAME_MOUSE_STATE for game_mouse to report."""
+    state = {"asked": on, "front": front, "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        answer = _ask_host({"game-mouse": on}, timeout=5)
+        state["on"] = bool(answer.get("game-mouse"))
+        if not answer.get("ok"):
+            state["error"] = answer.get("error", "refused")
+    except (OSError, ValueError) as e:
+        state["on"] = False
+        state["error"] = f"{e} (a Mentor.exe from before the game mouse does not answer)"
+    os.makedirs(os.path.dirname(GAME_MOUSE_STATE), exist_ok=True)
+    with open(GAME_MOUSE_STATE + ".new", "w") as f:
+        json.dump(state, f)
+    os.replace(GAME_MOUSE_STATE + ".new", GAME_MOUSE_STATE)
+    return state
+
+
+def game_mouse(a):
+    """Mouse-look in 3D games (DESKTOP.md, The game mouse): settings in GAME_MOUSE_SETTINGS, which
+    the shell extension follows; it asks the launcher, and game_mouse_send keeps the answer."""
+    settings = _game_mouse_settings()
+    changed = False
+    mode = a.get("mode")
+    if mode:
+        if mode not in GAME_MOUSE_MODES:
+            return 2, f"mode must be one of: {', '.join(GAME_MOUSE_MODES)}"
+        settings["mode"], changed = mode, True
+    for key, add in (("add_game", True), ("remove_game", False)):
+        app = (a.get(key) or "").strip()
+        if not app:
+            continue
+        if not app.endswith(".desktop"):
+            app += ".desktop"
+        games = [g for g in settings["games"] if g != app]
+        settings["games"], changed = games + ([app] if add else []), True
+    if changed:
+        try:
+            before = os.stat(GAME_MOUSE_STATE).st_mtime
+        except OSError:
+            before = None
+        os.makedirs(os.path.dirname(GAME_MOUSE_SETTINGS), exist_ok=True)
+        with open(GAME_MOUSE_SETTINGS + ".new", "w") as f:
+            json.dump(settings, f, indent=1)
+        os.replace(GAME_MOUSE_SETTINGS + ".new", GAME_MOUSE_SETTINGS)
+        # The extension reads it and, when that changes what is wanted, asks the launcher (a few seconds).
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            time.sleep(0.5)
+            try:
+                if os.stat(GAME_MOUSE_STATE).st_mtime != before:
+                    break
+            except OSError:
+                pass
+    lines = [f"Setting: {settings['mode']} ({GAME_MOUSE_MODES[settings['mode']]})"]
+    if settings["games"]:
+        lines.append("Also counted as games: " + ", ".join(settings["games"]))
+    try:
+        with open(GAME_MOUSE_STATE) as f:
+            state = json.load(f)
+        lines.append(f"Now: the {'game mouse' if state.get('on') else 'normal pointer'} "
+                     f"(in front: {state.get('front') or 'nothing'}, since {state.get('time')})")
+        if state.get("error"):
+            lines.append(f"The launcher could not do it: {state['error']}. The user needs the newer Mentor.exe "
+                         "(DESKTOP.md, The game mouse).")
+    except (OSError, ValueError):
+        lines.append("Now: the normal pointer (nothing has asked for the game mouse since Mentor started).")
+    return 0, "\n".join(lines)
 
 
 def desktop_layout(a):
@@ -2291,6 +2390,13 @@ TOOLS = {
         "Switch the Mentor window on the host between full screen and a normal window. "
         "This is the whole VM's window, not an app inside it; the screen resolution follows it.",
         _schema({"mode": {"type": "string", "enum": list(WINDOW_MODES)}}, ["mode"]), window_mode),
+    "game_mouse": (
+        "Mouse-look in 3D games: the 'game mouse' only moves, which games that hold the pointer need to turn "
+        "the view. mode auto (default) uses it while an app marked as a game is in front; on: for everything; "
+        "off: never. add_game / remove_game: an app id (e.g. org.zdoom.GZDoom) to count as a game or not. "
+        "With no arguments: how it stands. Read DESKTOP.md, The game mouse, before telling the user about it.",
+        _schema({"mode": {"type": "string", "enum": list(GAME_MOUSE_MODES)}, "add_game": _STR, "remove_game": _STR},
+                []), game_mouse),
     "sandbox_run": (
         "Run a bash command as root inside the sandbox: a private copy-on-write view of this system. "
         "Install packages, build software, edit files there freely; the real system is not touched until "

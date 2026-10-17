@@ -163,6 +163,9 @@ class RecipesWindow(Adw.ApplicationWindow):
                           margin_start=14, margin_end=14, margin_top=10, margin_bottom=10)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(label)
+        # the buttons inside, under what it does: Delete, and Remove it from the site for one that is there
+        row.actions = Gtk.Box(spacing=8, margin_start=14, margin_end=14, margin_bottom=12, visible=False)
+        box.append(row.actions)
         row.add_row(box)
         row.inside = box
         self.rows.append((row, " ".join([title, summary, extra] + [v for _k, v in rows]).lower()))
@@ -226,6 +229,7 @@ class RecipesWindow(Adw.ApplicationWindow):
                 "/etc/mentor/RECIPES.md from the first step: inspect it, give me the short report, and wait for my answer."),
                 suggested=True))
             row.add_suffix(button("Improve", lambda path=path, title=title, row=row: self.improve_copy(path, title, None, row)))
+            self.delete_button(row, path, title)
             group.add(row)
         site.add(group)
         self.site_bin.set_child(site)
@@ -247,7 +251,8 @@ class RecipesWindow(Adw.ApplicationWindow):
             _t, summary, rows = details(path)
             row = self.recipe_row(title, day(when), summary, rows)
             row.day = day(when)
-            row.add_suffix(self.recipe_switch(name not in off, title, path, name, row))
+            row.switch = self.recipe_switch(name not in off, title, path, name, row)
+            row.add_suffix(row.switch)
             # an opening row shows each new button before the ones already there: added from the right
             update = button("Update", lambda: None)
             update.set_visible(False)
@@ -264,6 +269,7 @@ class RecipesWindow(Adw.ApplicationWindow):
                 "Update, in the Recipes app."), suggested=True))
             row.add_suffix(button("Open", lambda path=path: open_file(path)))
             # (the switch is added first, so that it is the last on the right)
+            self.delete_button(row, path, title, name)
             self.mine_group.add(row)
             self.mine_rows.setdefault(title.strip().lower(), (row, share, update))
         mine_page.add(self.mine_group)
@@ -289,6 +295,7 @@ class RecipesWindow(Adw.ApplicationWindow):
                 row, share, update = found
                 row.set_subtitle(GLib.markup_escape_text(f"{row.day} \u00b7 {said}"))
                 share.set_visible(False)
+                row.shared = True
             else:
                 setup = entry.get("setup") or {}
                 made = ", ".join(x for x in (f"GNOME {setup['gnome']}" if setup.get("gnome") else "",
@@ -305,10 +312,11 @@ class RecipesWindow(Adw.ApplicationWindow):
             update.set_visible(True)
             update.add_css_class("suggested-action")
             update.connect("clicked", lambda _b, rid=rid, title=title, row=row: self.update(rid, title, row))
-            remove = Gtk.Button(label="Remove it from the site", halign=Gtk.Align.START, margin_start=14, margin_bottom=12)
+            remove = Gtk.Button(label="Remove it from the site")
             remove.add_css_class("destructive-action")
             remove.connect("clicked", lambda _b, rid=rid, title=title, row=row: self.withdraw(rid, title, row))
-            row.inside.append(remove)
+            row.actions.append(remove)
+            row.actions.set_visible(True)
         self.filter()
 
     def recipe_switch(self, on, title, path, key, row):
@@ -464,6 +472,48 @@ class RecipesWindow(Adw.ApplicationWindow):
                                  else "Removal sent: it is gone from the site within minutes")
             row.set_subtitle("Sending\u2026")
             later(lambda: mentor_hub.withdraw(rid), done)
+        dialog.connect("response", answered)
+        dialog.present(self)
+
+    def delete_button(self, row, path, title, name=None):
+        """Delete, inside the opened row: the recipe's file is erased from this computer, after a question.
+        name: the file name of one of the user's own recipes (FOLDER), whose switched-off mark goes with it."""
+        delete = Gtk.Button(label="Delete")
+        delete.add_css_class("destructive-action")
+        delete.connect("clicked", lambda *_: self.delete(row, path, title, name))
+        row.actions.prepend(delete)
+        row.actions.set_visible(True)
+
+    def delete(self, row, path, title, name):
+        """Ask, then erase the file for good (not to the trash: the user asked for it gone, 2026-10-17).
+        What the recipe built is not touched: that is switching off, or "Take it away again"."""
+        switch = getattr(row, "switch", None)
+        body = f"“{title}” will be erased from this computer. This cannot be undone."
+        if switch is not None and switch.get_active():
+            body += (" It is still switched on: what it set up stays, and Mentor will no longer have its steps to take "
+                     "it away. Switch it off first if you do not want to keep what it set up.")
+        if getattr(row, "shared", False):
+            body += " It stays on the recipes site; “Remove it from the site” takes it off there."
+        dialog = Adw.AlertDialog(heading="Delete this recipe?", body=body)
+        dialog.add_response("cancel", "Keep it")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def answered(_dialog, response):
+            if response != "delete":
+                return
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                row.set_subtitle("It could not be deleted: " + (e.strerror or str(e)))
+                return
+            if name:
+                mentor_recipes.off_set(name, False)
+            self.rebuild()
         dialog.connect("response", answered)
         dialog.present(self)
 

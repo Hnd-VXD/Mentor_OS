@@ -116,7 +116,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
-| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus, the ask bar | yes | login (session_logout) | DESKTOP.md |
+| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus, the ask bar, the game mouse | yes | login (session_logout) | DESKTOP.md |
 | `/etc/dconf/db/local.d/00-mentor`, `/etc/dconf/profile/user` | the defaults: enabled extensions, favourites, keys (Super+A, Alt+Space and Super+Z for the ask bar), dark style, wallpaper. Run `dconf update` after | yes | login | DESKTOP.md |
 | `/usr/share/nautilus-python/extensions/mentor.py` | "Ask Mentor…" in Files | yes | `nautilus -q` | DESKTOP.md |
 | `/usr/share/backgrounds/mentor/*.jpg`, `/usr/share/gnome-background-properties/mentor.xml` | the wallpapers and their list in Settings | yes | at once | DESKTOP.md |
