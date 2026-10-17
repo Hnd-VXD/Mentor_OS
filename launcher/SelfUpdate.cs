@@ -67,8 +67,8 @@ static class SelfUpdate
     // The user asked to be told both (2026-10-17); the update itself still needs no click.
     public static string Note;
     public static event Action NoteChanged;  // raised on the checking thread: the window Invokes
-    const string UpdatedNote = "Mentor was updated to its newest version.";
-    const string ReadyNote = "A new version is ready for the next time you open Mentor.";
+    const string UpdatedNote = "Updated to the newest version.";  // under Start: short
+    const string ReadyNote = "A new version is ready for next time.";
 
     static void SetNote(string note)
     {

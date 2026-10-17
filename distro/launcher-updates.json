@@ -10,5 +10,11 @@
     "sha256": "a83f6c2a2a51c8565b6fb6caa9dc73d267d37969f81b4f1a06a245caa3f0b70e",
     "summary": "The Mentor window says when a new version is ready, and after it was updated.",
     "published": "2026-10-17 23:00"
+  },
+  {
+    "version": 202610172004,
+    "sha256": "b6d1a50c2e3d600a85c7af1f4b7fb0f30239be101bcbf0068ebcb7c9cf7be96f",
+    "summary": "A shorter Mentor window: the owl and Start side by side.",
+    "published": "2026-10-17 23:04"
   }
 ]

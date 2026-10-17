@@ -164,15 +164,14 @@ class LauncherWindow : Form
         var emblem = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Back };
         try { emblem.Image = Image.FromStream(typeof(LauncherWindow).Assembly.GetManifestResourceStream("emblem.png")); }
         catch (Exception) { }
-        var title = new Label { Text = "Mentor", TextAlign = ContentAlignment.MiddleCenter,
-                                Font = Theme.Font(20f, FontStyle.Bold), ForeColor = Theme.Text, BackColor = Theme.Back };
         var subtitle = new Label { Text = running ? "Settings for the next start" : "Agentic Linux", TextAlign = ContentAlignment.MiddleCenter,
                                    ForeColor = Theme.Dim, BackColor = Theme.Back };
         var start = new PillButton { Text = running ? "Save" : "Start Mentor", Primary = true, Result = DialogResult.OK,
                                      Font = Theme.Font(12f, FontStyle.Bold) };
-        Place(emblem, 170, 24, 100, 100);
-        Place(title, 0, 130, 440, 40);
-        Place(subtitle, 0, 170, 440, 22);
+        // The owl and Start side by side, the short line under Start: the user found the stacked owl,
+        // name and line too tall (2026-10-17). The name is in the owl and in the title bar.
+        Place(emblem, 26, 16, 80, 80);
+        Place(subtitle, 116, 78, 296, 20);
         // News of the launcher's own update, in the subtitle's place (SelfUpdate.Note): at once when it
         // is known, or when the check in the background finds one while the window is open.
         Action showNote = () => {
@@ -188,7 +187,7 @@ class LauncherWindow : Form
         SelfUpdate.NoteChanged += noteChanged;
         Shown += (s, e) => showNote();
         FormClosed += (s, e) => SelfUpdate.NoteChanged -= noteChanged;
-        Place(start, 28, 210, 384, 52);
+        Place(start, 116, 20, 296, 52);
 
         gpu.Checked = settings.gpu;
         vulkan.Checked = settings.vulkan && own;
@@ -273,7 +272,7 @@ class LauncherWindow : Form
         var fresh = new PillButton { Text = "Start over" };
         folded.AddRange(new Control[] { restore, mend, backUp, fromBackup, move, reinstall, fresh });
         foreach (Control button in folded) button.Visible = false;
-        Controls.AddRange(new Control[] { emblem, title, subtitle, start, card, unfold });
+        Controls.AddRange(new Control[] { emblem, subtitle, start, card, unfold });
         Controls.AddRange(folded.ToArray());
         unfold.Visible = !running;  // all of these want Mentor stopped
         unfold.Click += (s, e) => {
@@ -385,6 +384,8 @@ class LauncherWindow : Form
     }
 
     // Puts everything where it goes for what is shown now (Manual's sliders, the folded buttons).
+    const int CardTop = 112;  // under the owl and Start
+
     void Arrange()
     {
         int y = 0;
@@ -419,8 +420,8 @@ class LauncherWindow : Form
             if (row.Length > 3) Place(row[3], 18, y + 6, 348, 1);
             y += row.Length > 3 ? 8 : 4;
         }
-        Place(card, 28, 282, 384, y);
-        int bottom = 282 + y + 16;
+        Place(card, 28, CardTop, 384, y);
+        int bottom = CardTop + y + 16;
         Place(unfold, 28, bottom, 384, 28);
         bottom += running ? 0 : 40;
         if (unfold.Open && !running)

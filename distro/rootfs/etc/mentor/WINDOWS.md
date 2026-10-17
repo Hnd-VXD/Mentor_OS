@@ -14,7 +14,7 @@ Everything chosen in the Mentor window is used from the next start of Mentor. Wh
 
 At every start, Mentor.exe looks (at most twice a day) for a newer Mentor.exe in the GitHub release "updates" of Hnd-VXD/Mentor_OS. It takes one only if Mentor's maker signed it (with the same key as this system's updates, `/etc/mentor/update-signers`, namespace `mentor-launcher`) and the file is exactly the one signed. It downloads it while Mentor runs and puts it in place at the next start, without asking: the user sees nothing. If the new one does not start, or the system does not come up under it, the next start goes back to the one before by itself, and that version is not tried again.
 
-The Mentor window says so in one line under the name, in blue: "A new version is ready for the next time you open Mentor." once one is downloaded, and "Mentor was updated to its newest version." at the first open after it was put in place (`SelfUpdate.Note`). Nothing has to be clicked.
+The Mentor window says so in one line under the Start button, in blue: "A new version is ready for next time." once one is downloaded, and "Updated to the newest version." at the first open after it was put in place (`SelfUpdate.Note`). Nothing has to be clicked.
 
 Nothing of this is inside this system. On Windows its record is `launcher-update\log.txt` beside Mentor.exe (it is in the diagnostics file, section 7). Updates of this system itself are another thing: UPDATES.md.
 
