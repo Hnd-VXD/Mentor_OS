@@ -99,22 +99,74 @@ class DesktopLayer {
 
     // The desktop is scaled as the host's screen is, to be drawn sharp (`mentor scale`).
     // The shell drops the scale when the resolution changes, hence again after each change,
-    // once it has settled.
+    // once it has settled. Done here, through the shell's own display settings, the same way as
+    // `mentor scale` does it: started as a program it took 1.2 s, during which the user saw the
+    // desktop unscaled each time the window was maximized or made full screen (2026-10-17).
     _matchHostScale() {
         if (this._scaleLater)
             GLib.source_remove(this._scaleLater);
-        this._scaleLater = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 600, () => {
+        this._scaleLater = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
             this._scaleLater = 0;
             this._whenTaskbarUp(() => {
-                try {
-                    this._scaledAt = GLib.get_monotonic_time() / 1000000;
-                    Gio.Subprocess.new(['/usr/local/bin/mentor', 'scale', '--keep'], Gio.SubprocessFlags.NONE);
-                } catch (e) {
-                    console.warn(`mentor: could not match the host's scale: ${e.message}`);
-                }
+                this._scaledAt = GLib.get_monotonic_time() / 1000000;
+                this._applyScale().catch(e => {
+                    console.warn(`mentor: scaling directly failed (${e.message}); mentor scale does it`);
+                    try {
+                        Gio.Subprocess.new(['/usr/local/bin/mentor', 'scale', '--keep'], Gio.SubprocessFlags.NONE);
+                    } catch (e2) {
+                        console.warn(`mentor: could not match the host's scale: ${e2.message}`);
+                    }
+                });
             });
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    // `mentor scale` (cmd_scale in /usr/local/bin/mentor) in the shell: the host's scale, or the one the
+    // user chose in Settings; the window's own size as the mode (the shell can hold on to the mode kept
+    // from another size); of the scales the mode takes, quarter steps first, the largest not above what is
+    // wanted. Kept (persistent), and the shell's question about keeping it answered (_keepScale).
+    async _applyScale() {
+        const read = path => {
+            try {
+                const [, bytes] = GLib.file_get_contents(path);
+                const value = parseFloat(new TextDecoder().decode(bytes));
+                return value > 0 ? value : 0;
+            } catch {
+                return 0;
+            }
+        };
+        let wanted = read('/run/mentor/host-scale');
+        if (!wanted)
+            return;  // no launcher said anything
+        wanted = read(GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'scale'])) || wanted;
+        const call = (method, args, type) => Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig',
+            '/org/gnome/Mutter/DisplayConfig', 'org.gnome.Mutter.DisplayConfig', method, args,
+            type ? new GLib.VariantType(type) : null, Gio.DBusCallFlags.NONE, 5000, null);
+        const [serial, monitors, logical] = (await call('GetCurrentState', null,
+            '(ua((ssss)a(siiddada{sv})a{sv})a(iiduba(ssss)a{sv})a{sv})')).recursiveUnpack();
+        if (logical.length !== 1)
+            throw new Error(`${logical.length} logical monitors`);
+        const [x, y, scale, transform, , specs] = logical[0];
+        const connector = specs[0][0];
+        const monitor = monitors.find(m => m[0][0] === connector);
+        const current = monitor?.[1].find(m => m[6]['is-current']);
+        if (!current)
+            throw new Error('no current mode');
+        const target = monitor[1].find(m => m[6]['is-preferred']) ?? current;
+        let allowed = target[5].filter(s => Math.abs(s * 4 - Math.round(s * 4)) < 0.01);
+        if (!allowed.length)
+            allowed = target[5];
+        if (!allowed.length)
+            throw new Error('the mode lists no scales');
+        const fits = allowed.filter(s => s <= wanted + 0.01);
+        const chosen = fits.length ? Math.max(...fits)
+            : allowed.reduce((a, b) => Math.abs(b - wanted) < Math.abs(a - wanted) ? b : a);
+        if (target[0] === current[0] && Math.abs(scale - chosen) < 0.01)
+            return;
+        GLib.file_set_contents('/run/mentor/scale-kept', '');  // _keepScale answers the question
+        await call('ApplyMonitorsConfig', new GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', [serial, 2,
+            [[x, y, chosen, transform, true, [[connector, target[0], {}]]]], {}]), null);
     }
 
     // A display setting that is to last makes the shell ask the user to confirm it within

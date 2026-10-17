@@ -124,5 +124,11 @@
     "name": "17.10.26.06",
     "summary": "Copy text from anything on the screen with Shift+Super+T, reminders in the chat, websites as apps of their own, and games set up when you ask.",
     "published": "2026-10-17 22:05"
+  },
+  {
+    "version": 202610171940,
+    "name": "17.10.26.07",
+    "summary": "Maximizing Mentor's window or making it full screen no longer shows everything small for a moment.",
+    "published": "2026-10-17 22:42"
   }
 ]
