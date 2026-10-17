@@ -160,5 +160,11 @@
     "name": "17.10.26.13",
     "summary": "More small fixes: problem reports leave out passwords written in words, recipe checks list every command, and fewer false alarms in the logs.",
     "published": "2026-10-18 01:13"
+  },
+  {
+    "version": 202610172227,
+    "name": "17.10.26.15",
+    "summary": "Changing your password is easier: Mentor Settings opens a simple window for it instead of a text window.",
+    "published": "2026-10-18 01:29"
   }
 ]

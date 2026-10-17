@@ -13,7 +13,7 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | "Block other computers from getting in" | the firewall, on or off (the password is asked) |
 | "Let Mentor check by itself when someone tries" | when the firewall turns other computers away, you are asked to look at once, without the user asking (SECURITY.md, "Refused connections") |
 | "Everything looks fine" or "2 things need a look", with "Let Mentor look" | what the safety check finds, handed to you in one request |
-| "Change my password" | a Console window on `passwd` |
+| "Change my password" | GNOME Settings on System, Users (`gnome-control-center system users`), where Password opens GNOME's dialog for it; until 2026-10-18 a Console window on `passwd` |
 | **What Mentor tells me** | |
 | (tab Suggestions) "Suggest things for this system", "What to suggest", "Not suggested any more" | the bell on the desktop: all of it on or off, each kind, and what was turned away with Bring back |
 | "Warnings when something is wrong" | the yellow and red cards in the chat, all of them |

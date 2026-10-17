@@ -132,8 +132,11 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.health.add_suffix(self.look)
         safe.add(self.health)
         password = Adw.ActionRow(title="Change my password")
+        # GNOME's own page for it (Settings, System, Users: Password, a dialog with the old and the new one), not
+        # a Console on passwd: a red title bar and a "Current password:" that shows nothing as one types
+        # (2026-10-18). Through /usr/local/bin, which draws Settings without OpenGL (DESKTOP.md, "Settings").
         password.add_suffix(button("Change", lambda: subprocess.Popen(
-            ["kgx", "-e", "bash -c 'passwd; echo; read -n1 -p \"Press a key to close.\"'"], start_new_session=True)))
+            ["/usr/local/bin/gnome-control-center", "system", "users"], start_new_session=True)))
         safe.add(password)
         page.add(safe)
 

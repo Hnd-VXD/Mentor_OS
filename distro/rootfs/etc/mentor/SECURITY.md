@@ -81,7 +81,7 @@ Run them with `security_check` (the user: `mentor security`). mentor-watch runs 
 | Finding | What it means | What to do |
 |---|---|---|
 | **The firewall is off** (red when programs are waiting for connections, yellow otherwise) | `nftables.service` is not running, or `/etc/nftables.conf` no longer refuses what comes in | "The firewall" below |
-| **Your password is still the one every Mentor starts with** | the password is `admin`, which everyone who knows Mentor knows | Open a Console on `passwd` for the user (terminal_run). They type it there. Never ask for a password in the chat, and never set one yourself |
+| **Your password is still the one every Mentor starts with** | the password is `admin`, which everyone who knows Mentor knows | Open Settings on its Users page for the user (app_open `gnome-control-center`, arguments `system users`; or `mentor settings` and its Change button, which does the same) and tell them in one sentence to press Password and type the old one and a new one. They type it there. Never ask for a password in the chat, and never set one yourself. (A Console on `passwd` works too, but its red title bar and a prompt that shows nothing as one types confused people.) |
 | **Other computers can log in to this one** | `sshd.service` is running | `journal_read` with search `sshd`: who switched it on, and for which request? Tell the user. If they do not need it: service_control stop, then disable |
 | **Commands can run as root without your password** | `sudo -n true` succeeds | "Root without a password" below |
 | **There is a second account with full power** | an account other than root has user id 0 in `/etc/passwd` | `journal_read`, and `mentor log -n 100`. Tell the user where it came from. Remove nothing before they agree |

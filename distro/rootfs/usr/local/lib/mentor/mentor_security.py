@@ -323,8 +323,9 @@ def checks():
         yield ("password", "problem" if remote or not on else "warning",
                "Your password is still the one every Mentor starts with",
                f"Anyone who knows Mentor knows it is “{FIRST_PASSWORD}”. Choose your own.",
-               "My password is still the first one. Open a Console window on `passwd` for me (terminal_run), "
-               "so that I can type a new one there. Never ask me for a password in the chat.")
+               "My password is still the first one. Open Settings on its Users page for me (app_open "
+               "gnome-control-center with the arguments system users) and tell me in one sentence to press Password "
+               "there and type the old one and a new one. Never ask me for a password in the chat.")
 
     if _out("systemctl", "is-active", "--quiet", "sshd.service")[0] == 0:
         yield ("ssh", "warning", "Other computers can log in to this one",
