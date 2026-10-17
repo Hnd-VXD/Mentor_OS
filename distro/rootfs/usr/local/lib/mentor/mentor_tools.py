@@ -940,7 +940,7 @@ def extension_status(a):
     code, info = _run(["gnome-extensions", "info", "--", uuid])
     if code:
         return code, info + ("\nA new extension is only found by the shell at the next login."
-                             if "not exist" in info or "doesn" in info else "")
+                             if code == 2 or "not exist" in info or "doesn" in info else "")  # 2: in any language
     _, log = _run(["journalctl", "-b", "--no-pager", "-n", "3000", "_COMM=gnome-shell"])
     lines = [line for line in log.splitlines() if uuid in line or uuid.split("@")[0] in line or "JS ERROR" in line]
     return 0, info + "\nShell log:\n" + ("\n".join(lines[-25:]) or "(nothing about this extension)")

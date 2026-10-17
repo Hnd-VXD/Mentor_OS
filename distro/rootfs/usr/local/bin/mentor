@@ -159,7 +159,8 @@ def cmd_scale(args):
             wanted = float(f.read())
     except (OSError, ValueError):
         pass
-    shown = subprocess.run(["gdctl", "show"], capture_output=True, text=True).stdout
+    shown = subprocess.run(["gdctl", "show"], capture_output=True, text=True,
+                           env={**os.environ, "LC_ALL": "C.UTF-8", "LANGUAGE": ""}).stdout  # read in English
     monitor, scale = re.search(r"Monitor (\S+)", shown), re.search(r"Scale: ([\d.]+)", shown)
     current = re.search(r"Current mode\s*\n\W*(\d+x\d+)@", shown)
     if not monitor or not scale:
@@ -241,8 +242,9 @@ def cmd_doctor(args):
     lines, bad = [], 0
 
     def out(*argv):
-        try:
-            return subprocess.run(argv, capture_output=True, text=True, timeout=20).stdout
+        try:  # in English whatever language the desktop is in: "State:" is read below, not "Κατάσταση:"
+            return subprocess.run(argv, capture_output=True, text=True, timeout=20,
+                                  env={**os.environ, "LC_ALL": "C.UTF-8", "LANGUAGE": ""}).stdout
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
