@@ -100,5 +100,11 @@
     "name": "17.10.26.02",
     "summary": "Mentor now tells you in the chat when a program crashes, and full system upgrades are safer: fresh signing keys first, a free-space check, and a check of the start-up files.",
     "published": "2026-10-17 18:00"
+  },
+  {
+    "version": 202610171621,
+    "name": "17.10.26.03",
+    "summary": "No more false warning after your computer sleeps: Mentor's own checks no longer look broken when Windows pauses Mentor.",
+    "published": "2026-10-17 19:33"
   }
 ]

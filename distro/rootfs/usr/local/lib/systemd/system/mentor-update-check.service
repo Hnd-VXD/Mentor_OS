@@ -9,4 +9,7 @@ Type=oneshot
 ExecStart=/usr/local/lib/mentor/mentor-update check
 Nice=19
 IOSchedulingClass=idle
-TimeoutStartSec=30min
+# No limit from systemd: it counts the time Windows keeps the VM paused while the PC sleeps, and
+# on 2026-10-17 a 30-minute sleep made a running advisor look hung ("failed", a yellow card).
+# Every download and command inside has its own time limit. /etc/mentor/BOOT.md, "When Windows sleeps".
+TimeoutStartSec=infinity
