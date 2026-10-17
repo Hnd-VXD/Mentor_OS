@@ -124,6 +124,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/share/applications/*.desktop` | hides the launchers of developer tools that came as dependencies; puts OpenCode in the app grid | yes | at once | DESKTOP.md |
 | `/usr/local/lib/mentor/mentor-clipboard`, `mentor-clipboard-files` | the clipboard shared with Windows, files included | user | login | DESKTOP.md |
 | `/etc/xdg/autostart/mentor-clipboard.desktop` | starts it at login, on X11 (`GDK_BACKEND=x11`) | yes | login | DESKTOP.md |
+| `/usr/local/bin/gnome-control-center`, `/usr/local/share/dbus-1/services/org.gnome.Settings.service` | GNOME Settings drawn without OpenGL, however it is started (it froze after Mouse & Touchpad) | user | next start of Settings | DESKTOP.md |
 | `/etc/udev/rules.d/70-mentor-clipboard.rules` | lets the user open the two channels to the launcher on Windows | yes | `udevadm control --reload; udevadm trigger` | DESKTOP.md |
 
 ### The agent's tools and rules

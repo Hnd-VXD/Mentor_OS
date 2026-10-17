@@ -39,6 +39,7 @@ class DesktopLayer {
     constructor() {
         this._window = null;
         this._cleared = [];  // windows minimized to reveal the desktop
+        this._floating = new Set();  // the assistant's text box over the windows (_float)
         this._showWhenReady = false;
         this._waits = new Set();  // timers of _whenTaskbarUp
         this._signals = [
@@ -188,6 +189,17 @@ class DesktopLayer {
         };
         window.make_above();
         window.stick();
+        // Never minimized: the assistant cannot tell (Wayland does not say so), so the box would stay
+        // lifted out of the desktop and be seen nowhere, and the desktop had no text box (2026-10-17,
+        // after the desktop was revealed while it was up). Esc or the same key puts it away.
+        if (!this._floating.has(window)) {
+            this._floating.add(window);
+            window.connect('unmanaged', () => this._floating.delete(window));
+            window.connect('notify::minimized', () => {
+                if (window.minimized)
+                    window.unminimize();
+            });
+        }
         window.connect('shown', () => {
             place();
             Main.activateWindow(window);
@@ -325,7 +337,7 @@ class DesktopLayer {
         }
         const workspace = global.workspace_manager.get_active_workspace();
         const inTheWay = workspace.list_windows().filter(window =>
-            window !== this._window && !window.minimized && window.showing_on_its_workspace() &&
+            window !== this._window && !this._floating.has(window) && !window.minimized && window.showing_on_its_workspace() &&
             window.get_window_type() !== Meta.WindowType.DESKTOP && window.get_window_type() !== Meta.WindowType.DOCK);
         if (inTheWay.length) {
             this._cleared = global.display.sort_windows_by_stacking(inTheWay);

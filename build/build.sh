@@ -68,7 +68,7 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-sentinel "$dest"/usr/local/lib/mentor/mentor-emergency-key \
         "$dest"/usr/local/lib/mentor/mentor-emergency-console "$dest"/usr/local/lib/mentor/mentor-taskbar-quiet \
         "$dest"/usr/local/lib/mentor/mentor-update "$dest"/usr/local/lib/mentor/mentor-enable \
-        "$dest"/usr/local/lib/mentor/mentor-crash-watch
+        "$dest"/usr/local/lib/mentor/mentor-crash-watch "$dest"/usr/local/bin/gnome-control-center
     echo "$VERSION" > "$dest/etc/mentor/version"
     echo "$VERSION_NAME" > "$dest/etc/mentor/version-name"
     # Every update published before this build (distro/updates.json, kept by publish-update.ps1) is in it

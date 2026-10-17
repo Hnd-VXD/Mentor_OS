@@ -1,0 +1,8 @@
+#!/bin/sh
+# GNOME Settings drawn without OpenGL (GSK_RENDERER=cairo). In Mentor's VM its GL context gets lost when
+# the Mouse & Touchpad page's gesture videos are left (gdk_gl_context_make_current() failed), and the
+# window freezes on the next page (2026-10-17). Settings is plain enough to be drawn the simple way.
+# Ahead of /usr/bin in PATH; started through D-Bus, the same is done by
+# /usr/local/share/dbus-1/services/org.gnome.Settings.service. etc/mentor/DESKTOP.md, "Settings".
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+exec /usr/bin/gnome-control-center "$@"

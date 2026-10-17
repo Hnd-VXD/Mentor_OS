@@ -106,5 +106,11 @@
     "name": "17.10.26.03",
     "summary": "No more false warning after your computer sleeps: Mentor's own checks no longer look broken when Windows pauses Mentor.",
     "published": "2026-10-17 19:33"
+  },
+  {
+    "version": 202610171639,
+    "name": "17.10.26.04",
+    "summary": "Settings no longer freezes after Mouse & Touchpad, about 37 languages can be chosen in Settings, and the assistant's text box always stays in view.",
+    "published": "2026-10-17 19:45"
   }
 ]

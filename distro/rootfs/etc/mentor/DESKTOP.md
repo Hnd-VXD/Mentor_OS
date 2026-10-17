@@ -46,6 +46,8 @@ Inside `desktop` (class `DesktopLayer`) there is more that leans on the shell:
 | Suggestions behind the bell | `mentor-advisor` and its timer; shown by mentor-chat | `systemctl is-enabled mentor-advisor.timer` |
 | The start-up picture | plymouth theme `mentor` in `/usr/share/plymouth/themes/mentor`, inside the initramfs | `plymouth-set-default-theme` |
 | Wallpapers | `/usr/share/backgrounds/mentor/`, listed in `/usr/share/gnome-background-properties/mentor.xml` | Settings, Appearance |
+| Settings that does not freeze: GNOME Settings is drawn without OpenGL (`GSK_RENDERER=cairo`), however it is started. See "Settings" below | `/usr/local/bin/gnome-control-center` (ahead of `/usr/bin` in PATH) and `/usr/local/share/dbus-1/services/org.gnome.Settings.service` (found before GNOME's own) | open Settings from the app grid, then `tr '\0' '\n' < /proc/$(pgrep -f -o gnome-control-center)/environ \| grep GSK` says `GSK_RENDERER=cairo` |
+| The languages GNOME offers: Settings, System, Region & Language lists about 37 languages. See "Languages" below | `mentor-enable` makes their locales (`/etc/locale.gen`, `locale-gen`) | `localectl list-locales` lists `de_DE.UTF-8` among others |
 | Chromium with uBlock Origin Lite | `/etc/chromium/policies/managed/mentor.json` | `chrome://policy` |
 
 mentor-chat itself leans on libadwaita (`Adw.TabView`, `Adw.AlertDialog`, `Adw.Dialog`, `Adw.SwitchRow`, `Adw.WrapBox`) and GTK 4. A new GNOME brings new versions of both; a class that has gone shows as a Python traceback in the journal (`journalctl -b --user | grep -A12 mentor-chat`), and the desktop then stays empty.
@@ -193,3 +195,32 @@ Check: `pgrep -af lib/mentor/mentor-clipboard` (one line); `ls -l /dev/virtio-po
 3. `grep '^N: Name' /proc/bus/input/devices` lists `QEMU Virtio Mouse` (the game mouse) and `QEMU QEMU USB Tablet` (the normal pointer). Without the Virtio Mouse, the user's Mentor.exe is from before the game mouse (step 2 above).
 
 **If the part is broken** after a GNOME update (`mentor doctor` says `game mouse: broken: ...`), read the error. It leans only on `global.display` `notify::focus-window`, `Shell.WindowTracker.get_default().get_window_app(window)`, `app.get_app_info().get_categories()` and the overview's `showing` / `hiding` signals: look up what replaced them (`shell_source`) and adapt `GameMouse` in the sandbox. Until it is mended, `mentor game-mouse on` still works by hand: it only needs the launcher.
+
+## Settings
+
+**What the user has.** GNOME Settings opens and moves between pages without freezing.
+
+**Why it is made so.** On 2026-10-17, Settings froze each time the user left the Mouse & Touchpad page: the page plays small gesture videos, and when it was left GTK's OpenGL context was lost in the VM (`gdk_gl_context_make_current() failed` in the journal, three times, then a window that does not answer). Drawn without OpenGL (`GSK_RENDERER=cairo`) it does not happen, and Settings is plain enough not to need OpenGL.
+
+**How.** Settings is started two ways, and both go through Mentor's wrapper `/usr/local/bin/gnome-control-center`, which sets `GSK_RENDERER=cairo` (unless it is set already) and runs `/usr/bin/gnome-control-center`:
+1. From the app grid, the taskbar and the system menu, by D-Bus: its desktop file says `DBusActivatable=true`, so the `Exec` line of a desktop file is never used. `/usr/local/share/dbus-1/services/org.gnome.Settings.service` is found before GNOME's `/usr/share/dbus-1/services/org.gnome.Settings.service` and starts the wrapper.
+2. As a command (`gnome-control-center`, the desktop menu's Settings, the agent): `/usr/local/bin` comes before `/usr/bin` in PATH.
+
+Do not put `env GSK_RENDERER=cairo` into a copy of `org.gnome.Settings.desktop` in `~/.local/share/applications`: it does nothing when Settings is started by D-Bus, and the copy hides every later change to GNOME's own file.
+
+**Check.** Open Settings from the app grid. Then `tr '\0' '\n' < /proc/$(pgrep -f -o gnome-control-center)/environ | grep GSK` says `GSK_RENDERER=cairo`. Go to Mouse & Touchpad, then to another page: it answers.
+
+**If Settings freezes anyway.** Read `journalctl -b -o cat _COMM=gnome-control-center | tail -20`. If `GSK_RENDERER` is not in its environment (the check above), one of the two files is missing: `sudo mentor restore /usr/local/bin/gnome-control-center /usr/local/share/dbus-1/services/org.gnome.Settings.service` (the user runs it), then close Settings and open it again.
+
+## Languages
+
+**What the user has.** Settings, System, Region & Language, Language lists about 37 languages: English (US and UK), German, French, Spanish, Italian, Portuguese, Dutch, Polish, Czech, Slovak, Slovenian, Croatian, Hungarian, Romanian, Bulgarian, Greek, Russian, Ukrainian, Turkish, Swedish, Danish, Norwegian, Finnish, Estonian, Latvian, Lithuanian, Japanese, Chinese, Korean, Arabic, Hebrew, Indonesian and Thai. Choosing one changes GNOME and its apps after a log out.
+
+**How.** GNOME's translations come with its packages, all of them. A language is only listed once its locale is made: `mentor-enable` (run by the image build and by every update) uncomments those languages' `xx_YY.UTF-8 UTF-8` lines in `/etc/locale.gen` and runs `locale-gen`.
+
+**Mentor's own words stay English**: the chat's buttons and cards, Mentor Settings and the desktop menu. The assistant itself answers in the user's language. Say so when a user changes the language.
+
+**When the user asks for a language.**
+1. If it is in the list above: tell them: "Open Settings, System, Region & Language, Language, choose it, then log out and in again." Or set it for them through AccountsService (`busctl call org.freedesktop.Accounts /org/freedesktop/Accounts/User$(id -u) org.freedesktop.Accounts.User SetLanguage s de_DE.UTF-8`, which asks for the password), then ask them to log out.
+2. If it is not listed: find its line with `grep -n "xx_YY" /etc/locale.gen` (some have no `.UTF-8` in the name, for example `hi_IN UTF-8`). Uncomment it and run `locale-gen` as root, in the sandbox, and apply. Then do step 1.
+3. Check: `localectl list-locales` lists it.

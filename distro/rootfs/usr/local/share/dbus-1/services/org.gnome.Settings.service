@@ -1,0 +1,6 @@
+# Settings is started this way from the app grid, the taskbar and the system menu (its desktop file
+# says DBusActivatable). This copy, found before GNOME's in /usr/share, starts it through Mentor's
+# /usr/local/bin/gnome-control-center, which draws it without OpenGL. etc/mentor/DESKTOP.md, "Settings".
+[D-BUS Service]
+Name=org.gnome.Settings
+Exec=/usr/local/bin/gnome-control-center --gapplication-service

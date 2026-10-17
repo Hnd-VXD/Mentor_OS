@@ -25,5 +25,20 @@ systemctl enable mentor-power-button.service
 systemctl enable mentor-sentinel.service
 # The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
 systemctl enable mentor-emergency-key.service
+# The languages offered in Settings, System, Region & Language (etc/mentor/DESKTOP.md, "Languages").
+# GNOME's translations are all installed, but a language is listed only once its locale is made.
+# More can be added the same way (one line of /etc/locale.gen, then locale-gen).
+changed=
+for l in en_US en_GB de_DE fr_FR es_ES es_MX it_IT pt_PT pt_BR nl_NL pl_PL cs_CZ sk_SK sl_SI hr_HR hu_HU \
+         ro_RO bg_BG el_GR ru_RU uk_UA tr_TR sv_SE da_DK nb_NO fi_FI et_EE lv_LV lt_LT ja_JP zh_CN zh_TW \
+         ko_KR ar_EG he_IL id_ID th_TH; do
+    if grep -q "^#$l\.UTF-8 UTF-8" /etc/locale.gen; then
+        sed -i "s/^#\($l\.UTF-8 UTF-8\)/\1/" /etc/locale.gen
+        changed=1
+    fi
+done
+if [ -n "$changed" ]; then
+    locale-gen >/dev/null
+fi
 install -d -m 755 /var/log/mentor
 gtk-update-icon-cache -q -f /usr/share/icons/hicolor
