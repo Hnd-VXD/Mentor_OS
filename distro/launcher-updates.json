@@ -16,5 +16,11 @@
     "sha256": "b6d1a50c2e3d600a85c7af1f4b7fb0f30239be101bcbf0068ebcb7c9cf7be96f",
     "summary": "A shorter Mentor window: the owl and Start side by side.",
     "published": "2026-10-17 23:04"
+  },
+  {
+    "version": 202610172030,
+    "sha256": "4925282f78cfa4249bae42778578a493f6b2dca7445a6e53fd9d480714049763",
+    "summary": "One volume: Windows' volume and Mentor's are kept the same, mute too.",
+    "published": "2026-10-17 23:30"
   }
 ]

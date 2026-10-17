@@ -5,6 +5,8 @@
 //                    {"hello": ID, "ok": bool}         Windows Hello's answer
 //                    {"notice": {...}}                 a card for the chat (a USB device that was not given)
 //                    {"diagnostics": ID}               asks for the system's logs (Diagnostics.cs)
+//                    {"volume": 0-1, "mute": bool}     Windows' master volume, when it changes (WindowsVolume.cs)
+//   both ways:       the same from the system inside: the user changed Mentor's volume; Windows takes it
 //   from it:         {"want": "timezone"}              it is listening: everything it should know is sent
 //                    {"hello": ID, "why": "..."}       Windows Hello, please, for this
 //                    {"diagnostics": ID, "data": "<base64 .tar.gz>"} or {"diagnostics": ID, "error": "..."}
@@ -29,6 +31,7 @@ class HostLink
     readonly object sendLock = new object();
     readonly List<Dictionary<string, object>> notices = new List<Dictionary<string, object>>();
     NetworkStream stream;
+    readonly WindowsVolume volume;  // one volume for Windows and Mentor
     string sentZone;
     bool listening;  // the system inside has said it listens, since the link opened
     bool usbTried;
@@ -44,6 +47,7 @@ class HostLink
         this.window = window;
         this.qemu = qemu;
         this.qmp = qmp;
+        volume = new WindowsVolume(Send);
         new Thread(() => Read(port)) { IsBackground = true }.Start();
     }
 
@@ -105,6 +109,11 @@ class HostLink
             }
         }
         if (message.TryGetValue("hello", out value) && message.ContainsKey("why")) OnHello(value as string, message["why"] as string);
+        if (message.TryGetValue("volume", out value) && (value is int || value is decimal || value is double))
+        {
+            object mute;
+            volume.Set(Convert.ToDouble(value), message.TryGetValue("mute", out mute) && mute is bool && (bool)mute);
+        }
     }
 
     // Everything the system inside should know, again (it has just started listening, or Windows woke up).
@@ -113,6 +122,7 @@ class HostLink
         sentZone = null;
         SendZone();
         Send(new Dictionary<string, object> { { "hello-on", Program.HelloOn } });
+        volume.Again();
     }
 
     // A card for the chat, now or as soon as the system inside listens.

@@ -15,6 +15,10 @@ What goes over it, one JSON object a line:
     in it says yes to a password.
   - Cards in the chat: {"notice": {"level": "warning"|"problem", "title", "text", "prompt"?}} from
     Mentor.exe (a USB device it could not give, for one) is left for the desktop's user (`mentor notice`).
+  - One volume: {"volume": 0.0-1.0, "mute": bool} both ways. From Mentor.exe it is Windows' master volume
+    (sent when it changes and at each "want"); mentor-volume, run as the desktop's user, makes Mentor's own
+    volume show it without lowering the sound twice, and its changes go back to Windows the same way.
+    Mentor.exe gone: Mentor's own volume as before (Volume.stop).
   - The diagnostics file (Mentor.exe's tray icon): {"diagnostics": ID} is answered with
     {"diagnostics": ID, "data": "<base64 .tar.gz>"}: the journal, failed services, /var/log/mentor.
 
@@ -289,7 +293,86 @@ def diagnostics(ident):
     log(f"diagnostics sent ({len(data) >> 10} KB)")
 
 
+VOLUME_HELPER = "/usr/local/lib/mentor/mentor-volume"
+
+
+class Volume:
+    """One volume for Windows and Mentor (mentor-volume; WINDOWS.md, "One volume"): Windows' master volume
+    as Mentor.exe last sent it, and the helper that keeps Mentor's in step with it, run as the desktop's
+    user. Only while a Mentor.exe that sends the volume is connected: without one, Mentor's own volume
+    stays as it always was."""
+
+    def __init__(self):
+        self.windows = None  # {"volume", "mute"} from Mentor.exe
+        self.helper = None
+        self.lock = threading.Lock()
+
+    def from_windows(self, volume, mute):
+        self.windows = {"volume": volume, "mute": mute}
+        if not self.ensure():
+            self.tell(self.windows)
+
+    def tell(self, message):
+        helper = self.helper
+        if helper and helper.poll() is None:
+            try:
+                helper.stdin.write(json.dumps(message) + "\n")
+                helper.stdin.flush()
+            except (OSError, ValueError):
+                pass
+
+    def ensure(self):
+        """The helper running, when there is a volume to keep and someone logged in. True: just started."""
+        if self.windows is None:
+            return False
+        with self.lock:
+            if self.helper and (self.helper.poll() is None or self.helper.returncode == 3):
+                return False  # running, or there is no sound output to keep
+            user = desktop_user()
+            if not user:
+                return False
+            uid, gid, name = user
+            self.helper = subprocess.Popen(
+                ["setpriv", f"--reuid={uid}", f"--regid={gid}", "--init-groups", "env", f"HOME={pwd.getpwuid(uid).pw_dir}",
+                 f"USER={name}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "PATH=/usr/local/bin:/usr/bin", VOLUME_HELPER],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            helper = self.helper
+        threading.Thread(target=self.read, args=(helper,), daemon=True).start()
+        self.tell(self.windows)
+        log("one volume: mentor-volume started")
+        return True
+
+    def read(self, helper):
+        for line in helper.stdout:
+            try:
+                message = json.loads(line)
+                volume, mute = float(message["volume"]), message.get("mute") is True
+            except (ValueError, KeyError, TypeError):
+                continue
+            if 0 <= volume <= 1:
+                LINK.send({"volume": round(volume, 3), "mute": mute})
+
+    def stop(self):
+        """Mentor.exe went away: Mentor's own volume, as before."""
+        self.windows = None
+        with self.lock:
+            helper, self.helper = self.helper, None
+        if helper and helper.poll() is None:
+            try:
+                helper.stdin.close()
+                helper.wait(timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                helper.kill()
+            log("one volume: stopped (Mentor.exe went away)")
+
+
+VOLUME = Volume()
+
+
 def handle(message):
+    volume = message.get("volume")
+    if isinstance(volume, (int, float)) and not isinstance(volume, bool) and 0 <= volume <= 1:
+        VOLUME.from_windows(float(volume), message.get("mute") is True)
     if "diagnostics" in message and isinstance(message["diagnostics"], str) and "data" not in message:
         threading.Thread(target=diagnostics, args=(message["diagnostics"][:40],), daemon=True).start()
     if "timezone" in message:
@@ -326,6 +409,7 @@ def serve():
             asked = time.monotonic()
         ready, _, _ = select.select([fd], [], [], 30)
         leave_notices()
+        VOLUME.ensure()  # again after a new login (the sound server is the session's)
         if not ready:
             continue
         try:
@@ -339,6 +423,7 @@ def serve():
         if not data:  # Mentor.exe is not connected: look again in a moment
             if asked is not None:
                 hello_on(False)
+                VOLUME.stop()
             time.sleep(2)
             asked = None  # and ask as soon as it is
             continue

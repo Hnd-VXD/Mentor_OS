@@ -1,0 +1,154 @@
+#!/usr/bin/python3
+"""One volume for Windows and Mentor (WINDOWS.md, "One volume"): run as the desktop's user by
+mentor-host-link while Mentor.exe keeps Windows' volume in step, and only then.
+
+Windows' master volume and Mentor's used to multiply: 22% on Windows and 70% here sounded like 15%.
+So while this runs, apps play to a virtual output, "Mentor speakers" (a null sink whose volume is only a
+number: monitor.channel-volumes=false), which a loopback passes on, unchanged, to the real output, kept
+at 100%. The virtual output's volume and mute are Windows' master volume and mute: Mentor.exe sends them
+in, and a change made here (the volume slider, Mentor's volume keys) goes out to Windows, which does the
+lowering and the muting.
+
+Talks JSON lines with mentor-host-link: in on standard input, out on standard output, both
+{"volume": 0.0-1.0, "mute": bool}. When its input ends (Mentor.exe went away, or the link stopped), it
+puts everything back: the real output as the default, at the volume the virtual one had.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+
+SINK = "mentor_speakers"
+LOOP = "mentor-volume-loop"
+lock = threading.Lock()
+applied = None  # (volume, mute) last set from Windows: its echo is not sent back
+
+
+def log(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+def pactl(*args):
+    return subprocess.run(["pactl", *args], capture_output=True, text=True, timeout=10)
+
+
+def sinks():
+    """name -> index of the sinks there are."""
+    out = pactl("list", "short", "sinks").stdout
+    return {line.split("\t")[1]: line.split("\t")[0] for line in out.splitlines() if line.count("\t") >= 2}
+
+
+def real_sink():
+    names = [name for name in sinks() if name != SINK]
+    return next((n for n in names if n.startswith("alsa_output")), names[0] if names else None)
+
+
+def state():
+    """(volume 0-1, mute) of the virtual output, or None."""
+    volume = pactl("get-sink-volume", SINK).stdout
+    mute = pactl("get-sink-mute", SINK).stdout
+    try:
+        percents = [int(p) for p in re.findall(r"(\d+)%", volume)]
+        return round(sum(percents) / len(percents) / 100, 3), "yes" in mute
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def set_state(volume, mute):
+    global applied
+    volume = min(1.0, max(0.0, float(volume)))
+    with lock:
+        applied = (round(volume, 3), bool(mute))
+    pactl("set-sink-volume", SINK, f"{round(volume * 100)}%")
+    pactl("set-sink-mute", SINK, "1" if mute else "0")
+
+
+def same(a, b):
+    return a and b and abs(a[0] - b[0]) < 0.011 and a[1] == b[1]
+
+
+def set_up(real):
+    if SINK not in sinks():
+        subprocess.run(["pw-cli", "create-node", "adapter",
+                        "{ factory.name=support.null-audio-sink node.name=%s node.description=\"Speakers\" "
+                        "media.class=Audio/Sink object.linger=true audio.position=[FL FR] "
+                        "monitor.channel-volumes=false monitor.passthrough=true }" % SINK],
+                       capture_output=True, timeout=10)
+        for _ in range(20):
+            if SINK in sinks():
+                break
+            time.sleep(0.2)
+    loop = subprocess.Popen(["pw-loopback", "-n", LOOP,
+                             "--capture-props", f"stream.capture.sink=true target.object={SINK} node.passive=true",
+                             "--playback-props", f"target.object={real} node.dont-reconnect=true"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    pactl("set-sink-volume", real, "100%")
+    pactl("set-sink-mute", real, "0")
+    pactl("set-default-sink", SINK)
+    return loop
+
+
+def take_down(real, loop):
+    now = state()
+    if real:
+        pactl("set-default-sink", real)
+        if now:
+            pactl("set-sink-volume", real, f"{round(now[0] * 100)}%")
+            pactl("set-sink-mute", real, "1" if now[1] else "0")
+    loop.terminate()
+    index = sinks().get(SINK)
+    if index:
+        out = subprocess.run(["pw-cli", "ls", "Node"], capture_output=True, text=True).stdout
+        # pw-cli knows the node by its own id: the one whose node.name is ours
+        block_id = None
+        for line in out.splitlines():
+            if line.strip().startswith("id "):
+                block_id = line.strip().split()[1].rstrip(",")
+            elif f'node.name = "{SINK}"' in line and block_id:
+                subprocess.run(["pw-cli", "destroy", block_id], capture_output=True)
+                break
+
+
+def watch():
+    """Changes made here go out to Windows."""
+    events = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE, text=True)
+    sent = None
+    for line in events.stdout:
+        if "on sink" not in line or "'change'" not in line:
+            continue
+        now = state()
+        with lock:
+            echo = same(now, applied)
+        if now and not echo and not same(now, sent):
+            print(json.dumps({"volume": now[0], "mute": now[1]}), flush=True)
+            sent = now
+    log("pactl subscribe ended")
+    os._exit(1)  # the sound server went away (the session ended): mentor-host-link starts this again
+
+
+def main():
+    real = real_sink()
+    if not real:
+        log("no sound output: nothing to do")
+        return 3  # mentor-host-link does not start it again
+    loop = set_up(real)
+    log(f"one volume: apps play to {SINK}, passed on to {real} at 100%")
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        for line in sys.stdin:
+            try:
+                message = json.loads(line)
+                set_state(message["volume"], message.get("mute") is True)
+            except (ValueError, KeyError, TypeError):
+                continue
+    finally:
+        take_down(real, loop)
+        log("put back: the real output is the default again")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

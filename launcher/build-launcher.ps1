@@ -29,7 +29,7 @@ static class LauncherBuild
 
 # /target:winexe is what keeps a console window from opening.
 $sources = 'Mentor.cs', 'Ui.cs', 'SelfUpdate.cs', 'Power.cs', 'TimeZone.cs', 'HostLink.cs', 'Devices.cs', 'Resources.cs',
-    'LauncherWindow.cs', 'SettingsDialog.cs', 'Usb.cs', 'Hello.cs', 'Tray.cs', 'Diagnostics.cs', 'Backup.cs' |
+    'LauncherWindow.cs', 'SettingsDialog.cs', 'Usb.cs', 'Hello.cs', 'Tray.cs', 'Diagnostics.cs', 'Backup.cs', 'WindowsVolume.cs' |
     ForEach-Object { Join-Path $PSScriptRoot $_ }
 & $csc /nologo /target:winexe /optimize+ /platform:x64 `
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll `

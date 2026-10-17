@@ -136,5 +136,11 @@
     "name": "17.10.26.08",
     "summary": "Mentor follows your Windows time zone, and you can approve its password questions with Windows Hello (with the new Mentor program on Windows).",
     "published": "2026-10-17 22:53"
+  },
+  {
+    "version": 202610172027,
+    "name": "17.10.26.09",
+    "summary": "Your laptop's volume keys, Windows' volume and Mentor's volume are now one and the same (with the newest Mentor program on Windows).",
+    "published": "2026-10-17 23:30"
   }
 ]
