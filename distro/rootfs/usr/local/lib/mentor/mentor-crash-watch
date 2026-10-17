@@ -4,9 +4,9 @@
 Runs for as long as the user is logged in (mentor-crash-watch.service) and follows the journal
 for the record systemd-coredump writes for every program that crashed (MESSAGE_ID below). Each
 crash becomes one yellow card, "Firefox closed unexpectedly", whose Let Mentor look hands the
-agent what was written down. One program is shown at most once each SAME_AGAIN seconds, so a
-program that crashes over and over is one card, not a pile; Mentor's own short-lived helpers
-are left out. See /etc/mentor/FREEZES.md, "When a program crashes".
+agent what was written down. A program that crashes over and over is one card, not a pile: no
+new card while it keeps crashing (crashes less than SAME_AGAIN seconds apart), and at most one
+card per program each REPEAT seconds. Mentor's own short-lived helpers are left out. See /etc/mentor/FREEZES.md, "When a program crashes".
 
 The idea comes from Omarchy's bin/omarchy-crash-watch (github.com/omacom/omarchy, MIT).
 """
@@ -21,7 +21,8 @@ sys.path.insert(0, "/usr/local/lib/mentor")
 import mentor_tools
 
 COREDUMP = "fc2e22bc6ee647b6b90729ab34a250b1"  # systemd-coredump's "Process … dumped core"
-SAME_AGAIN = 60  # seconds before the same program gets another card
+SAME_AGAIN = 60  # seconds a program must have stayed up before its next crash is a new story
+REPEAT = 600     # seconds between two cards for one program, at the least
 FIELDS = ("COREDUMP_COMM", "COREDUMP_EXE", "COREDUMP_SIGNAL", "COREDUMP_SIGNAL_NAME", "COREDUMP_PID",
           "COREDUMP_UID", "COREDUMP_CMDLINE", "COREDUMP_CGROUP", "COREDUMP_UNIT", "COREDUMP_USER_UNIT",
           "COREDUMP_TIMESTAMP")
@@ -79,7 +80,7 @@ def main():
     following = subprocess.Popen(
         ["journalctl", "-f", "-n", "0", "-o", "json", "--output-fields=" + ",".join(FIELDS), f"MESSAGE_ID={COREDUMP}"],
         stdout=subprocess.PIPE, text=True, errors="replace")
-    shown = {}  # program -> when its last card was left
+    shown, crashed = {}, {}  # program -> when its last card was left, when it last crashed
     for line in following.stdout:
         try:
             entry = json.loads(line)
@@ -88,10 +89,17 @@ def main():
                 continue
             program = crash.get("COREDUMP_EXE") or crash.get("COREDUMP_COMM") or ""
             now = time.monotonic()
-            if now - shown.get(program, -SAME_AGAIN) < SAME_AGAIN:
-                print(f"crash of {program} again within a minute: no new card", flush=True)
+            before = crashed.get(program)
+            crashed[program] = now
+            if before is not None and now - before < SAME_AGAIN:
+                print(f"crash of {program} again within a minute of the last: no new card", flush=True)
                 continue
-            shown = {p: when for p, when in shown.items() if now - when < SAME_AGAIN}
+            if now - shown.get(program, -REPEAT) < REPEAT:
+                print(f"crash of {program}: its card of a few minutes ago stands", flush=True)
+                continue
+            shown = {p: when for p, when in shown.items() if now - when < REPEAT}
+            crashed = {p: when for p, when in crashed.items() if now - when < REPEAT}
+            crashed[program] = now
             shown[program] = now
             tell(crash)
         except Exception as e:  # one record that could not be handled must not end the watching

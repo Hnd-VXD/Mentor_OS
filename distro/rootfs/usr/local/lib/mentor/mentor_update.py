@@ -15,6 +15,7 @@ status  prints the state as JSON.
 Runs as root.
 """
 import hashlib
+import http.client
 import json
 import os
 import pwd
@@ -332,7 +333,7 @@ def check():
         return 0
     try:
         data, signature = _fetch("update.json", 64 << 10), _fetch("update.json.sig", 16 << 10)
-    except (OSError, UpdateError) as e:
+    except (OSError, UpdateError, http.client.HTTPException) as e:
         log(f"no update information: {e}")
         return 0  # offline, or nothing published yet: tried again tomorrow
     if not verify(data, signature):
@@ -343,7 +344,13 @@ def check():
         log(f"looked: nothing newer than {installed_name()}")  # mentor doctor reads that it looks
         return 0
     os.makedirs(STATE_DIR, exist_ok=True)
-    download(update)
+    try:
+        download(update)
+    except (OSError, UpdateError, http.client.HTTPException) as e:
+        # A connection that broke, or bytes that are not the signed ones: nothing is offered, and the
+        # next look tries again. Not a failed service (mentor-watch would show a card for that).
+        log(f"looked: {update['name']} could not be downloaded ({e}); tried again at the next look")
+        return 0
     with open(f"{STATE_DIR}/update.json", "wb") as f:
         f.write(data)
     with open(f"{STATE_DIR}/update.json.sig", "wb") as f:

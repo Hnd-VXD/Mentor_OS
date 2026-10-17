@@ -121,6 +121,7 @@ def main():
     state = load()
     done = state.setdefault("done", {})
     sizes = {}
+    judged = {}  # path -> (size, mtime) it was last looked at with
     now = time.time()
     known = set()  # folders already looked at once: what was in them then is not new
     where, looked = [], 0.0
@@ -138,7 +139,8 @@ def main():
                 known.add(folder)
                 for path in files[-len(names):] if names else []:
                     try:
-                        if os.path.getmtime(path) < time.time() - RECENT and mentor_recipes.sha_of(path):
+                        if os.path.getmtime(path) < time.time() - RECENT and mentor_recipes.looks_like_recipe(path) \
+                                and mentor_recipes.sha_of(path):
                             done[mentor_recipes.sha_of(path)] = now
                     except OSError:
                         pass
@@ -151,8 +153,14 @@ def main():
             if sizes.get(path) != key:  # new, or still being written: look again next time
                 sizes[path] = key
                 continue
+            if judged.get(path) == key:  # looked at as it is now already: a README stays a README
+                continue
+            judged[path] = key
+            # The form first: it reads at most 400 kB and refuses bigger files, which are never recipes.
+            if not mentor_recipes.looks_like_recipe(path):
+                continue
             sha = mentor_recipes.sha_of(path)
-            if not sha or sha in done or not mentor_recipes.looks_like_recipe(path):
+            if not sha or sha in done:
                 continue
             done[sha] = time.time()
             keep(state)
