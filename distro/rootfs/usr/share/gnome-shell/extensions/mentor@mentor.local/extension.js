@@ -50,6 +50,7 @@ class DesktopLayer {
             // The assistant is on every workspace, with a conversation for each.
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed',
                 () => this._tellWorkspace())],
+            [global.display, global.display.connect('notify::focus-window', () => this._focusWhenAlone())],
             [Main.layoutManager, Main.layoutManager.connect('monitors-changed', () => {
                 this._place();
                 this._onScreenChanged();
@@ -209,6 +210,22 @@ class DesktopLayer {
         this._waits.add(id);
     }
 
+    // Nothing else has the keyboard (the session has just started, or the last window was closed): the
+    // assistant takes it. On Wayland an app sees Ctrl only while it has the keyboard, so after a restart
+    // Ctrl and the mouse wheel did not zoom the chat until the user clicked into it (2026-10-18); the shell
+    // cannot help at the wheel itself, which goes to the app's window without passing through here.
+    _focusWhenAlone() {
+        if (this._focusLater)
+            return;
+        this._focusLater = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+            this._focusLater = 0;
+            const window = this._window;
+            if (window && !global.display.focus_window && !Main.overview.visible && !Main.modalCount)
+                Main.activateWindow(window);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     _tellWorkspace() {
         if (!this._window)
             return;
@@ -294,6 +311,7 @@ class DesktopLayer {
         // Alt+Tab and the overview: mutter does the rest.
         window.set_type(Meta.WindowType.DESKTOP);
         window.stick();
+        this._focusWhenAlone();
         window.connect('unmanaged', () => {
             if (this._window !== window)
                 return;
@@ -424,6 +442,9 @@ class DesktopLayer {
         if (this._placing)
             GLib.source_remove(this._placing);
         this._placing = 0;
+        if (this._focusLater)
+            GLib.source_remove(this._focusLater);
+        this._focusLater = 0;
         this._window = null;
     }
 }

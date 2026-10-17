@@ -1124,13 +1124,16 @@ _LOCALE_OCR = {"de": "deu", "fr": "fra", "es": "spa", "it": "ita", "pt": "por", 
 def _ocr_languages():
     listed = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, errors="replace")
     installed = [l.strip() for l in listed.stdout.splitlines()[1:] if l.strip() and l.strip() != "osd"]
+    own = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "en").split("_")[0].split(".")[0]
+    usual = ["eng", "ell", _LOCALE_OCR.get(own, "")]
     try:
         with open(OCR_LANGUAGES) as f:
             wanted = f.read().strip().replace(",", "+").replace(" ", "+").split("+")
     except OSError:
-        own = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "en").split("_")[0].split(".")[0]
-        wanted = ["eng", "ell", _LOCALE_OCR.get(own, "")]
-    return [l for l in dict.fromkeys(wanted) if l in installed] or installed
+        wanted = usual
+    # A language asked for but not installed: the usual ones, not every one there is (Afrikaans misreads).
+    return ([l for l in dict.fromkeys(wanted) if l in installed] or [l for l in usual if l in installed]
+            or installed)
 
 
 def read_text(picture):
@@ -1145,8 +1148,11 @@ def read_text(picture):
         # Tesseract is made for 300 dpi scans: the small letters of a screen read better at twice the size.
         code, _ = _run(["ffmpeg", "-loglevel", "error", "-y", "-i", picture, "-frames:v", "1", "-update", "1",
                         "-vf", "scale=iw*2:ih*2:flags=lanczos", big], timeout=60)
+        if code:
+            # Not a picture (tesseract would take a text file for a list of pictures to read).
+            return 1, f"{picture} is not a picture that can be read"
         # One thread: with its OpenMP threads tesseract took 92 s for a screen in the VM, alone 1 s (2026-10-17).
-        done = subprocess.run(["tesseract", big if code == 0 else picture, "-", *(["-l", "+".join(langs)] if langs else [])],
+        done = subprocess.run(["tesseract", big, "-", *(["-l", "+".join(langs)] if langs else [])],
                               capture_output=True, text=True, errors="replace", timeout=120,
                               env={**os.environ, "OMP_THREAD_LIMIT": "1"})
     except subprocess.TimeoutExpired:

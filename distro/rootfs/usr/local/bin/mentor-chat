@@ -3511,6 +3511,10 @@ class DesktopWindow(Adw.ApplicationWindow):
             # 2026-10-15): Esc in it, or the same key again, puts it back on the desktop.
         self.ask_of, self.ask_shot = conversation, shot
         self.ask_say("")
+        # Its place on the desktop keeps the box's height, and the chip of the picture above it: emptied,
+        # the conversation behind ran down to where the box floats, and a card that came then (a reminder)
+        # was drawn under it, half covered (2026-10-18).
+        conversation.bottom_home.set_size_request(-1, conversation.bottom.get_height() + (56 if shot else 0))
         conversation.bottom_home.set_child(None)
         self.ask_slot.append(conversation.bottom)
         if shot and os.path.isfile(shot):
@@ -3527,6 +3531,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.ask_window.set_visible(False)
         self.ask_slot.remove(conversation.bottom)
         conversation.bottom_home.set_child(conversation.bottom)
+        conversation.bottom_home.set_size_request(-1, -1)
         # A picture that was taken for a question never asked is not kept for the next one.
         if self.ask_shot and conversation.attachments == [os.path.abspath(self.ask_shot)]:
             conversation.attachments = []

@@ -148,5 +148,11 @@
     "name": "17.10.26.10",
     "summary": "Your laptop's volume keys, Windows' volume and Mentor's volume are one and the same, one step per key press (with the newest Mentor program on Windows).",
     "published": "2026-10-17 23:45"
+  },
+  {
+    "version": 202610172134,
+    "name": "17.10.26.11",
+    "summary": "Small fixes: zooming the chat works right after a start, cards no longer hide under the Super+Z box, and copying text from the screen is more reliable.",
+    "published": "2026-10-18 00:46"
   }
 ]
