@@ -51,6 +51,9 @@ except Exception:
     mentor_journal = mentor_recipes = mentor_settings = None
 
 APP_ID = "org.mentor.Chat"
+# The owl on the big cards in the middle (welcome, connecting the agent, the keyring): the simpler one,
+# Mentor Settings' icon, which reads better at that size than the round emblem (2026-10-17).
+CARD_ICON = "org.mentor.Settings"
 # Claude Code, Codex and the Antigravity CLI are not part of the system: each user's copy is
 # put under ~/.local the first time they sign in (mentor-engine).
 os.environ["PATH"] = os.path.expanduser("~/.local/bin") + os.pathsep + os.environ.get("PATH", "")
@@ -1174,7 +1177,7 @@ class Conversation(Gtk.Box):
             setup.add_css_class("pill")
             setup.add_css_class("suggested-action")
             setup.connect("clicked", lambda *_: self.send(WELCOME_PROMPT, shown="Set up my system"))
-            self.welcome = card(Gtk.Image(icon_name=APP_ID, pixel_size=72), title, text, setup,
+            self.welcome = card(Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title, text, setup,
                                 halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER, vexpand=True)
         self.messages.append(self.welcome)
         self.set_busy(False)
@@ -4087,7 +4090,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             options.append(option)
         while child := self.connect_page.get_first_child():
             self.connect_page.remove(child)
-        self.connect_page.append(card(Gtk.Image(icon_name=APP_ID, pixel_size=72), title, text, options))
+        self.connect_page.append(card(Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title, text, options))
         self.stack.set_visible_child_name("sign-in")
 
     def show_keyring(self):
@@ -4112,7 +4115,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         always.connect("clicked", lambda *_: self.keyring_for_good())
         while child := self.connect_page.get_first_child():
             self.connect_page.remove(child)
-        self.connect_page.append(card(Gtk.Image(icon_name=APP_ID, pixel_size=72), title, text, unlock, always))
+        self.connect_page.append(card(Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title, text, unlock, always))
         self.stack.set_visible_child_name("sign-in")
 
     def unlock_keyring(self):
@@ -4181,7 +4184,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             label = model = None
         title = Gtk.Label(label="Connect the agent")
         title.add_css_class("title-2")
-        widgets = [Gtk.Image(icon_name=APP_ID, pixel_size=72), title]
+        widgets = [Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title]
         if provider in ACCOUNTS:
             name, through, program, _, _ = ACCOUNTS[provider]
             account = "Google" if provider == "gemini" else name

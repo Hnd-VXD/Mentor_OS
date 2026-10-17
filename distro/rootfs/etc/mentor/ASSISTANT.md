@@ -158,12 +158,15 @@ Lines about `Vulkan`, `MESA` or `ZINK` in the log are the graphics driver talkin
 
 ## Making it again from nothing
 
+The owl on the big cards in the middle (the welcome, "Connect the agent", the keyring) is the simpler one, Mentor Settings' icon `org.mentor.Settings` (`CARD_ICON` in `mentor-chat`, the user's choice on 2026-10-17); the assistant's own icon `org.mentor.Chat` is the round emblem.
+
 ```
 src=/etc/mentor/source/rootfs
 cp -a $src/usr/local/bin/mentor-chat $src/usr/local/bin/mentor-agent /usr/local/bin/
 cp -a $src/etc/xdg/autostart/mentor-desktop.desktop /etc/xdg/autostart/
 cp -a $src/usr/share/applications/org.mentor.Chat.desktop /usr/share/applications/
 install -D -m 644 $src/usr/share/icons/hicolor/256x256/apps/org.mentor.Chat.png /usr/share/icons/hicolor/256x256/apps/org.mentor.Chat.png
+install -D -m 644 $src/usr/share/icons/hicolor/256x256/apps/org.mentor.Settings.png /usr/share/icons/hicolor/256x256/apps/org.mentor.Settings.png
 gtk-update-icon-cache -q -f /usr/share/icons/hicolor
 ```
 
