@@ -46,7 +46,7 @@ the model (through an engine; see ENGINES.md)
 
 ## The tools
 
-Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read` (whole, a part by lines, or the lines matching a search), `file_search` (a folder's contents, files by name, lines inside files), `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `game_mouse` (mouse-look in 3D games), `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `desktop_check`, `session_logout`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Updates of Mentor itself: `mentor_updates`, and reports of what does not work to its maker: `problem_report` (UPDATES.md). Learning how things are made: `shell_source` (GNOME Shell's own code), `package_peek` (the files of any package, installed or not). The desktop's and the system's services: `dbus`. Sound: `sound`. Network: `network_status`. Windows: `windows`. Applications: `app_info` (what one can do), `app_action` (do one of its actions). The log: `log_read`. The web: `web_search`, `web_read`. Other: `system_info`, `suggestions_status`, `suggestions_restore`, `journal_read`, `security_check`, `recipe_material`, `recipe_save`, `recipe_list`, `recipe_inspect`, `recipe_hub_look`, `recipe_share`, `recipe_fetch`, `recipe_report`, `recipe_update`, `recipe_withdraw`, `recipe_used`, `recipe_rate`.
+Packages: `package_search`, `package_info`, `package_list`, `package_install`, `package_remove`, `system_upgrade`. Flatpak: `flatpak_search`, `flatpak_install`, `flatpak_remove`. Settings: `settings_list`, `settings_get`, `settings_set`. Services: `service_status`, `service_control`. Files: `file_read` (whole, a part by lines, or the lines matching a search), `file_search` (a folder's contents, files by name, lines inside files), `file_write`, `file_restore`. Commands: `run_command` (as the user), `run_root_command`, `terminal_run` (in a window the user watches). Sandbox: `sandbox_run`, `sandbox_changes`, `sandbox_apply`, `sandbox_discard`, `change_list`, `change_undo`. Desktop: `window_mode`, `game_mouse` (mouse-look in 3D games), `desktop_layout`, `wallpaper_set`, `app_open`, `extension_list`, `extension_status`, `extension_set`, `screen_capture`, `screen_text` (reads text on the screen and copies it, as Shift+Super+T), `desktop_check`, `session_logout`. Reminders: `reminder_set`, `reminder_list`, `reminder_cancel`. Websites as apps: `webapp_install`, `webapp_remove`, `webapp_list`. Start-up: `system_restart`, `boot_status`, `restore_point_create`. Updates of Mentor itself: `mentor_updates`, and reports of what does not work to its maker: `problem_report` (UPDATES.md). Learning how things are made: `shell_source` (GNOME Shell's own code), `package_peek` (the files of any package, installed or not). The desktop's and the system's services: `dbus`. Sound: `sound`. Network: `network_status`. Windows: `windows`. Applications: `app_info` (what one can do), `app_action` (do one of its actions). The log: `log_read`. The web: `web_search`, `web_read`. Other: `system_info`, `suggestions_status`, `suggestions_restore`, `journal_read`, `security_check`, `recipe_material`, `recipe_save`, `recipe_list`, `recipe_inspect`, `recipe_hub_look`, `recipe_share`, `recipe_fetch`, `recipe_report`, `recipe_update`, `recipe_withdraw`, `recipe_used`, `recipe_rate`.
 
 **system_upgrade's guards** (taken from Omarchy's update, github.com/omacom/omarchy, MIT: `omarchy-update-requires-free-space`, `omarchy-update-keyring`, `omarchy-update-analyze-logs`):
 
@@ -55,6 +55,70 @@ Packages: `package_search`, `package_info`, `package_list`, `package_install`, `
 3. `_pacman_watched` passes the `-Su` output on line by line (`LC_ALL=C`) and reads the part after "Updating linux initcpios" up to the next hook line `(n/m)`. If that part has no "image generation successful" (any case: older mkinitcpio says "Image generation successful", newer "Initcpio image generation successful"), or has "==> ERROR" or "command failed", the last line printed is `INITCPIO_FAILED` ("[mentor: the initramfs was not made]"; the same string in both files). The output reaching the tool is clipped in the middle, so the check is made on the root side, where all of it is. `mentor_tools` sees that line, leaves a red card (`leave_notice("problem", …)`) and tells the agent not to suggest a restart.
 
 Check: `df -h /`; a test with too little room is a big file (`fallocate -l 30G /var/tmp/fill`, removed afterwards). The initcpio part: `python3 -c` with `sys.path.insert(0, "/usr/local/lib/mentor")`, `import mentor_core`, and `mentor_core._pacman_watched(["sh", "-c", "printf ..."])` on made-up output.
+
+### Reminders: `reminder_set`, `reminder_list`, `reminder_cancel`
+
+**What the user has.** They say "remind me in 20 minutes to take the bread out" or "remind me tomorrow at 9 to call Maria". When it is due, a green card titled "Reminder" with their words comes into the chat (with Dismiss and Talk about it), the chat comes to the front, and a notification comes too when the desktop is covered by an app. A reminder stays set through a restart or a shut down. If Mentor is off at that time, the card comes right after the next start, saying "Mentor was off then".
+
+**How you use it.**
+
+1. Work out the time. "In 20 minutes": `minutes: 20`. "At half past six": `at: "18:30"` (today, or tomorrow when that time has passed). A day: `at: "2026-10-18 09:00"`. Times are local. "Tomorrow", "next Monday": work out the date yourself (`run_command date` gives today) and pass it in that form.
+2. `reminder_set` with `text` in the user's own words ("Take the bread out of the oven") and the time.
+3. Say the time back in one short sentence: "I'll remind you at 18:30."
+4. "What reminders do I have?": `reminder_list`. To cancel one: `reminder_list`, then `reminder_cancel` with its id (`all` for every one). To change the time: cancel it, then set it again.
+
+**How it is made** (`mentor_tools.py`, the part "Reminders"). Each reminder is three files of the user's:
+- `~/.local/state/mentor/reminders/ID.json`: `{"id", "text", "due" (seconds since 1970), "made"}`. The id is the time it was set, `yymmddHHMMSS`.
+- `~/.config/systemd/user/mentor-reminder-ID.timer`: `OnCalendar=` the due time in UTC (so the user's time zone cannot shift it), `Persistent=true` (one missed while the computer was off runs at the next start), `WantedBy=timers.target`; enabled with `systemctl --user enable --now`.
+- `~/.config/systemd/user/mentor-reminder-ID.service`: `ExecStart=/usr/local/bin/mentor reminders --fire ID`. That is `mentor_tools.reminder_fire`: it leaves the card (`leave_notice("idea", "Reminder", text)`, a file in `~/.local/state/mentor/notices/`, which mentor-chat shows) and then removes the timer, the service, the timer's stamp `~/.local/share/systemd/timers/stamp-mentor-reminder-ID.timer` and the record.
+
+The user's own systemd starts at login, which is automatic on Mentor, so a missed reminder comes after the login, not during the boot.
+
+**How to tell that it works.**
+
+| Check | Good answer |
+|---|---|
+| `mentor call reminder_set '{"text": "A test", "minutes": 1}'` | `Reminder ID set for HH:MM (in 1 minute): A test` |
+| `systemctl --user list-timers 'mentor-reminder-*'` | a line with that time under NEXT |
+| after a minute: `mentor reminders` | the test is gone from the list, and a green "Reminder" card "A test" is in the chat |
+| `journalctl --user -u 'mentor-reminder-*' -n 5 -o cat` | `Started mentor-reminder-ID.service`, no error |
+
+**When it does not work.**
+- `reminder_list` marks one "its timer is not running": `reminder_cancel` it and set it again.
+- The time passed and no card came: `journalctl --user -u mentor-reminder-ID -o cat` shows why. A Python error there names the line of `mentor_tools.py` (a file you cannot write: tell the user, `sudo mentor restore /usr/local/lib/mentor/mentor_tools.py`). No error and no card: mentor-chat was not running; the card waits in `~/.local/state/mentor/notices/` and comes when it starts.
+- Files left with no record (a `mentor-reminder-*.timer` with no `.json`): `systemctl --user disable --now` it and remove its two unit files.
+
+Tested headless 2026-10-17: set, list, cancel, the card on time, and a reminder that came due while the computer was off.
+
+### Web apps: `webapp_install`, `webapp_remove`, `webapp_list`
+
+**What the user has.** "Make WhatsApp Web an app": an icon in the app grid, with the site's own picture, that opens the site in a window of its own with no address bar or tabs, shown in the taskbar under its own icon, apart from the browser. Taken from Omarchy (github.com/omacom/omarchy, MIT): `bin/omarchy-webapp-install`, `omarchy-launch-webapp`.
+
+**How you use it.**
+
+1. Find the site's address if the user only gave a name: WhatsApp is `https://web.whatsapp.com`, Gmail `https://mail.google.com`, YouTube Music `https://music.youtube.com`, Outlook `https://outlook.live.com/mail`. When unsure, `web_search`.
+2. `webapp_install` with `name` (the user's word for it: "WhatsApp") and `url`.
+3. Say in one sentence where it is: "WhatsApp is in your apps now." Sign-ins are the browser's: if they are signed in to the site in Chromium they are signed in here, and the other way round.
+4. To have it on the taskbar too: read `settings_get org.gnome.shell favorite-apps`, add `mentor-webapp-NAME.desktop` to the list and write it back with `settings_set`.
+5. "Remove the WhatsApp app": `webapp_remove` with its name (`webapp_list` shows them). It also comes off the taskbar.
+6. A wrong or blurry icon: `webapp_install` again with the same name and `icon_url`, the address of a better picture (PNG, SVG or ICO; for well-known sites, `https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/NAME.png` is what Omarchy uses).
+
+**How it is made** (`mentor_tools.py`, the part "Web apps").
+- `~/.local/share/applications/mentor-webapp-SLUG.desktop` (SLUG: the name in small letters, other characters as `-`): `Exec=chromium "--app=URL"` (the first of chromium, google-chrome-stable, brave, microsoft-edge-stable, vivaldi-stable that is installed), `Icon=` the picture's path, `StartupWMClass=chrome-HOST_PATH-Default` (HOST without a port, PATH with `/` as `_`: `chrome-web.whatsapp.com__-Default`, `chrome-localhost__app-Default` for `http://localhost:8123/app`), `X-Mentor-WebApp=URL` (how they are told from other launchers).
+- The picture: `~/.local/share/mentor/webapp-icons/SLUG.png`, 256 pixels. `_site_icons` reads the site's page for its web app manifest (`<link rel="manifest">`, its `icons`) and its `<link rel="icon">` and `apple-touch-icon`, largest first, then `/apple-touch-icon.png` and `/favicon.ico`; `_webapp_icon` downloads them in turn (curl) and makes the first that loads into a PNG with GdkPixbuf. With none, the launcher has the plain `applications-internet` icon.
+- GNOME shows the window under the launcher's icon because Chromium names an app window's Wayland app id after the address, and that is the launcher's `StartupWMClass`. If a new Chromium names them otherwise, the window shows as Chromium in the taskbar (it still works): open the app, run `windows`, and compare its `app` with `StartupWMClass`.
+
+**How to tell that it works.**
+
+| Check | Good answer |
+|---|---|
+| `mentor webapp add Test https://example.com` | `Made the app “Test” …`; `~/.local/share/applications/mentor-webapp-test.desktop` exists |
+| `gtk-launch mentor-webapp-test` (the window opens on the user's screen: only with their yes) then `windows` | a window whose `app` is `mentor-webapp-test.desktop` |
+| `mentor webapp remove Test` | `Removed: Test (https://example.com)`, the file is gone |
+
+**When it does not work.** The first time Chromium is ever started on a Mentor, it shows its own "Additional Terms of Service" window before the site: that is Chromium's, once; the user reads and answers it (never you), and the web app opens after. "No Chromium-type browser is installed": with the user's yes, `package_install chromium`, then again. The window opens but shows as Chromium in the taskbar: see the last point above. The launcher is not in the app grid: `desktop-file-validate ~/.local/share/applications/mentor-webapp-SLUG.desktop` names the wrong line.
+
+Tested headless 2026-10-17 with Chromium 154: WhatsApp, Gmail, YouTube Music and a Wikipedia page with a path made, their windows matched to their own launchers (the taskbar showed WhatsApp's icon), removal took them off the taskbar's favourites, `javascript:` and quoted addresses refused.
 
 ### The tools made from what was done by hand
 

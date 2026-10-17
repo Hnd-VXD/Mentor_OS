@@ -118,5 +118,11 @@
     "name": "17.10.26.05",
     "summary": "The setup screens show the simpler Mentor owl.",
     "published": "2026-10-17 19:55"
+  },
+  {
+    "version": 202610171849,
+    "name": "17.10.26.06",
+    "summary": "Copy text from anything on the screen with Shift+Super+T, reminders in the chat, websites as apps of their own, and games set up when you ask.",
+    "published": "2026-10-17 22:05"
   }
 ]

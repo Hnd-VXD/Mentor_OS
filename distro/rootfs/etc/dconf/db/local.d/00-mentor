@@ -28,7 +28,7 @@ screenshot=@as []
 screenshot-window=@as []
 
 [org/gnome/settings-daemon/plugins/media-keys]
-custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-window/']
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-2/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-shot-window/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-text/']
 
 # A screenshot: drag out an area (Esc cancels, a click is the whole screen), saved in
 # Pictures/Screenshots and opened in Gradia to draw on, copy or save (`mentor screenshot --area`).
@@ -43,6 +43,13 @@ binding='<Shift><Super>s'
 name='Screenshot of the window in front'
 command='/usr/local/bin/mentor screenshot --window'
 binding='<Alt>Print'
+
+# Copy the text in an area: drag over it (as for a screenshot), it is read (tesseract) and put on
+# the clipboard, with a short notification (`mentor capture-text`; DESKTOP.md, Copy text from the screen).
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-text]
+name='Copy text from the screen'
+command='/usr/local/bin/mentor capture-text'
+binding='<Shift><Super>t'
 
 # Alt+Space and Super+Z bring up the ask bar over whatever is in front: a text box for the
 # assistant, which is sent a picture of the screen with the words (/etc/mentor/ASKBAR.md).

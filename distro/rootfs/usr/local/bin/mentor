@@ -394,6 +394,36 @@ def cmd_screenshot(args):
                      start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def cmd_capture_text(args):
+    """Shift+Super+T: the text in an area the user drags out, onto the clipboard, with a short notification
+    (as Omarchy's omarchy-capture-text, MIT; DESKTOP.md, Copy text from the screen)."""
+    found = mentor_tools.capture_text("pick")
+
+    def say(title, body=""):
+        subprocess.run(["notify-send", "--app-name=Mentor", "--icon=edit-copy-symbolic", "--expire-time=4000",
+                        title, body], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if found["state"] == "cancelled":
+        return
+    if found["state"] == "copied":
+        first = " ".join(found["text"].split())
+        say("Text copied", first if len(first) <= 90 else first[:89] + "…")
+    elif found["state"] == "none":
+        say("No text found", "Try a bigger area around the words.")
+    else:
+        say("The text could not be copied", "Ask Mentor what went wrong.")
+        sys.exit(found.get("error") or "not copied")
+
+
+def cmd_reminders(args):
+    """The reminders that are set (TOOLS.md, Reminders); --fire is the reminder's own service."""
+    if args.fire:
+        mentor_tools.reminder_fire(args.fire)
+    elif args.cancel:
+        run_tool("reminder_cancel", {"id": args.cancel})
+    else:
+        run_tool("reminder_list", {})
+
+
 def cmd_verify(args):
     """Compare every file Mentor added to the system with the copy kept from when it was built
     (/etc/mentor/source; see /etc/mentor/REBUILD.md)."""
@@ -564,6 +594,18 @@ p.add_argument("--window", action="store_true", help="only the window in front")
 p.add_argument("--area", action="store_true", help="drag out an area first (Esc cancels; a click is the whole screen)")
 p.add_argument("--no-open", action="store_true", help="only save it, and print where")
 p.set_defaults(func=cmd_screenshot)
+p = sub.add_parser("capture-text", help="drag over text on the screen: it is read (OCR) and put on the clipboard")
+p.set_defaults(func=cmd_capture_text)
+p = sub.add_parser("reminders", help="the reminders that are set; --cancel ID (or all)")
+p.add_argument("--cancel", metavar="ID")
+p.add_argument("--fire", help=argparse.SUPPRESS)  # the reminder's own service, when it is due
+p.set_defaults(func=cmd_reminders)
+p = sub.add_parser("webapp", help="websites as apps of their own: list, add NAME URL, remove NAME")
+p.add_argument("action", nargs="?", default="list", choices=("list", "add", "remove"))
+p.add_argument("name", nargs="?")
+p.add_argument("url", nargs="?")
+p.set_defaults(func=lambda args: run_tool({"list": "webapp_list", "add": "webapp_install", "remove": "webapp_remove"}[args.action],
+                                          {k: v for k, v in (("name", args.name), ("url", args.url)) if v}))
 p = sub.add_parser("changes", help="list the changes applied through the sandbox")
 p.set_defaults(func=lambda args: run_tool("change_list", {}))
 p = sub.add_parser("undo", help="undo one applied change")

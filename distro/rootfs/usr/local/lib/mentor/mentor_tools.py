@@ -1107,6 +1107,523 @@ def game_mouse(a):
     return 0, "\n".join(lines)
 
 
+# Copying the text in a part of the screen (Shift+Super+T, DESKTOP.md "Copy text from the screen"), as
+# Omarchy's bin/omarchy-capture-text (MIT, github.com/omacom/omarchy) does with slurp, grim, tesseract and
+# wl-copy. Here Mentor's own area picker takes the picture (the extension's ScreenshotArea) and the shell
+# puts the text on the clipboard (SetClipboard): GNOME has no data-control protocol for wl-copy.
+# Which languages are read: this file ("eng+ell+deu") when the user wants others (their tesseract-data-*
+# packages installed), else English, Greek and the language of the user's locale. Not simply every one
+# installed: Gradia's dependency brings Afrikaans, and with it 4471-B read as 44/1-8.
+OCR_LANGUAGES = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mentor", "text-languages")
+_LOCALE_OCR = {"de": "deu", "fr": "fra", "es": "spa", "it": "ita", "pt": "por", "nl": "nld", "ru": "rus", "uk": "ukr",
+               "pl": "pol", "tr": "tur", "bg": "bul", "ro": "ron", "sq": "sqi", "sr": "srp", "cs": "ces", "sk": "slk",
+               "hu": "hun", "sv": "swe", "da": "dan", "nb": "nor", "fi": "fin", "ar": "ara", "he": "heb", "ja": "jpn",
+               "ko": "kor", "zh": "chi_sim", "hi": "hin"}
+
+
+def _ocr_languages():
+    listed = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, errors="replace")
+    installed = [l.strip() for l in listed.stdout.splitlines()[1:] if l.strip() and l.strip() != "osd"]
+    try:
+        with open(OCR_LANGUAGES) as f:
+            wanted = f.read().strip().replace(",", "+").replace(" ", "+").split("+")
+    except OSError:
+        own = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "en").split("_")[0].split(".")[0]
+        wanted = ["eng", "ell", _LOCALE_OCR.get(own, "")]
+    return [l for l in dict.fromkeys(wanted) if l in installed] or installed
+
+
+def read_text(picture):
+    """The text in a picture file, read by tesseract (see OCR_LANGUAGES for which languages). (code, text)."""
+    if not shutil.which("tesseract"):
+        return 127, ("The text reader (tesseract) is not installed: package_install tesseract tesseract-data-eng "
+                     "tesseract-data-ell (DESKTOP.md, Copy text from the screen).")
+    langs = _ocr_languages()
+    fd, big = tempfile.mkstemp(suffix=".png", prefix="mentor-text-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+    os.close(fd)
+    try:
+        # Tesseract is made for 300 dpi scans: the small letters of a screen read better at twice the size.
+        code, _ = _run(["ffmpeg", "-loglevel", "error", "-y", "-i", picture, "-frames:v", "1", "-update", "1",
+                        "-vf", "scale=iw*2:ih*2:flags=lanczos", big], timeout=60)
+        # One thread: with its OpenMP threads tesseract took 92 s for a screen in the VM, alone 1 s (2026-10-17).
+        done = subprocess.run(["tesseract", big if code == 0 else picture, "-", *(["-l", "+".join(langs)] if langs else [])],
+                              capture_output=True, text=True, errors="replace", timeout=120,
+                              env={**os.environ, "OMP_THREAD_LIMIT": "1"})
+    except subprocess.TimeoutExpired:
+        return 124, "reading the text took more than two minutes"
+    finally:
+        os.unlink(big)
+    if done.returncode:
+        return done.returncode, f"tesseract could not read the picture: {done.stderr.strip()[-400:]}"
+    lines = [line.rstrip() for line in done.stdout.replace("\f", "").splitlines()]
+    return 0, re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def clipboard_set(text):
+    """Text onto the clipboard, through the shell (Mentor's extension, SetClipboard): no program has to
+    stay running to hold it, and the shared clipboard passes it on to Windows."""
+    return _run(["busctl", "--user", "--", "call", "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell",
+                 "SetClipboard", "s", text[:100000]], timeout=10)
+
+
+# The last picture read from the screen, so that the agent can look at it when the user says the copied text
+# came out wrong ("fix the text I copied": screen_text with area "last"). In the user's runtime folder (memory,
+# only theirs), replaced by the next one, gone at log out. The user's idea, 2026-10-17: let the agent make sense
+# of what OCR got wrong; on request, so that nothing copied goes to a model unasked.
+LAST_TEXT_PICTURE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "mentor-last-text.png")
+
+
+def capture_text(area="pick", path=None, copy=True):
+    """The text in an area the user drags out ("pick"), on the whole screen ("screen"), in the last picture
+    read ("last") or in a picture file (path). Returns {"state": cancelled|none|copied|read|failed, "text",
+    "error", "picture": the picture read}."""
+    taken = None
+    if path or area == "last":
+        picture = os.path.abspath(os.path.expanduser(path)) if path else LAST_TEXT_PICTURE
+        if not os.path.isfile(picture):
+            return {"state": "failed", "error": f"no such file: {picture}" if path else
+                    "no picture is kept: nothing was read from the screen since the last log in"}
+    else:
+        picture = taken = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"mentor-text-{os.getpid()}.png")
+        method = "Screenshot" if area == "screen" else "ScreenshotArea"
+        code, out = _run(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path",
+                          "/org/mentor/Shell", "--timeout", "600", "--method", f"org.mentor.Shell.{method}", picture],
+                         timeout=610)
+        if code == 0 and "false" in out:
+            return {"state": "cancelled"}
+        if code or not os.path.isfile(picture):
+            return {"state": "failed", "error": f"the picture was not taken: {out.strip()}"}
+    try:
+        code, text = read_text(picture)
+    finally:
+        if taken and os.path.exists(taken):
+            os.replace(taken, LAST_TEXT_PICTURE)
+            picture = LAST_TEXT_PICTURE
+    if code:
+        return {"state": "failed", "error": text}
+    if not text:
+        return {"state": "none", "picture": picture}
+    if not copy:
+        return {"state": "read", "text": text, "picture": picture}
+    code, out = clipboard_set(text)
+    if code:
+        return {"state": "read", "text": text, "picture": picture, "error": f"it could not be put on the clipboard: "
+                f"{out.strip()} (a desktop from before Copy text has no SetClipboard: it comes with the next login)"}
+    return {"state": "copied", "text": text, "picture": picture}
+
+
+def _picture_for_model(path):
+    """A picture as a JPEG small enough to hand to a model, or None."""
+    fd, small = tempfile.mkstemp(suffix=".jpg", prefix="mentor-text-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+    os.close(fd)
+    try:
+        code, _ = _run(["ffmpeg", "-loglevel", "error", "-y", "-i", path, "-frames:v", "1", "-update", "1", "-vf",
+                        "scale=w='min(1568,iw)':h='min(1568,ih)':force_original_aspect_ratio=decrease",
+                        "-q:v", "3", small], timeout=30)
+        if code:
+            return None
+        with open(small, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(small)
+
+
+def screen_text(a):
+    if a.get("set_clipboard"):  # the agent's own reading of it, in place of what OCR made of it
+        code, out = clipboard_set(str(a["set_clipboard"]))
+        return (0, "It is on the clipboard now.") if code == 0 else (1, f"not copied: {out.strip()}")
+    found = capture_text(a.get("area") or "pick", a.get("path"), a.get("copy", True) is not False)
+    state = found["state"]
+    if state == "cancelled":
+        return 1, "The user pressed Esc (or the right button): nothing was read."
+    if state == "failed":
+        return 1, found["error"]
+    picture = _picture_for_model(found["picture"])
+    see = (" The picture it was read from is attached: compare, and when OCR got words wrong, give the text as it "
+           "really is and put it on the clipboard with set_clipboard.") if picture else ""
+    if state == "none":
+        return 0, "OCR found no text there; nothing was copied." + see, picture
+    head = ("It is on the clipboard now (Ctrl+V pastes it, in Windows too)." if state == "copied" else
+            f"Not copied: {found['error']}." if found.get("error") else "Not copied (copy was false).")
+    return 0, f"{head}{see}\nThe text OCR read:\n{found['text']}", picture
+
+
+# Reminders ("remind me in 20 minutes to ..."; TOOLS.md "Reminders"): one systemd timer of the user's own
+# per reminder, as unit files in their own folder, so that it is still there after a restart. One that
+# came due while Mentor was off fires right after the next login (Persistent=true). When it is due,
+# `mentor reminders --fire ID` leaves a green card in the chat; the chat brings a notification with it
+# when the desktop is covered.
+REMINDERS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "reminders")
+USER_UNITS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "systemd", "user")
+TIMER_STAMPS = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "systemd", "timers")
+
+
+def _reminder_unit(rid):
+    return f"mentor-reminder-{rid}"
+
+
+def _reminders():
+    """The reminders waiting, soonest first: [{"id", "text", "due", "made"}]."""
+    found = []
+    try:
+        names = os.listdir(REMINDERS)
+    except OSError:
+        return found
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(REMINDERS, name)) as f:
+                reminder = json.load(f)
+            if reminder.get("id") and isinstance(reminder.get("due"), (int, float)):
+                found.append(reminder)
+        except (OSError, ValueError, AttributeError):
+            pass
+    return sorted(found, key=lambda r: r["due"])
+
+
+def _when(due):
+    """A time as the user says it: 18:30, tomorrow 09:00, Sat 25 Oct 09:00."""
+    import datetime
+    then, today = datetime.datetime.fromtimestamp(due), datetime.date.today()
+    days = (then.date() - today).days
+    clock = then.strftime("%H:%M")
+    return clock if days == 0 else f"tomorrow {clock}" if days == 1 else then.strftime("%a %d %b %Y %H:%M")
+
+
+def _due_from(a):
+    """When a reminder is due: `minutes` from now, or `at` (18:30, 2026-10-18 09:00), local time. (due, error)."""
+    import datetime
+    if a.get("minutes") not in (None, ""):
+        try:
+            return time.time() + float(a["minutes"]) * 60, None
+        except (TypeError, ValueError):
+            return None, "minutes must be a number"
+    at = " ".join(str(a.get("at") or "").replace("T", " ").split())
+    if not at:
+        return None, "give minutes (from now) or at (a local time: 18:30, or 2026-10-18 09:00)"
+    now = datetime.datetime.now()
+    for form in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%H:%M", "%H:%M:%S"):
+        try:
+            when = datetime.datetime.strptime(at, form)
+        except ValueError:
+            continue
+        if not form.startswith("%Y"):  # a time of day: today, or tomorrow when it has passed
+            when = now.replace(hour=when.hour, minute=when.minute, second=when.second, microsecond=0)
+            if when <= now:
+                when += datetime.timedelta(days=1)
+        return when.timestamp(), None
+    return None, f"cannot read the time {at!r}: use 18:30, or 2026-10-18 09:00 (local time)"
+
+
+def _reminder_drop(rid):
+    """The reminder's timer, unit files and record, gone."""
+    unit = _reminder_unit(rid)
+    _run(["systemctl", "--user", "disable", "--now", f"{unit}.timer"], timeout=30)
+    for path in (os.path.join(USER_UNITS, f"{unit}.timer"), os.path.join(USER_UNITS, f"{unit}.service"),
+                 os.path.join(TIMER_STAMPS, f"stamp-{unit}.timer"), os.path.join(REMINDERS, f"{rid}.json")):
+        if os.path.lexists(path):
+            os.unlink(path)
+    _run(["systemctl", "--user", "daemon-reload"], timeout=30)
+
+
+def reminder_set(a):
+    text = " ".join(str(a.get("text") or "").split())
+    if not text:
+        return 2, "text is needed: what to remind the user of, in their own words"
+    due, error = _due_from(a)
+    if error:
+        return 2, error
+    if due < time.time() + 30:
+        return 2, "that time has passed, or is less than half a minute away"
+    if due > time.time() + 366 * 86400:
+        return 2, "a reminder can be at most a year ahead"
+    os.makedirs(REMINDERS, exist_ok=True)
+    os.makedirs(USER_UNITS, exist_ok=True)
+    rid = time.strftime("%y%m%d%H%M%S")
+    while os.path.exists(os.path.join(REMINDERS, f"{rid}.json")):
+        rid = str(int(rid) + 1)
+    unit = _reminder_unit(rid)
+    with open(os.path.join(REMINDERS, f"{rid}.json"), "w") as f:
+        json.dump({"id": rid, "text": text, "due": round(due), "made": round(time.time())}, f, ensure_ascii=False)
+    # In UTC, so that the time does not depend on the time zone the user's systemd was started with.
+    with open(os.path.join(USER_UNITS, f"{unit}.timer"), "w") as f:
+        f.write(f"[Unit]\nDescription=Mentor reminder {rid}\n\n[Timer]\n"
+                f"OnCalendar={time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(due))} UTC\nPersistent=true\n"
+                f"AccuracySec=1s\nUnit={unit}.service\n\n[Install]\nWantedBy=timers.target\n")
+    with open(os.path.join(USER_UNITS, f"{unit}.service"), "w") as f:
+        f.write(f"[Unit]\nDescription=Mentor reminder {rid}\n\n[Service]\nType=oneshot\n"
+                f"ExecStart=/usr/local/bin/mentor reminders --fire {rid}\n")
+    _run(["systemctl", "--user", "daemon-reload"], timeout=30)
+    code, out = _run(["systemctl", "--user", "enable", "--now", f"{unit}.timer"], timeout=30)
+    if code:
+        _reminder_drop(rid)
+        return 1, f"the reminder could not be set: {out.strip()}"
+    minutes = round((due - time.time()) / 60)
+    return 0, (f"Reminder {rid} set for {_when(due)} (in {minutes} minute{'s' if minutes != 1 else ''}): {text}\n"
+               "It comes as a green card in the chat, with a notification when the desktop is covered. It stays "
+               "set through a restart; if Mentor is off at that time, it comes right after the next start.")
+
+
+def reminder_fire(rid):
+    """For the reminder's service: the card, then the reminder is done."""
+    try:
+        with open(os.path.join(REMINDERS, f"{rid}.json")) as f:
+            reminder = json.load(f)
+    except (OSError, ValueError):
+        _reminder_drop(rid)
+        return
+    text = reminder.get("text") or ""
+    if time.time() - reminder.get("due", 0) > 120:
+        text += f"\n(It was for {_when(reminder['due'])}; Mentor was off then.)"
+    leave_notice("idea", "Reminder", text)
+    _reminder_drop(rid)
+
+
+def reminder_list(a):
+    waiting = _reminders()
+    if not waiting:
+        return 0, "No reminders are set."
+    lines = []
+    for r in waiting:
+        code, _ = _run(["systemctl", "--user", "is-active", "--quiet", f"{_reminder_unit(r['id'])}.timer"], timeout=10)
+        lines.append(f"{r['id']}: {_when(r['due'])}: {r['text']}" +
+                     ("" if code == 0 else "  [its timer is not running: cancel it and set it again]"))
+    return 0, "\n".join(lines)
+
+
+def reminder_cancel(a):
+    what = str(a.get("id") or "").strip()
+    waiting = _reminders()
+    gone = waiting if what == "all" else [r for r in waiting if r["id"] == what]
+    if not gone:
+        return 1, f"No reminder {what!r}. Waiting: " + ("; ".join(f"{r['id']} ({r['text']})" for r in waiting) or "none")
+    for r in gone:
+        _reminder_drop(r["id"])
+    return 0, "Cancelled: " + "; ".join(f"{_when(r['due'])}: {r['text']}" for r in gone)
+
+
+# Web apps ("make WhatsApp Web an app"; TOOLS.md "Web apps"): a launcher of the user's own that opens the
+# site in a window of its own, in Chromium's app mode, as Omarchy's bin/omarchy-webapp-install and
+# omarchy-launch-webapp (MIT, github.com/omacom/omarchy) do. The icon is the site's own.
+WEBAPP_FOLDER = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
+WEBAPP_ICONS = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "mentor", "webapp-icons")
+WEBAPP_PREFIX = "mentor-webapp-"
+WEBAPP_BROWSERS = ("chromium", "google-chrome-stable", "brave", "microsoft-edge-stable", "vivaldi-stable")
+# At most 256 pixels; a smaller picture keeps its size (enlarged, a 180-pixel icon came out blurred).
+_TO_PNG = ("import sys, gi\ngi.require_version('GdkPixbuf', '2.0')\nfrom gi.repository import GdkPixbuf\n"
+           "kind, width, height = GdkPixbuf.Pixbuf.get_file_info(sys.argv[1])\n"
+           "side = 256 if not kind or kind.is_scalable() else min(256, max(width, height))\n"
+           "GdkPixbuf.Pixbuf.new_from_file_at_scale(sys.argv[1], side, side, True).savev(sys.argv[2], 'png', [], [])\n")
+
+
+def _webapps():
+    """The web apps made here: [{"file", "name", "url", "icon"}]."""
+    found = []
+    try:
+        names = sorted(os.listdir(WEBAPP_FOLDER))
+    except OSError:
+        return found
+    for name in names:
+        if not (name.startswith(WEBAPP_PREFIX) and name.endswith(".desktop")):
+            continue
+        entry = {}
+        try:
+            with open(os.path.join(WEBAPP_FOLDER, name), encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    key, sep, value = line.strip().partition("=")
+                    if sep:
+                        entry.setdefault(key, value)
+        except OSError:
+            continue
+        found.append({"file": os.path.join(WEBAPP_FOLDER, name), "name": entry.get("Name", name),
+                      "url": entry.get("X-Mentor-WebApp", ""), "icon": entry.get("Icon", "")})
+    return found
+
+
+def _icon_size(sizes):
+    best = 0
+    for part in str(sizes or "").lower().split():
+        if part == "any":
+            return 512
+        width = part.split("x")[0]
+        if width.isdigit():
+            best = max(best, int(width))
+    return best
+
+
+def _site_icons(url):
+    """Addresses of the site's own icons, largest first: from its web app manifest and its <link> tags,
+    then /apple-touch-icon.png and /favicon.ico."""
+    import urllib.parse
+    from html.parser import HTMLParser
+    try:
+        page, final, _ = _web_get(url, timeout=20)
+    except OSError:
+        page, final = "", url
+    links = []
+
+    class Links(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            rel = set((attrs.get("rel") or "").lower().split())
+            if tag == "link" and attrs.get("href") and rel & {"icon", "apple-touch-icon", "apple-touch-icon-precomposed", "manifest"}:
+                links.append((rel, urllib.parse.urljoin(final, attrs["href"]), attrs.get("sizes"), attrs.get("type") or ""))
+    try:
+        Links().feed(page)
+    except Exception:
+        pass
+    found = []
+    for rel, href, sizes, kind in links:
+        if "manifest" in rel:
+            try:
+                for icon in json.loads(_web_get(href, timeout=15)[0]).get("icons") or []:
+                    if isinstance(icon, dict) and icon.get("src"):
+                        found.append((_icon_size(icon.get("sizes")), urllib.parse.urljoin(href, icon["src"])))
+            except (OSError, ValueError, AttributeError):
+                pass
+        elif "svg" in kind or urllib.parse.urlsplit(href).path.endswith(".svg"):
+            found.append((512, href))
+        else:
+            found.append((_icon_size(sizes) or (180 if not rel & {"icon"} else 32), href))
+    root = urllib.parse.urljoin(final, "/")
+    found += [(180, root + "apple-touch-icon.png"), (16, root + "favicon.ico")]
+    seen, ordered = set(), []
+    for _size, href in sorted(found, key=lambda f: -f[0]):
+        if href not in seen and href.startswith(("http://", "https://")):
+            seen.add(href)
+            ordered.append(href)
+    return ordered
+
+
+# Well-known sites' icons, drawn large, by name: what Omarchy's omarchy-webapp-install points to. Asked for
+# only when the site's own icon is small (Gmail's page offers 32 pixels).
+DASHBOARD_ICONS = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/{}.png"
+
+
+def _fetch_icon(address, target):
+    """Download a picture and keep it as a PNG at target. Its width in pixels, or 0."""
+    fd, raw = tempfile.mkstemp(prefix="mentor-icon-")
+    os.close(fd)
+    try:
+        got = subprocess.run(["curl", "-sSfL", "--max-time", "20", "--max-filesize", str(5 << 20), "-A", WEB_AGENT,
+                              "-o", raw, "--", address], capture_output=True, timeout=30)
+        if got.returncode or os.path.getsize(raw) < 64:
+            return 0
+        made = subprocess.run(["python3", "-c", _TO_PNG, raw, target + ".new"], capture_output=True, timeout=30)
+        if made.returncode or not os.path.exists(target + ".new"):
+            return 0
+        with open(target + ".new", "rb") as f:
+            width = int.from_bytes(f.read(24)[16:20], "big")  # the PNG's IHDR
+        os.replace(target + ".new", target)
+        return width
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    finally:
+        for leftover in (raw, target + ".new"):
+            if os.path.exists(leftover):
+                os.unlink(leftover)
+
+
+def _webapp_icon(url, slug, icon_url=None):
+    """The site's icon as a PNG of at most 256 pixels in WEBAPP_ICONS: (its path, where it came from), or (None, None)."""
+    os.makedirs(WEBAPP_ICONS, exist_ok=True)
+    target = os.path.join(WEBAPP_ICONS, f"{slug}.png")
+    if icon_url:
+        return (target, "the one given") if _fetch_icon(icon_url, target) else (None, None)
+    width, source = 0, None
+    other = target[:-4] + ".other.png"
+    for candidate in _site_icons(url)[:8]:  # the largest that loads; one of 128 pixels or more is enough
+        got = _fetch_icon(candidate, other)
+        if got > width:
+            os.replace(other, target)
+            width, source = got, "the site's own"
+        if width >= 128:
+            break
+    if os.path.exists(other):
+        os.unlink(other)
+    if width < 128:
+        if _fetch_icon(DASHBOARD_ICONS.format(slug), other) > width:
+            os.replace(other, target)
+            source = "from the dashboard-icons collection, by its name (check it is the right one)"
+        elif os.path.exists(other):
+            os.unlink(other)
+    if not source and os.path.exists(target):  # one from an earlier app of the same name
+        os.unlink(target)
+    return (target, source) if source else (None, None)
+
+
+def _webapp_slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def webapp_install(a):
+    import urllib.parse
+    name = " ".join(str(a.get("name") or "").split())
+    url = str(a.get("url") or "").strip()
+    if not name or not url:
+        return 2, "name and url are needed"
+    if "://" not in url:
+        url = "https://" + url
+    parts = urllib.parse.urlsplit(url)
+    if (parts.scheme not in ("http", "https") or not re.fullmatch(r"(localhost|[A-Za-z0-9.-]+\.[A-Za-z0-9-]+)(:\d+)?", parts.netloc)
+            or re.search(r"[\s\"'`$\\]", url)):
+        return 2, f"not a web address: {url}"
+    browser = next((b for b in WEBAPP_BROWSERS if shutil.which(b)), None)
+    if not browser:
+        return 1, ("No Chromium-type browser is installed, and web apps open in one (app mode). "
+                   "package_install chromium first, with the user's yes.")
+    slug = _webapp_slug(name) or _webapp_slug(parts.netloc) or "site"
+    icon, icon_source = _webapp_icon(url, slug, a.get("icon_url"))
+    # Chromium names an app window's Wayland app id after the address: GNOME matches it to this launcher
+    # by StartupWMClass, so the window shows with this icon, apart from the browser.
+    path_part = (parts.path or "/").replace("/", "_")
+    wm_class = f"chrome-{parts.hostname}_{path_part}-Default"  # the host without a port, as Chromium names it
+    os.makedirs(WEBAPP_FOLDER, exist_ok=True)
+    target = os.path.join(WEBAPP_FOLDER, f"{WEBAPP_PREFIX}{slug}.desktop")
+    with open(target + ".new", "w", encoding="utf-8") as f:
+        f.write("[Desktop Entry]\nVersion=1.0\nType=Application\n"
+                f"Name={name}\nComment={name} in a window of its own\n"
+                f"Exec={browser} \"--app={url.replace('%', '%%')}\"\n"
+                f"Icon={icon or 'applications-internet'}\nTerminal=false\nStartupNotify=true\n"
+                f"StartupWMClass={wm_class}\nCategories=Network;\nX-Mentor-WebApp={url}\n")
+    os.replace(target + ".new", target)
+    return 0, (f"Made the app “{name}” ({url}), opening in {browser}'s app mode. It is in the app grid now "
+               f"({os.path.basename(target)}). Icon: " + (f"{icon_source}." if icon else
+               "a plain web icon (the site had none that could be used; icon_url can give one)."))
+
+
+def webapp_remove(a):
+    want = " ".join(str(a.get("name") or "").split())
+    apps = _webapps()
+    gone = [w for w in apps if w["name"].lower() == want.lower() or
+            os.path.basename(w["file"]) in (want, f"{WEBAPP_PREFIX}{_webapp_slug(want)}.desktop")]
+    if not want or not gone:
+        return 1, f"No web app called {want!r}. The web apps: " + (", ".join(w["name"] for w in apps) or "none")
+    for w in gone:
+        os.unlink(w["file"])
+        if w["icon"].startswith(WEBAPP_ICONS + "/") and os.path.exists(w["icon"]):
+            os.unlink(w["icon"])
+    # Off the taskbar too, when it was pinned there.
+    code, out = _run(["gsettings", "get", "org.gnome.shell", "favorite-apps"], timeout=10)
+    try:
+        pinned = ast.literal_eval(out.strip().removeprefix("@as ")) if code == 0 else []
+        kept = [app for app in pinned if app not in {os.path.basename(w["file"]) for w in gone}]
+        if kept != pinned:
+            _run(["gsettings", "set", "org.gnome.shell", "favorite-apps", str(kept)], timeout=10)
+    except (ValueError, SyntaxError):
+        pass
+    return 0, "Removed: " + ", ".join(f"{w['name']} ({w['url']})" for w in gone) + \
+        ". The browser's sign-ins for the site are kept; the site's data stays in the browser."
+
+
+def webapp_list(a):
+    apps = _webapps()
+    if not apps:
+        return 0, "No web apps have been made."
+    return 0, "\n".join(f"{w['name']}: {w['url']} ({os.path.basename(w['file'])})" for w in apps)
+
+
 def desktop_layout(a):
     layout = a["layout"]
     if layout not in LAYOUTS:
@@ -2419,6 +2936,40 @@ TOOLS = {
         "With no arguments: how it stands. Read DESKTOP.md, The game mouse, before telling the user about it.",
         _schema({"mode": {"type": "string", "enum": list(GAME_MOUSE_MODES)}, "add_game": _STR, "remove_game": _STR},
                 []), game_mouse),
+    "screen_text": (
+        "Read the text on the screen (OCR) and put it on the clipboard: the same as the user's key Shift+Super+T. "
+        "area 'pick' (default): the user drags over the text (tell them to first; Esc cancels); 'screen': the "
+        "whole screen at once; 'last': the picture the user last copied text from (when they say the copied text "
+        "came out wrong). path: read a picture file instead. copy false: only read it. Returns OCR's text and the "
+        "picture: OCR mistakes letters, mostly where languages mix, so compare them and, when it got words wrong, "
+        "call again with set_clipboard set to the text as it really is.",
+        _schema({"area": {"type": "string", "enum": ["pick", "screen", "last"]}, "path": _STR, "copy": {"type": "boolean"},
+                 "set_clipboard": {"type": "string", "description": "Only put this text on the clipboard."}},
+                []), screen_text),
+    "reminder_set": (
+        "Remind the user of something later: a green card in the chat when it is due (and a notification when "
+        "the desktop is covered). Give minutes (from now) or at (local time: '18:30', or '2026-10-18 09:00'). "
+        "text: what to remind them of, in their words. It stays set through a restart; if Mentor is off then, it "
+        "comes right after the next start. Say the time back to the user.",
+        _schema({"text": _STR, "minutes": {"type": "number"}, "at": _STR}, ["text"]), reminder_set),
+    "reminder_list": (
+        "The reminders that are set: id, when, what.",
+        _schema(), reminder_list),
+    "reminder_cancel": (
+        "Cancel a reminder by its id (from reminder_list), or 'all'.",
+        _schema({"id": _STR}, ["id"]), reminder_cancel),
+    "webapp_install": (
+        "Make a website an app of its own: a launcher in the app grid, with the site's icon, that opens the site in "
+        "a window of its own (Chromium's app mode, no address bar). name: what the user calls it ('WhatsApp'); "
+        "url: the site ('https://web.whatsapp.com'). icon_url: only when the site's own icon is wrong. The same "
+        "name again replaces it. Sign-ins are the browser's: signed in there, signed in here.",
+        _schema({"name": _STR, "url": _STR, "icon_url": _STR}, ["name", "url"]), webapp_install),
+    "webapp_remove": (
+        "Remove a web app made with webapp_install, by its name.",
+        _schema({"name": _STR}, ["name"]), webapp_remove),
+    "webapp_list": (
+        "The web apps made with webapp_install: name, address.",
+        _schema(), webapp_list),
     "sandbox_run": (
         "Run a bash command as root inside the sandbox: a private copy-on-write view of this system. "
         "Install packages, build software, edit files there freely; the real system is not touched until "
@@ -2793,6 +3344,8 @@ JOURNAL = {
     "desktop_layout": lambda a, out: (f"desktop layout: {a['layout']}",
                                       f"desktop_layout {'normal' if a['layout'] == 'taskbar' else 'taskbar'}"),
     "suggestions_restore": lambda a, out: f"brought back suggestions that were turned away: {a['what']}",
+    "webapp_install": lambda a, out: (f"made the web app {a['name']} ({a['url']})", f"webapp_remove {a['name']}"),
+    "webapp_remove": lambda a, out: f"removed the web app {a['name']}",
     "run_root_command": lambda a, out: f"as root: {a['command']}",
     "dbus": lambda a, out: (f"D-Bus call on the {a.get('bus') or 'session'} bus: {a.get('service')} "
                             f"{a.get('object_path') or '/'} {a.get('method')} {' '.join(map(str, a.get('arguments') or []))}"

@@ -18,6 +18,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `BOOT.md` | starting safely after a change: trial start, going back by itself, the start-up picture; a new kernel |
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
 | `MONITOR.md` | a quiet watch on memory, processor and network: not built in, built on request from code kept here |
+| `GAMING.md` | games: Steam, Lutris, Heroic, and the 32-bit graphics drivers they need; not built in, set up on request with the script kept here |
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
 | `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
 | `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall; when a program crashes: the card and how to look at it |
@@ -133,7 +134,10 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 |---|---|---|---|---|
 | `/usr/local/bin/mentor` | the command: `mentor tools, call, doctor, verify, restore, repair, notice, journal, recipes, security, settings, ask, log, boot, …` | user | at once | TOOLS.md |
 | `/usr/local/bin/mentor-mcp` | gives the tools to Claude Code, Codex and the Antigravity CLI (MCP) | user | next message | TOOLS.md |
-| `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side | user | next message | TOOLS.md |
+| `/usr/local/lib/mentor/mentor_tools.py` | the tools, the user's side; among them reading text on the screen (`screen_text`, `capture_text`, with `mentor capture-text` for Shift+Super+T), reminders (`reminder_*`) and web apps (`webapp_*`) | user | next message | TOOLS.md; DESKTOP.md "Copy text from the screen" |
+| `~/.config/systemd/user/mentor-reminder-ID.timer`, `.service`, `~/.local/state/mentor/reminders/ID.json` | one reminder each, made by `reminder_set` and removed when it is due or cancelled; not in the image | yes | `systemctl --user daemon-reload` | TOOLS.md "Reminders" |
+| `~/.local/share/applications/mentor-webapp-NAME.desktop`, `~/.local/share/mentor/webapp-icons/NAME.png` | one web app each, made by `webapp_install`; not in the image | yes | at once | TOOLS.md "Web apps" |
+| `/etc/mentor/extras/gaming/setup-gaming.sh` | sets up games on request (multilib, the 32-bit graphics drivers, Steam, Lutris); not run in the image | user | when run | GAMING.md |
 | `/usr/local/lib/mentor/mentor_report.py` | `mentor tool-report`: where the tools fall short, from the journal | user | next run | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
 | `/usr/local/lib/mentor/mentor_security.py` | the safety checks; what was read from outside; what is said before a password | user | next message | SECURITY.md |

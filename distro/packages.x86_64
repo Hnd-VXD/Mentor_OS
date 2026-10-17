@@ -46,6 +46,10 @@ gnome-console
 gnome-text-editor
 # Opens the screenshots Mentor takes, to crop, draw on, copy or save (mentor screenshot)
 gradia
+# Reads the text in an area of the screen for Shift+Super+T (mentor capture-text): English and Greek
+tesseract
+tesseract-data-eng
+tesseract-data-ell
 gnome-system-monitor
 gnome-tweaks
 gnome-backgrounds

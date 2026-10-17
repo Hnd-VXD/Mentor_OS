@@ -411,6 +411,9 @@ const SERVICE = `
       <arg type="t" direction="in" name="id"/>
       <arg type="b" direction="out" name="done"/>
     </method>
+    <method name="SetClipboard">
+      <arg type="s" direction="in" name="text"/>
+    </method>
   </interface>
 </node>`;
 
@@ -589,6 +592,12 @@ class ShellService {
             return false;
         window.delete(global.get_current_time());
         return true;
+    }
+
+    // Text onto the clipboard for a program with no window to hold it (`mentor capture-text`, the
+    // screen_text tool): GNOME offers no data-control protocol, so wl-copy cannot do it there.
+    SetClipboard(text) {
+        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
     }
 
     destroy() {
