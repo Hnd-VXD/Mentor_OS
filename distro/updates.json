@@ -214,5 +214,11 @@
     "name": "18.10.26.01",
     "summary": "No false alarm without a Windows host: Mentor started on its own no longer reports the shared clipboard as broken, and its self-check names an error by the error itself.",
     "published": "2026-10-18 11:57"
+  },
+  {
+    "version": 202610181135,
+    "name": "18.10.26.02",
+    "summary": "The assistant knows the new Mentor window on Windows: one Start over button, and the screen switches in one row.",
+    "published": "2026-10-18 14:38"
   }
 ]

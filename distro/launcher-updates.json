@@ -28,5 +28,11 @@
     "sha256": "f97a9ec897736751c0dfac864aa7defd461997f35ef650d88146c682cfd6ced1",
     "summary": "A small fix: after Mentor restarts, the launcher no longer keeps an old volume watch running.",
     "published": "2026-10-18 01:13"
+  },
+  {
+    "version": 202610181135,
+    "sha256": "5c8627deddffcb50e09304bd5c8e25b75619d25b618b78d720837bf03d44d16a",
+    "summary": "One Start over… button (it took Reinstall's place) that says everything that is lost and offers a backup first; the screen switches share one row; the owl is larger, above Start.",
+    "published": "2026-10-18 14:35"
   }
 ]

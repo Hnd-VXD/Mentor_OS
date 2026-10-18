@@ -5,7 +5,7 @@ Mentor runs as a virtual machine on Windows. The program that starts it there is
 Most of these features were made after Try Omarchy for Windows (github.com/omacom/try-omarchy-windows, MIT), which runs another Linux the same way.
 
 Where the user finds things on Windows, in plain words:
-- **The Mentor window** when Mentor.exe starts without anything else: "Start Mentor", the switches (Graphics card, Vulkan, Full screen), **Speed**, **Sound, USB and sign-in** (a "Change…" button), and **More options** (Restore points, Repair, Back up…, Restore a backup…, Move Mentor…, Reinstall, Start over).
+- **The Mentor window** when Mentor.exe starts without anything else: the owl, large, above "Start Mentor" (a short line under it shows news of a new Mentor.exe), **Screen** (three switches side by side: Graphics card, Vulkan, Full screen; what each does is in its tooltip), **Speed**, **Sound, USB and sign-in** (a "Change…" button), and **More options** (Restore points, Repair, Back up…, Restore a backup…, Move Mentor…, Start over…: one window that can also download the newest Mentor; before 2026-10-18 that was two buttons, Reinstall and Start over).
 - **The Mentor icon in the Windows notification area** (bottom right, by the clock) while Mentor runs. Right click: Open Mentor, Settings…, Make a diagnostics file, Shut down Mentor.
 
 Everything chosen in the Mentor window is used from the next start of Mentor. When the user wants a choice there, tell them in one sentence where it is; you cannot change it for them.

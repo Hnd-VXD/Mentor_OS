@@ -1803,6 +1803,63 @@ class RestorePoints
     }
 }
 
+// "Start over" in the launcher window (it took Reinstall's place too, 2026-10-18: two buttons that both
+// wiped Mentor confused). Says everything that is lost, offers a backup first, and asks whether to
+// download the newest Mentor as well; off by default, since updates bring the system up to date.
+enum StartOverChoice { Cancel, BackUpFirst, Here, Download }
+
+static class StartOverDialog
+{
+    public static StartOverChoice Ask(IWin32Window owner)
+    {
+        var choice = new StartOverChoice[] { StartOverChoice.Cancel };
+        using (Form form = Build(choice))
+        {
+            form.ShowDialog(owner);
+            return choice[0];
+        }
+    }
+
+    // The dialog, not shown yet; the button pressed goes into choice[0]. Apart from Ask so that a test can
+    // draw it off-screen.
+    static Form Build(StartOverChoice[] choice)
+    {
+        var form = new Form {
+            Text = "Mentor", AutoScaleMode = AutoScaleMode.None,
+            ClientSize = new Size(520, 312), FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false,
+            BackColor = Theme.Back, ForeColor = Theme.Text, Font = Theme.Font(9.5f, FontStyle.Regular),
+        };
+        {
+            Theme.Dress(form);
+            var title = new Label { Text = "Start Mentor over?", Left = 22, Top = 18, Width = 476, Height = 28,
+                                    Font = Theme.Font(12f, FontStyle.Bold) };
+            var text = new Label {
+                Text = "Everything inside Mentor is deleted: your files in it, installed apps, settings, conversations, " +
+                       "recipes, the sign-ins to Claude, ChatGPT and Gemini, the NVIDIA key, and all restore points. " +
+                       "Mentor then starts as on its first day.\n\nYour files on Windows are not touched. " +
+                       "Back up first to keep a copy you can bring back.",
+                Left = 22, Top = 52, Width = 476, Height = 120 };
+            var download = new Toggle { Left = 22, Top = 186, Width = 44, Height = 24 };
+            var downloadWords = new Label {
+                Text = "Also download the newest Mentor (about 2.3 GB). Not needed most of the time: updates bring it up to date.",
+                Left = 76, Top = 182, Width = 422, Height = 40, ForeColor = Theme.Dim };
+            var backUp = new PillButton { Text = "Back up first", Left = 22, Top = 252, Width = 150, Height = 38 };
+            var go = new PillButton { Text = "Start over", Left = 230, Top = 252, Width = 136, Height = 38 };
+            var cancel = new PillButton { Text = "Cancel", Primary = true, Result = DialogResult.Cancel,
+                                          Left = 374, Top = 252, Width = 124, Height = 38 };
+            backUp.Click += (s, e) => { choice[0] = StartOverChoice.BackUpFirst; form.Close(); };
+            go.Click += (s, e) => { choice[0] = download.Checked ? StartOverChoice.Download : StartOverChoice.Here; form.Close(); };
+            form.Controls.AddRange(new Control[] { title, text, download, downloadWords, backUp, go, cancel });
+            form.KeyPreview = true;
+            form.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) form.Close(); };
+            form.ActiveControl = cancel;  // a stray Enter keeps everything
+            Theme.Fit(form);
+        }
+        return form;
+    }
+}
+
 static class RestoreDialog
 {
     // The restore point the user picked, or null when they chose `otherwise`.
@@ -1940,7 +1997,8 @@ class Slider : Painted
     }
 }
 
-// "Reinstall" in the launcher window: the newest Mentor from GitHub in place of the one here. The
+// Start over… with "Also download the newest Mentor" on (StartOverDialog; until 2026-10-18 a button of
+// its own, "Reinstall"): the newest Mentor from GitHub in place of the one here. The
 // system image is downloaded beside the old one (resumed when the connection drops: GitHub ends
 // long downloads now and then), checked against the size and SHA-256 that release.json gives,
 // and only then is the old installation deleted (vm\: the disk with everything done inside

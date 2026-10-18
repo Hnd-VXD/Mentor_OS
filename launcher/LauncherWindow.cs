@@ -116,7 +116,7 @@ class LauncherWindow : Form
     readonly Toggle gpu = new Toggle(), fullscreen = new Toggle(), vulkan = new Toggle();
     readonly Slider memory = new Slider(), cpus = new Slider();
     readonly Choice speed = new Choice { Items = new[] { "Balanced", "Maximum", "Manual" } };
-    readonly Label speedWords, memoryValue, cpuValue, moreWords;
+    readonly Label speedWords, memoryValue, cpuValue, moreWords, gpuWord, vulkanWord, fullWord;
     readonly Card card = new Card();
     readonly Unfold unfold = new Unfold { Text = "More options" };
     readonly List<Control> folded = new List<Control>();
@@ -168,10 +168,11 @@ class LauncherWindow : Form
                                    ForeColor = Theme.Dim, BackColor = Theme.Back };
         var start = new PillButton { Text = running ? "Save" : "Start Mentor", Primary = true, Result = DialogResult.OK,
                                      Font = Theme.Font(12f, FontStyle.Bold) };
-        // The owl and Start side by side, the short line under Start: the user found the stacked owl,
-        // name and line too tall (2026-10-17). The name is in the owl and in the title bar.
-        Place(emblem, 26, 16, 80, 80);
-        Place(subtitle, 116, 78, 296, 20);
+        // The owl above, large and in the middle, then Start the card's width, then the short line: once
+        // the switches shared one row the window had room for it again (the user's wish, 2026-10-18;
+        // before, owl and Start side by side). The name is in the owl and in the title bar.
+        Place(emblem, 155, 14, 130, 130);
+        Place(subtitle, 28, 214, 384, 20);
         // News of the launcher's own update, in the subtitle's place (SelfUpdate.Note): at once when it
         // is known, or when the check in the background finds one while the window is open.
         Action showNote = () => {
@@ -187,7 +188,7 @@ class LauncherWindow : Form
         SelfUpdate.NoteChanged += noteChanged;
         Shown += (s, e) => showNote();
         FormClosed += (s, e) => SelfUpdate.NoteChanged -= noteChanged;
-        Place(start, 116, 20, 296, 52);
+        Place(start, 28, 156, 384, 52);
 
         gpu.Checked = settings.gpu;
         vulkan.Checked = settings.vulkan && own;
@@ -245,16 +246,29 @@ class LauncherWindow : Form
                                     Words("Processors", 10.5f, Theme.Text, true), cpuValue, cpus };
         var lines = new Label[4];
         for (int i = 0; i < lines.Length; i++) lines[i] = new Label { BackColor = Theme.Line };
+        // Graphics card, Vulkan and Full screen share one row, "Screen", each a switch with its name beside
+        // it (the user found three rows of their own too tall, 2026-10-18); what each does is in its tooltip.
+        var tips = new ToolTip();
+        Func<Toggle, string, string, Label> named = (toggle, name, tip) => {
+            Label word = Words(name, 9.5f, Theme.Text, true);
+            word.TextAlign = ContentAlignment.MiddleLeft;
+            word.Cursor = Cursors.Hand;
+            word.Click += (s, e) => { if (toggle.Enabled) toggle.Checked = !toggle.Checked; };
+            tips.SetToolTip(word, tip);
+            tips.SetToolTip(toggle, tip);
+            return word;
+        };
+        gpuWord = named(gpu, "Graphics card", own ? "Smoother desktop, drawn by the graphics card." : "Smoother desktop. Experimental.");
+        vulkanWord = named(vulkan, "Vulkan", "For apps and games that use Vulkan. Experimental. Needs the graphics card.");
+        fullWord = named(fullscreen, "Full screen", "Mentor fills the whole screen. Ctrl+Alt+F switches at any time.");
+        vulkanWord.Visible = own;
+        vulkanWord.ForeColor = gpu.Checked ? Theme.Text : Theme.Dim;
+        gpu.CheckedChanged += (s, e) => vulkanWord.ForeColor = gpu.Checked ? Theme.Text : Theme.Dim;
         // The card's rows, top to bottom; each Place()d by Arrange().
         rows = new List<Control[]> {
-            new Control[] { Words("Graphics card", 10.5f, Theme.Text, true),
-                            Words(own ? "Smoother desktop, drawn by the graphics card." : "Smoother desktop. Experimental.", 8.5f, Theme.Dim, true),
-                            gpu, lines[0] },
-            own ? new Control[] { Words("Vulkan", 10.5f, Theme.Text, true),
-                                  Words("For apps and games that use Vulkan. Experimental.", 8.5f, Theme.Dim, true),
-                                  vulkan, lines[1] } : null,
-            new Control[] { Words("Full screen", 10.5f, Theme.Text, true),
-                            Words("Ctrl+Alt+F switches at any time.", 8.5f, Theme.Dim, true), fullscreen, lines[2] },
+            new Control[] { Words("Screen", 10.5f, Theme.Text, true),
+                            Words("Ctrl+Alt+F switches full screen at any time.", 8.5f, Theme.Dim, true),
+                            gpu, lines[0], gpuWord, vulkan, vulkanWord, fullscreen, fullWord },
             new Control[] { Words("Speed", 10.5f, Theme.Text, true), speedWords, speed, lines[3] },
             new Control[] { Words("Sound, USB and sign-in", 10.5f, Theme.Text, true), moreWords, change },
         };
@@ -268,9 +282,10 @@ class LauncherWindow : Form
         var backUp = new PillButton { Text = "Back up…" };
         var fromBackup = new PillButton { Text = "Restore a backup…" };
         var move = new PillButton { Text = "Move Mentor…" };
-        var reinstall = new PillButton { Text = "Reinstall" };
-        var fresh = new PillButton { Text = "Start over" };
-        folded.AddRange(new Control[] { restore, mend, backUp, fromBackup, move, reinstall, fresh });
+        // One button for starting from nothing; whether the newest Mentor is downloaded too is a choice
+        // inside it (StartOverDialog). It was two, Reinstall and Start over, which the user found the same.
+        var fresh = new PillButton { Text = "Start over…" };
+        folded.AddRange(new Control[] { restore, mend, backUp, fromBackup, move, fresh });
         foreach (Control button in folded) button.Visible = false;
         Controls.AddRange(new Control[] { emblem, subtitle, start, card, unfold });
         Controls.AddRange(folded.ToArray());
@@ -282,23 +297,6 @@ class LauncherWindow : Form
             unfold.Invalidate();
         };
         Arrange();
-
-        reinstall.Click += (s, e) => {
-            if (MessageBox.Show(this, "Reinstall Mentor from GitHub?\n\n" +
-                    "The newest Mentor is downloaded (about 2.3 GB) and put in place of this one.\n\n" +
-                    "Everything inside Mentor is deleted: your files in it, installed apps, settings, conversations, " +
-                    "recipes, the sign-ins to Claude, ChatGPT and Gemini, the NVIDIA key, and all restore points. " +
-                    "Copy anything you want to keep to Windows first.\n\n" +
-                    "Your files on Windows are not touched. Nothing is deleted until the download has arrived whole: " +
-                    "if it is stopped or fails, Mentor stays as it is.",
-                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                return;
-            if (global::Reinstall.Run(this, image, vmDir))
-            {
-                watch.Failures = 0;
-                MessageBox.Show(this, "Done. Mentor is the newest one now, and starts fresh: press Start Mentor.", Text);
-            }
-        };
 
         mend.Click += (s, e) => {
             if (MessageBox.Show(this, "Start Mentor in repair mode?\n\nFor when the desktop no longer comes up, or something " +
@@ -334,19 +332,34 @@ class LauncherWindow : Form
             }
         };
         fresh.Click += (s, e) => {
-            if (MessageBox.Show(this, "Start over from the system as it was built?\n\nEverything inside Mentor is " +
-                    "deleted: installed apps, files, settings, the sign-in to Claude and all restore points.",
-                    Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                return;
-            try
+            string why = Backup.NotWhileRunning(vmDir);
+            if (why != null) { MessageBox.Show(this, why, Text); return; }
+            switch (StartOverDialog.Ask(this))
             {
-                if (Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
-                MessageBox.Show(this, "Done. The next start is a fresh system.", Text);
-            }
-            catch (IOException error)
-            {
-                MessageBox.Show(this, "Could not delete it:\n\n" + error.Message + "\n\nIf Mentor is running, close it first.",
-                                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                case StartOverChoice.BackUpFirst:
+                    Backup.Make(this, root, vmDir, image);  // then Start over… again, when they want
+                    return;
+                case StartOverChoice.Download:
+                    // The old one is deleted only once the new image has arrived whole and checked.
+                    if (global::Reinstall.Run(this, image, vmDir))
+                    {
+                        watch.Failures = 0;
+                        MessageBox.Show(this, "Done. Mentor is the newest one now, and starts fresh: press Start Mentor.", Text);
+                    }
+                    return;
+                case StartOverChoice.Here:
+                    try
+                    {
+                        if (Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
+                        watch.Failures = 0;
+                        MessageBox.Show(this, "Done. The next start is a fresh Mentor: press Start Mentor.", Text);
+                    }
+                    catch (IOException error)
+                    {
+                        MessageBox.Show(this, "Could not delete it:\n\n" + error.Message + "\n\nIf Mentor is running, close it first.",
+                                        Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    return;
             }
         };
         backUp.Click += (s, e) => Backup.Make(this, root, vmDir, image);
@@ -384,7 +397,7 @@ class LauncherWindow : Form
     }
 
     // Puts everything where it goes for what is shown now (Manual's sliders, the folded buttons).
-    const int CardTop = 112;  // under the owl and Start
+    const int CardTop = 246;  // under the owl, Start and its line
 
     void Arrange()
     {
@@ -392,6 +405,26 @@ class LauncherWindow : Form
         foreach (Control[] row in rows)
         {
             if (row == null) continue;
+            if (Array.IndexOf(row, gpu) >= 0)
+            {
+                // "Screen": its name, then the switches side by side, each with its name, then one line.
+                Place(row[0], 18, y + 14, 200, 24);
+                int x = 18;
+                foreach (Control[] pair in new[] { new Control[] { gpu, gpuWord, null }, own ? new Control[] { vulkan, vulkanWord, null } : null,
+                                                    new Control[] { fullscreen, fullWord, null } })
+                {
+                    if (pair == null) continue;
+                    int words = pair[1] == gpuWord ? 88 : pair[1] == vulkanWord ? 56 : 70;
+                    Place(pair[0], x, y + 47, 36, 20);
+                    Place(pair[1], x + 40, y + 44, words, 26);
+                    x += 40 + words + (own ? 7 : 40);  // the three fill the card's 348 exactly
+                }
+                Place(row[1], 18, y + 76, 348, 20);
+                y += 100;
+                Place(row[3], 18, y + 6, 348, 1);
+                y += 8;
+                continue;
+            }
             bool isSpeed = Array.IndexOf(row, speed) >= 0;
             // Labels have a solid background and lie above what is placed after them: kept clear of the
             // Speed choice (from 120) and of a button (from 262), which they covered.
