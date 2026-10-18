@@ -406,6 +406,13 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
    and a light set gave them dark text on that dark: the title and the close button could not be seen
    (2026-10-18). Solid: a see-through one showed the chat behind its title. */
 dialog.advice-details sheet { background-color: var(--window-bg-color); color: var(--window-fg-color); }
+/* The dialogs' close as the windows' own: a red light, its × shown under the pointer (DESKTOP.md,
+   "Window buttons"). */
+button.light-close { min-width: 26px; min-height: 26px; padding: 0; background: none; box-shadow: none; }
+button.light-close > image { -gtk-icon-size: 12px; padding: 3px; color: transparent; }
+/* its red light comes from mentor_colors.light (follow_colors), the same as the windows' own */
+button.light-close:hover > image { color: rgba(0, 0, 0, 0.6); }
+button.light-close:active > image { filter: brightness(0.85); }
 dialog.advice-details headerbar, dialog.advice-details toolbarview { background: none; }
 .tick-button { min-height: 0; min-width: 0; padding: 4px 8px 4px 0; background: none; border: none;
                box-shadow: none; outline: none; }
@@ -1148,6 +1155,7 @@ class Conversation(Gtk.Box):
         self.suggest_word = ""
         self.picked = {}  # name -> desktop id of the apps picked from the list, while they are in the text box
         self.entry.connect("changed", lambda *_: GLib.idle_add(self.update_suggestions))
+        self.entry.connect("changed", lambda *_: self.show_action())
 
         # Shown while the next message is about one application.
         self.subject_icon = Gtk.Image(pixel_size=20)
@@ -1500,13 +1508,27 @@ class Conversation(Gtk.Box):
         if not busy:
             self.told_busy = False  # the next time it is closed while working, it says so again
         self.entry.set_sensitive(not busy)
-        self.action.set_icon_name("media-playback-stop-symbolic" if busy else "go-up-symbolic")
-        self.action.set_tooltip_text("Stop" if busy else "Send")
-        for css_class, on in (("destructive-action", busy), ("suggested-action", not busy)):
-            (self.action.add_css_class if on else self.action.remove_css_class)(css_class)
+        self.show_action()
         self.window.on_busy_changed(self)
         if not busy:
             self.entry.grab_focus()
+
+    def closes_ask(self):
+        """The box over a program (ASKBAR.md) with nothing written: its button closes it instead of
+        sending nothing (the user's wish, 2026-10-18)."""
+        return (not self.busy and getattr(self.window, "ask_of", None) is self
+                and not self.entry.get_text().strip())
+
+    def show_action(self):
+        """The round button beside the text box: Stop while the agent works, × in an empty box over a
+        program, otherwise Send."""
+        closing = self.closes_ask()
+        self.action.set_icon_name("media-playback-stop-symbolic" if self.busy else
+                                  "window-close-symbolic" if closing else "go-up-symbolic")
+        self.action.set_tooltip_text("Stop" if self.busy else "Close (Esc)" if closing else "Send")
+        for css_class, on in (("destructive-action", self.busy), ("suggested-action", not self.busy and not closing),
+                              ("osd", closing)):
+            (self.action.add_css_class if on else self.action.remove_css_class)(css_class)
 
     def add(self, widget):
         if self.welcome:
@@ -2190,6 +2212,8 @@ class Conversation(Gtk.Box):
     def on_action(self, _button):
         if self.busy:
             self.stop()
+        elif self.closes_ask():
+            self.window.close_ask()
         else:
             self.send(self.entry.get_text())
 
@@ -2673,6 +2697,7 @@ def dialog_header(dialog):
     close = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Close", valign=Gtk.Align.CENTER)
     close.add_css_class("flat")
     close.add_css_class("circular")
+    close.add_css_class("light-close")  # the red light of every window's close (DESKTOP.md, "Window buttons")
     close.connect("clicked", lambda *_: dialog.close())
     bar.set_center_widget(title)
     bar.set_end_widget(close)
@@ -3599,6 +3624,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         if shot and os.path.isfile(shot):
             conversation.attach(shot)
             conversation.entry.set_placeholder_text("Ask Mentor about what you see\u2026   (Esc puts this away)")
+        conversation.show_action()  # \u00d7 while it is empty
         self.ask_window.present()
         conversation.entry.grab_focus()
 
@@ -3618,6 +3644,7 @@ class DesktopWindow(Adw.ApplicationWindow):
                 conversation.attachment_bar.remove(chip)
             conversation.attachment_bar.set_visible(False)
         conversation.entry.set_placeholder_text("Ask Mentor to do something\u2026")
+        conversation.show_action()  # Send again, on the desktop
 
     def offer_later(self):
         for conversation in self.conversations():
@@ -4498,6 +4525,14 @@ class AssistantApp(Adw.Application):
         user's stylesheet once, and the dialogs would keep the old set (DESKTOP.md, "Window colors")."""
         if not mentor_colors:
             return
+        try:
+            mentor_colors.buttons()  # the window buttons as lights, for every user (DESKTOP.md, "Window buttons")
+            lights = Gtk.CssProvider()
+            lights.load_from_string(f"button.light-close > image {{ {mentor_colors.light(mentor_colors.LIGHTS[2][1])} }}")
+            Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), lights,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_USER + 2)
+        except Exception:
+            pass
         self.colors = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.colors,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)

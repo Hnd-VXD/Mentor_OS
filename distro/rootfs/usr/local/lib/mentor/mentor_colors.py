@@ -91,15 +91,15 @@ def live_css(name):
     return css(palette)
 
 
-def _write(path, block):
+def _write(path, block, begin=BEGIN, end=END):
     """Put Mentor's block in a stylesheet, or take it out (block empty); the rest of the file stays."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except OSError:
         text = ""
-    if BEGIN in text and END in text:
-        text = text[:text.index(BEGIN)] + text[text.index(END) + len(END):]
+    if begin in text and end in text:
+        text = text[:text.index(begin)] + text[text.index(end) + len(end):]
     text = text.strip("\n")
     text = (text + "\n\n" + block if text and block else text or block).strip("\n")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -119,9 +119,8 @@ def apply(name):
     home = os.path.expanduser("~/.config")
     _write(os.path.join(home, "gtk-4.0", "gtk.css"), css(palette))
     _write(os.path.join(home, "gtk-3.0", "gtk.css"), css(palette, gtk3=True))
+    buttons()
     import subprocess
-    subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
-                    "prefer-light" if palette[1] else "prefer-dark"], check=False)
     # The taskbar (Dash to Panel, its own setting for a background color) in the set's title bar tone, so
     # that it belongs to the set (the user's wish); the GNOME sets give it back its own.
     # Mentor's extension (part "taskbar color") keeps it so: it uses this tone only while GNOME's style is the
@@ -141,7 +140,81 @@ def apply(name):
             os.remove(note)
         subprocess.run(["gsettings", "reset", taskbar, "trans-use-custom-bg"], check=False)
         subprocess.run(["gsettings", "reset", taskbar, "trans-bg-color"], check=False)
+    # The style last, after the note: the extension's part "keep style" puts back any style that is not the
+    # one the note names, and would otherwise undo this change (2026-10-19).
+    subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
+                    "prefer-light" if palette[1] else "prefer-dark"], check=False)
     return palette
+
+
+# The window buttons as round lights, as on a Mac but at the right and in GNOME's order: minimize
+# yellow, maximize green, close red at the far right (the user's wish, 2026-10-18). Their sign shows
+# when the pointer is over them. In every set of colors, GNOME's own included: a block of its own.
+BUTTONS_BEGIN = "/* BEGIN Mentor window buttons (DESKTOP.md, Window buttons; changed there, not here) */"
+BUTTONS_END = "/* END Mentor window buttons */"
+LIGHTS = (("minimize", "#febc2e"), ("maximize", "#28c840"), ("close", "#ff5f57"))
+
+def light(color, size=18, corner=5):
+    """One light: a square of SIZE pixels (18: 14 was small, the user, 2026-10-18) with rounded corners (the user's choice over circles,
+    2026-10-18), whatever the size of the button. Drawn as layers of a fixed size in the middle of the
+    button, not as the button's own rounded background, because Chromium (GTK 4) and Electron programs
+    (GTK 3) paint the button as large as their own title bar is high: rounded backgrounds came out twice
+    the size. The layers: a band across, a band down, and a quarter circle in each corner, whose edges
+    fade over one pixel into the color made clear, so they are smooth at any scale. Returns the
+    declarations."""
+    r, g, b = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    clear = f"rgba({r}, {g}, {b}, 0)"
+    near, far = corner, size - corner
+    layers = [f"linear-gradient(to bottom, {clear} {near}px, {color} {near}px, {color} {far}px, {clear} {far}px)",
+              f"linear-gradient(to right, {clear} {near}px, {color} {near}px, {color} {far}px, {clear} {far}px)"]
+    layers += [f"radial-gradient(circle at {x}px {y}px, {color} {corner - 0.5}px, {clear} {corner + 0.5}px)"
+               for x in (near, far) for y in (near, far)]
+    n = len(layers)
+    return (f"background-image: {', '.join(layers)}; background-size: {', '.join([f'{size}px {size}px'] * n)};"
+            f" background-position: {', '.join(['center'] * n)}; background-repeat: {', '.join(['no-repeat'] * n)};")
+
+
+BUTTONS_GTK4 = "\n".join([
+    # libadwaita and Chromium: the light is drawn on the button's image
+    "windowcontrols > button { min-width: 26px; min-height: 26px; padding: 0; margin: 0 1px;"
+    " background: none; box-shadow: none; }",
+    "windowcontrols > button > image { -gtk-icon-size: 12px; padding: 3px; border-radius: 0;"
+    " background-color: transparent; color: transparent; box-shadow: none; }",
+    *[f"windowcontrols > button.{name} > image, windowcontrols > button.{name}:hover > image,"
+      f" windowcontrols > button.{name}:active > image {{ {light(color)} }}"
+      for name, color in LIGHTS],
+    "windowcontrols > button:hover > image { color: rgba(0, 0, 0, 0.6); }",
+    "windowcontrols > button:active > image { filter: brightness(0.85); }",
+])
+
+BUTTONS_GTK3 = "\n".join([
+    # GTK 3 (Electron programs, Bitwarden among them, draw their title bar from it): the button itself
+    # is the light, a plain rounded square. GTK 3 draws layered gradients wrongly (broken shapes, tested
+    # in Bitwarden 2026-10-18), and Electron keeps the button's own size.
+    "button.titlebutton { min-width: 18px; min-height: 18px; padding: 0; margin: 0 3px; border: none;"
+    " border-radius: 5px; background-image: none; box-shadow: none; color: transparent;"
+    " -gtk-icon-shadow: none; }",
+    "button.titlebutton image { -gtk-icon-transform: scale(0.6); }",
+    *[f"button.titlebutton.{name}, button.titlebutton.{name}:hover, button.titlebutton.{name}:active,"
+      f" button.titlebutton.{name}:backdrop {{ background-color: {color}; }}" for name, color in LIGHTS],
+    "button.titlebutton:hover { color: rgba(0, 0, 0, 0.6); }",
+])
+
+
+def buttons():
+    """Put the round window buttons into the user's two stylesheets when they are not there as now (at
+    every login, by the assistant; and with each set of colors). Programs show them when opened again."""
+    home = os.path.expanduser("~/.config")
+    for folder, rules in (("gtk-4.0", BUTTONS_GTK4), ("gtk-3.0", BUTTONS_GTK3)):
+        path = os.path.join(home, folder, "gtk.css")
+        block = "\n".join([BUTTONS_BEGIN, rules, BUTTONS_END])
+        try:
+            with open(path, encoding="utf-8") as f:
+                if block in f.read():
+                    continue
+        except OSError:
+            pass
+        _write(path, block, BUTTONS_BEGIN, BUTTONS_END)
 
 
 def current():

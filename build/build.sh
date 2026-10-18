@@ -32,6 +32,11 @@ grep -qs "^$VERSION " "$SRC/out/version-names.txt" || echo "$VERSION $VERSION_NA
 [[ $EUID -eq 0 ]] || { echo "build.sh must run as root" >&2; exit 1; }
 [[ -f /etc/arch-release ]] || { echo "build.sh must run inside Arch Linux" >&2; exit 1; }
 
+# The agent mends Mentor from etc/mentor/*.md alone: no image or update with a file, part,
+# command or tool those docs do not name (etc/mentor/REBUILD.md, "When Mentor itself changes").
+command -v python3 > /dev/null || pacman -S --needed --noconfirm python
+python3 "$SRC/build/check-docs.py" || { echo "build.sh: write the missing docs first (lines above)" >&2; exit 1; }
+
 # shellcheck source=../distro/config.env
 source <(tr -d '\r' < "$SRC/distro/config.env")
 mapfile -t PACKAGES < <(tr -d '\r' < "$SRC/distro/packages.x86_64" | sed 's/#.*//; /^[[:space:]]*$/d')

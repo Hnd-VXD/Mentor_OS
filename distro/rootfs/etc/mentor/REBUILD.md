@@ -40,7 +40,7 @@ Run these and read the output before doing anything else.
 mentor verify
 ```
 
-It prints one line for each file of Mentor's that is `missing` or `changed`, or says that every file is as it was built. If `mentor` itself does not start, this does the same:
+It prints one line for each file of Mentor's that is `missing` or `changed`, or says that every file is as it was built. Run as the user it also says "(1 file(s) only root may read were not checked: sudo mentor verify)": that is normal and no fault (a file only root may read, such as a sudoers file); Mentor's own self-check runs as root and covers it, so go on without it. If `mentor` itself does not start, this does the same:
 
 ```
 sha256sum --quiet -c /etc/mentor/source/MANIFEST.sha256
@@ -52,7 +52,7 @@ Then:
 mentor doctor
 ```
 
-(tool: desktop_check). It says which parts of the desktop work right now.
+(tool: desktop_check). It says which parts of the desktop work right now. It does not look at every background service of Mentor's: when a feature has gone quiet (no crash card, no update card, no warnings) and doctor and verify are both clean, go to Step 2b.
 
 Then `mentor journal -n 20` (tool: journal_read): what was changed on this system last, and for which request. A fault that began after one of those changes most likely comes from it.
 
@@ -86,6 +86,17 @@ or, for every file that verify lists, `sudo mentor restore --all`. It keeps what
 
 After putting a file back, run `mentor verify` again: the file must no longer be listed. Then do what the table below says in "takes effect".
 
+## Step 2b: a service of Mentor's that is switched off
+
+`mentor verify` checks files, not whether a service is switched on: a service can be off while every file is as built. `mentor doctor` then says `WARN ... is off`, or a feature quietly stops (no crash card, no update card, the "Dash to Panel has been updated!" notice at each login). Which are switched on, and how, is `/usr/local/lib/mentor/mentor-enable` (read it with `cat`; it is the one list):
+
+- **The user's services, switched on for every user** (`systemctl --global enable`): `mentor-watch.timer`, `mentor-firewall-watch.service`, `mentor-recipe-watch.service`, `mentor-taskbar-quiet.service`, `mentor-crash-watch.service`.
+  Check, as the user: `systemctl --global is-enabled NAME` must say `enabled`. The user's own `systemctl --user is-enabled NAME` follows it: `disabled` there while the global one is off says nothing more; only `masked`, or `disabled` while the global one is `enabled`, is the user's own setting. Fix: the global one is root's (sandbox_apply, or run_root_command): `systemctl --global enable NAME`; a user's own `disabled`/`masked` is undone as the user: `systemctl --user unmask NAME; systemctl --user enable NAME`. Then start it now, as the user, so no logout is needed: `systemctl --user daemon-reload; systemctl --user start NAME` (without the reload the user's systemd still thinks it is disabled) (a `.timer`: start the timer, not its service). `mentor-taskbar-quiet` runs once at login; start it now too, so the stored version is put right before the next login.
+- **The system's services** (`systemctl enable`): `gdm`, `NetworkManager`, `systemd-timesyncd`, `qemu-guest-agent`, `mentor-boot-check`, `mentor-boot-deadline`, `mentor-boot-confirm.path`, `mentor-boot-arm`, `mentor-advisor.timer`, `mentor-update-check.timer`, `nftables`, `mentor-root.socket`, `mentor-power-button`, `mentor-sentinel`, `mentor-emergency-key`.
+  Check: `systemctl is-enabled NAME` says `enabled`, `systemctl is-active NAME` says `active` (a `.timer`: `systemctl list-timers NAME` shows a next run; a oneshot such as `mentor-boot-check` is `inactive` between runs, which is fine). Fix (service_control or sandbox_apply, root): `systemctl enable --now NAME`. For a `.timer` that was off, also run its service once (`systemctl start mentor-update-check.service` for `mentor-update-check.timer`): until it has run, `list-timers` shows the NEXT column as `-` and the timer waits. The `mentor-boot-*` units are the user's to switch on (`sudo systemctl enable NAME`): they are the safe start, outside your reach. Never switch `nftables` off or leave it off: SECURITY.md.
+
+Look in `mentor journal -n 20` whether it was switched off on purpose (the user asked for it): then ask before switching it on again. Nothing there about it (the usual case, it says nothing of how): switch it on, it is part of Mentor as built. The `explain` for the password: "I am switching back on a small part of Mentor that had been turned off." Good answer at the end: `mentor doctor` has no `WARN ... is off` line left. Both halves are needed: the enable is what lasts (the next login, the next start), the start is what makes it work now; no logout or restart is needed for any of these. If the password is refused, do not try another way: tell the user in one sentence what is off and that you can switch it on when they agree.
+
 ## Step 3: when the file as built no longer works
 
 This is the case after a new GNOME, kernel, Python or other program: the file is there and unchanged, and it fails. Then putting it back does nothing. Go to the instruction file of that part (the table below names it), which says what of other people's software the part leans on, how to see the error, and how to make the same thing the new way. Work in the sandbox, test, apply, write what you changed in the notes.
@@ -107,7 +118,9 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/share/applications/org.mentor.Recipes.desktop` | puts the Recipes app in the application grid | yes | at once | RECIPES.md |
 | `/usr/share/icons/hicolor/scalable/apps/org.mentor.Recipes.svg` | the Recipes app's icon (a recipe card with `</>` and a bookmark); `gtk-update-icon-cache -f /usr/share/icons/hicolor` after changing it | yes | at once | RECIPES.md |
 | `/usr/share/applications/org.mentor.Settings.desktop` | puts it in the application grid | yes | at once | SETTINGS.md |
-| `/usr/local/lib/mentor/mentor_colors.py` | the window colors of Mentor Settings and `mentor colors`: 20 sets of tones written into the user's `~/.config/gtk-4.0/gtk.css` and `gtk-3.0/gtk.css` | user | when a program is opened again | DESKTOP.md "Window colors" |
+| `/usr/share/icons/hicolor/256x256/apps/org.mentor.Settings.png`, `/usr/share/icons/hicolor/512x512/apps/org.mentor.Settings.png` | its icon (the owl in a rounded square); `gtk-update-icon-cache -f /usr/share/icons/hicolor` after changing it | yes | at once | SETTINGS.md |
+| `/usr/local/lib/mentor/mentor_colors.py` | the window colors of Mentor Settings and `mentor colors`: 20 sets of tones written into the user's `~/.config/gtk-4.0/gtk.css` and `gtk-3.0/gtk.css`, the tones for the taskbar and the shell's menus (`~/.config/mentor/taskbar-color`), and the window buttons as yellow, green and red rounded squares (`buttons()`, a block of its own in the same two files, put back by the assistant at every start) | user | when a program is opened again | DESKTOP.md "Window colors", "Window buttons" |
+| `/usr/share/gnome-shell/extensions/mentor@mentor.local/stylesheet-light.css`, `stylesheet-dark.css` | the taskbar's nine dots dark in light style; the nearly empty dark one makes the shell swap the two when the style changes | yes | login (session_logout) | DESKTOP.md "Window colors" |
 | `/usr/local/lib/mentor/mentor_settings.py` | reads and writes the file of those choices (`~/.config/mentor/settings.json`) | user | next call | SETTINGS.md |
 | `/usr/share/applications/org.mentor.Chat.desktop` | gives the assistant its name and icon | yes | login | ASSISTANT.md |
 | `/usr/share/icons/hicolor/256x256/apps/org.mentor.Chat.png` | the icon; run `gtk-update-icon-cache -q -f /usr/share/icons/hicolor` after | yes | login | ASSISTANT.md |
@@ -119,7 +132,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 
 | File | What it is | Write | Takes effect | Read |
 |---|---|---|---|---|
-| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus, the ask bar, the game mouse | yes | login (session_logout) | DESKTOP.md |
+| `/usr/share/gnome-shell/extensions/mentor@mentor.local/extension.js`, `metadata.json` | the shell extension: makes the assistant the desktop, system menu switches, search, app menus, the ask bar, the game mouse; and for Window colors the parts `taskbar color`, `menu colors` (the shell's menus in the set's tones) and `keep style` (light or dark stays the set's, with a notice; the Dark Style switch hidden) | yes | login (session_logout) | DESKTOP.md |
 | `/etc/dconf/db/local.d/00-mentor`, `/etc/dconf/profile/user` | the defaults: enabled extensions, favourites, keys (Super+A, Alt+Space and Super+Z for the ask bar), dark style, wallpaper. Run `dconf update` after | yes | login | DESKTOP.md |
 | `/usr/share/nautilus-python/extensions/mentor.py` | "Ask Mentor…" in Files | yes | `nautilus -q` | DESKTOP.md |
 | `/usr/share/backgrounds/mentor/*.jpg`, `/usr/share/gnome-background-properties/mentor.xml` | the wallpapers and their list in Settings | yes | at once | DESKTOP.md |
@@ -143,6 +156,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `~/.config/systemd/user/mentor-reminder-ID.timer`, `.service`, `~/.local/state/mentor/reminders/ID.json` | one reminder each, made by `reminder_set` and removed when it is due or cancelled; not in the image | yes | `systemctl --user daemon-reload` | TOOLS.md "Reminders" |
 | `~/.local/share/applications/mentor-webapp-NAME.desktop`, `~/.local/share/mentor/webapp-icons/NAME.png` | one web app each, made by `webapp_install`; not in the image | yes | at once | TOOLS.md "Web apps" |
 | `/etc/mentor/extras/gaming/setup-gaming.sh` | sets up games on request (multilib, the 32-bit graphics drivers, Steam, Lutris); not run in the image | user | when run | GAMING.md |
+| `/etc/mentor/extras/monitor/monitor.py`, `mentor-monitor.service`, `test-settings.json` | the quiet watch on memory, processor and network, its user service, and settings for trying it; not run in the image, copied to the user's folders on request | user | when set up | MONITOR.md |
 | `/usr/local/lib/mentor/mentor_report.py` | `mentor tool-report`: where the tools fall short, from the journal | user | next run | TOOLS.md |
 | `/usr/local/lib/mentor/mentor_journal.py` | the journal: writes down each change the tools make, under the request it was for; reads it back | user | next message | JOURNAL.md |
 | `/usr/local/lib/mentor/mentor_security.py` | the safety checks; what was read from outside; what is said before a password | user | next message | SECURITY.md |
@@ -263,6 +277,18 @@ Run these in order. Each line says what a good answer looks like.
 | `pgrep -af lib/mentor/mentor-clipboard` | one line |
 | `journalctl -b --user -o cat \| grep -A12 Traceback` | nothing |
 | screen_capture | the assistant on the wallpaper, the taskbar at the bottom |
+
+## When Mentor itself changes
+
+These files are checked against Mentor before every image and every update is made: `build/check-docs.py` in Mentor's source, run by `build.sh`. A build stops when one of these is missing, and says which and where:
+
+- a file of Mentor's (each line of `MANIFEST.sha256`) with no row in the tables above;
+- a part of the shell extension with no row in DESKTOP.md "The parts of the extension";
+- a `mentor` command with no row in TOOLS.md "The `mentor` command", or a tool that TOOLS.md (or the file this table names for `mentor_tools.py`) does not name;
+- a file named in "Read" above that does not exist, or a reference such as DESKTOP.md "Window colors" to a heading, bold name or table row that is not there;
+- a path of Mentor's in backticks that is neither in the image nor made while it runs.
+
+So what is in this system is in these files. If you still find a file of Mentor's that no row names, the docs are behind: tell the user, and write what you learn about it in `~/.local/share/mentor/notes.md`.
 
 ## Rules for this work
 

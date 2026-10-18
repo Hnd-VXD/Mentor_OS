@@ -1153,6 +1153,71 @@ export default class MentorExtension extends Extension {
             return () => style.disconnect(changed);
         });
 
+        // While a set of Mentor's Window colors is in use, GNOME's light or dark style is the set's own:
+        // a change of it from anywhere else (Settings, Appearance, Style; a command) is put back, and the
+        // quick menu's "Dark Style" switch, which would only spring back, is hidden. Switched by hand,
+        // windows, taskbar and menus no longer matched (the user's wish, 2026-10-19: "ignore whatever the
+        // user clicks"). With GNOME's own sets (no ~/.config/mentor/taskbar-color) the style is free as in
+        // GNOME. mentor_colors.apply writes that file before it changes the style. DESKTOP.md, "Window colors".
+        this._part('keep style', () => {
+            const note = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'taskbar-color']);
+            const style = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            const toggle = Main.panel.statusArea.quickSettings?._darkMode?.quickSettingsItems?.[0] ?? null;
+            let pending = 0, told = 0;
+            const kind = () => {
+                try {
+                    return new TextDecoder().decode(GLib.file_get_contents(note)[1]).trim().split(/\s+/)[1] ?? null;
+                } catch (e) {
+                    return null;  // GNOME's own colors: the style is the user's
+                }
+            };
+            const sync = (byUser = true) => {
+                pending = 0;
+                const wanted = kind();
+                if (toggle)
+                    toggle.visible = !wanted;
+                const scheme = wanted === 'light' ? 'prefer-light' : wanted === 'dark' ? 'prefer-dark' : null;
+                if (scheme && style.get_string('color-scheme') !== scheme) {
+                    style.set_string('color-scheme', scheme);
+                    // Say why the click did nothing (the user's wish), once for a run of clicks.
+                    const now = GLib.get_monotonic_time();
+                    if (byUser && now - told > 10 * GLib.USEC_PER_SEC) {
+                        told = now;
+                        Main.notify('Light and dark come with your window colors',
+                            'Mentor keeps them matched. To change them, pick another set in Mentor Settings, Window colors.');
+                    }
+                }
+                return GLib.SOURCE_REMOVE;
+            };
+            let quiet = false;
+            const later = byUser => {
+                quiet ||= !byUser;
+                if (!pending) {
+                    // at once, not after a wait: with 300 ms the other style showed for about a second
+                    // (the shell draws its theme anew each time), 2026-10-19
+                    pending = GLib.idle_add(GLib.PRIORITY_HIGH, () => {
+                        const by = !quiet;
+                        quiet = false;
+                        return sync(by);
+                    });
+                }
+            };
+            const watch = Gio.File.new_for_path(note).monitor_file(Gio.FileMonitorFlags.NONE, null);
+            // a new set picked: Mentor changes the style itself a moment later, nothing to tell
+            const noted = watch.connect('changed', () => later(false));
+            const styled = style.connect('changed::color-scheme', () => later(true));
+            sync(false);  // at the start: put right quietly
+            return () => {
+                if (pending)
+                    GLib.source_remove(pending);
+                watch.disconnect(noted);
+                watch.cancel();
+                style.disconnect(styled);
+                if (toggle)
+                    toggle.visible = true;
+            };
+        });
+
         // The shell's own menus (the quick menu, the calendar and notifications, the keyboard menu) in the
         // tones of the user's window colors too (the user's wish, 2026-10-18), while GNOME's style is the
         // set's own: only backgrounds; GNOME's text colors and its accent stay. A stylesheet made from the

@@ -256,5 +256,11 @@
     "name": "18.10.26.08",
     "summary": "Pick calm window colors in Mentor Settings: 20 dark and light sets. The taskbar and the system menus follow them too.",
     "published": "2026-10-18 22:52"
+  },
+  {
+    "version": 202610182240,
+    "name": "18.10.26.09",
+    "summary": "Window buttons are now small yellow, green and red squares, and light or dark always matches your window colors.",
+    "published": "2026-10-19 01:44"
   }
 ]

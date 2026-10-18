@@ -68,7 +68,7 @@ The user can tell the **Mentor repair center** (that is what the user hears it c
 | `mentor update` | a version, and no "Being tried" long after a restart |
 | `mentor doctor` | `ok` for "the daily look for Mentor updates" (the timer is on), "Mentor looked for an update in the last two days" (every look writes a line to the log, `looked: …` or `offered`), or, when it has not looked lately, "the Update button may install updates" (it asks for a look the way the button does, never with a password box; refused means the polkit rule is not working), and "no Dash to Panel has been updated! notice". A WARN there becomes a yellow card after login (mentor-watch). |
 | `systemctl is-enabled mentor-update-check.timer` | `enabled` |
-| `systemctl list-timers mentor-update-check.timer` | a next run within a day |
+| `systemctl list-timers mentor-update-check.timer` | a next run within a day; `-` right after the timer was switched back on means it waits for a first run: `systemctl start mentor-update-check.service` (root), and a `looked:` line appears in `/var/log/mentor/updates.log` |
 | `tail /var/log/mentor/updates.log` | `no update information: …` when offline or nothing is published (normal); never `not signed by Mentor's maker` (that one means someone else tried: tell the user, change nothing) |
 | `change_list` | an installed update is listed as "Mentor update VERSION: …" |
 

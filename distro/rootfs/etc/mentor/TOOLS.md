@@ -165,6 +165,45 @@ Every engine has them, whatever its own tools (Gemini had none: asked how to mak
 
 **A new extension.** GNOME Shell reads new extensions only at login, so for one just written `gnome-extensions enable` answers that it does not exist. `extension_set` then puts it on `org.gnome.shell enabled-extensions` itself (when its folder with `metadata.json` exists) and says that it comes up after a log out (session_logout); after the next login its state is ACTIVE. An extension with no folder at all still gives the error.
 
+## The `mentor` command
+
+`/usr/local/bin/mentor` is the same tools, and the checks, from a terminal or a script. `mentor --help` and `mentor COMMAND --help` say the options; this is every command and the file that tells more. Many are one tool called with fixed arguments: when the command fails, call that tool (`mentor call TOOL '{}'`) and read what it says.
+
+| Command | What it does | More in |
+|---|---|---|
+| `mentor tools` | lists the tools and what they do | this file |
+| `mentor call TOOL '{"key": "value"}'` | calls one tool, as an engine would | this file |
+| `mentor connect claude`, `codex`, `gemini` | registers the tools (mentor-mcp) with that engine's program (`claude mcp add`, `codex mcp add`, `agy mcp add`) | ENGINES.md |
+| `mentor keyring` | makes the "login" keyring open by itself again; the user types the password once, what is kept in it stays | REBUILD.md |
+| `mentor window fullscreen`, `windowed`, `toggle` | the window on Windows full screen or not (tool `window_mode`; "Full Screen" in the system menu) | DESKTOP.md |
+| `mentor game-mouse [auto\|on\|off]`, `--add-game ID`, `--remove-game ID` | mouse-look in 3D games; nothing: how it stands (tool `game_mouse`) | DESKTOP.md "The game mouse" |
+| `mentor layout taskbar`, `normal` | a taskbar always there, or GNOME as it comes (tool `desktop_layout`) | DESKTOP.md |
+| `mentor desktop` | goes to the assistant on the desktop, or back to the windows (the extension's `Toggle`, as Super+A) | DESKTOP.md |
+| `mentor ask` | the assistant's text box over the program in front (`mentor-chat --ask`, as Alt+Space) | ASKBAR.md |
+| `mentor screenshot [--area\|--window] [--no-open]` | a picture of the screen, opened in Gradia | DESKTOP.md "Outside the extension" |
+| `mentor capture-text` | Shift+Super+T: the text in an area the user drags out, put on the clipboard | DESKTOP.md "Copy text from the screen" |
+| `mentor scale [--keep]` | the desktop scaled as the Windows screen is | DESKTOP.md |
+| `mentor colors [NAME]` | the window colors: lists the sets, or uses one | DESKTOP.md "Window colors" |
+| `mentor reminders [--cancel ID\|all]` | the reminders that are set | this file, "Reminders" |
+| `mentor webapp [list\|add NAME URL\|remove NAME]` | websites as apps of their own | this file, "Web apps" |
+| `mentor tool-report [--days N] [--json]` | where the tools fall short | this file, "Finding the next tools" |
+| `mentor changes` | the changes applied through the sandbox (tool `change_list`) | this file |
+| `mentor undo ID` | undoes one of them (tool `change_undo`) | this file |
+| `mentor doctor` | which parts of the desktop work right now (tool `desktop_check`) | DESKTOP.md |
+| `mentor verify [--accept]` | which of Mentor's files are missing or changed since the build | REBUILD.md |
+| `sudo mentor restore PATH`, `--all` | puts Mentor's files back as built (root) | REBUILD.md |
+| `mentor boot` | how start-up stands: what works, what is on trial, what was restored (tool `boot_status`) | BOOT.md |
+| `mentor repair` | the agent on a text console, when the desktop does not come up | REPAIR.md |
+| `mentor update` | which version of Mentor this is, and whether an update is waiting | UPDATES.md |
+| `mentor notice warning\|problem\|idea TITLE [TEXT]` | a card in the assistant's chat | ASSISTANT.md "Notices" |
+| `mentor settings [PAGE]` | opens Mentor Settings, on a page if named (safety, suggestions, warnings, changes, about, updates) | SETTINGS.md |
+| `mentor recipes [FILE]` | the recipes kept here; with a file, what it would do, without running it | RECIPES.md |
+| `mentor security` | how safe the system is right now (tool `security_check`) | SECURITY.md |
+| `mentor journal [-n N] [WORDS]` | what was changed, when, after which request (tool `journal_read`) | JOURNAL.md |
+| `mentor log [-n N]` | the record of what was done as root (`/var/log/mentor/audit.log`) | this file |
+
+To tell it works: `mentor --help` lists all of these, and `mentor boot` answers without a Python error.
+
 ## What you may not change
 
 `ALWAYS_PROTECTED` in `mentor_core.py` and `[files] protected` in `policy.toml`. Writing to them is refused by `file_write`, skipped by `sandbox_apply` ("not applied, protected: …"), and a root command that names them is refused by the patterns in `[root_shell] deny_patterns`. This is on purpose: it is the layer that keeps the agent in check, the files that decide who is root, and what a failed start falls back on. Do not look for a way around it.
