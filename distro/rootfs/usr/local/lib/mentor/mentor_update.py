@@ -60,6 +60,28 @@ def log(text):
     print(text, flush=True)
 
 
+def apply_stage(version):
+    """"installing" while the update `version` is being installed, "failed" when the last try of an install
+    ended in an error, else None. From the log, which `apply` writes to as it starts: so that the update card
+    in the chat and Mentor Settings both show "Updating…" whichever of their Update buttons was pressed."""
+    try:
+        with open(LOG, encoding="utf-8", errors="replace") as f:
+            lines = f.read()[-8000:].splitlines()
+        with open("/proc/stat") as f:  # an install ends in a restart: what was written before this start is over
+            booted = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(
+                int(next(line for line in f if line.startswith("btime")).split()[1])))
+    except (OSError, StopIteration, ValueError):
+        return None
+    for line in reversed(lines):
+        if line[:19] < booted:
+            return None
+        if "apply failed:" in line:
+            return "failed"
+        if f"installing update {version} " in line:
+            return "installing"
+    return None
+
+
 def load():
     try:
         with open(STATE_PATH) as f:

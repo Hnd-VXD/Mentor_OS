@@ -49,6 +49,10 @@ try:  # what was built here, for the offer to write it down (RECIPES.md)
     import mentor_settings
 except Exception:
     mentor_journal = mentor_recipes = mentor_settings = None
+try:  # whether an update is being installed, from whichever Update button (UPDATES.md)
+    import mentor_update
+except Exception:
+    mentor_update = None
 
 APP_ID = "org.mentor.Chat"
 # The owl on the big cards in the middle (welcome, connecting the agent, the keyring): the simpler one,
@@ -1737,12 +1741,47 @@ class Conversation(Gtk.Box):
             install.add_css_class("look")
             install.connect("clicked", lambda *_: self.window.install_update(install, dismiss, body, text))
             buttons.append(install)
+            self.follow_update(card, update, install, dismiss, body, text)
+            # One update card at a time: the newest is the one installed (it holds all of Mentor's files),
+            # so the card of an older one goes when a newer one comes.
+            older = getattr(self.window, "update_card", None)
+            if older and older[1] is not card and older[1].get_parent() is older[0].messages:
+                older[0].messages.remove(older[1])
+            self.window.update_card = (self, card)
         card.append(buttons)
         self.window.note(self, f"{title}. {text}".strip(), False)
         if self.first_run and self.welcome:  # the card of a first start stays where it is
             self.messages.append(card)
             return card
         return self.add(card)
+
+    def follow_update(self, card, version, install, dismiss, body, text):
+        """The card shows what Mentor Settings started too: its Update button there and here are one.
+        Followed through the updates log, which the install writes to as it starts."""
+        if not mentor_update:
+            return
+        installing = "Updating…"
+
+        def look(*_):
+            stage = mentor_update.apply_stage(version)
+            if stage == "installing" and install.get_label() != installing:
+                install.set_sensitive(False)
+                install.set_label(installing)
+                dismiss.set_visible(False)
+                body.set_label(f"{text}\n\nRestarting in a moment. If the new version does not start properly, "
+                               "Mentor goes back by itself.")
+            elif stage == "failed" and install.get_label() == installing:
+                install.set_sensitive(True)
+                install.set_label("Update")
+                dismiss.set_visible(True)
+                body.set_label(f"{text}\n\nThe update could not be installed. Nothing was changed.")
+        try:
+            card.update_log = Gio.File.new_for_path(mentor_update.LOG).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        except GLib.Error:
+            return
+        card.update_log.connect("changed", look)
+        card.connect("destroy", lambda *_: card.update_log.cancel())
+        look()
 
     def offer_recipe(self, later=False):
         """Offer to write down what was built here as a recipe (RECIPES.md), with a green card, but only

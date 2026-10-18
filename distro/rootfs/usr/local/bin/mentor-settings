@@ -359,7 +359,29 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.report_rows = []
         page.add(self.reports)
         self.show_update()
+        # The update card in the chat starts an install too: this page follows it (through the log the
+        # install writes to as it starts), so that only one Update button is ever pressed.
+        try:
+            self.update_log = Gio.File.new_for_path(mentor_update.LOG).monitor_file(Gio.FileMonitorFlags.NONE, None)
+            self.update_log.connect("changed", lambda *_: self.follow_update())
+        except GLib.Error:
+            pass
         return page
+
+    def follow_update(self):
+        if not self.waiting_version:
+            return
+        stage = mentor_update.apply_stage(self.waiting_version)
+        if stage == "installing" and self.update_button.get_label() != "Updating…":
+            self.update_button.set_sensitive(False)
+            self.update_button.set_label("Updating…")
+            self.whats_new.set_visible(False)
+            self.update_row.set_subtitle("Restarting in a moment. If the new version does not start properly, "
+                                         "Mentor goes back by itself.")
+        elif stage == "failed" and self.update_button.get_label() == "Updating…":
+            self.update_button.set_sensitive(True)
+            self.update_button.set_label("Update")
+            self.show_update()
 
     def update_state(self):
         try:
@@ -387,6 +409,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             waiting = None
         self.update_button.set_visible(False)
         self.whats_new.set_visible(False)
+        self.waiting_version = None
         installing = state.get("installing")
         if installing and self.kept(installing):
             installing = None  # the start with it worked; the card saying so comes within a minute
@@ -398,6 +421,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.update_row.set_title(f"An update is waiting: {name}")
             self.update_row.set_subtitle(str(waiting.get("summary", "")) + "\nInstalling it restarts Mentor (about a minute).")
             self.update_button.set_visible(True)
+            self.waiting_version = int(waiting["version"])
             if waiting.get("notes"):
                 self.whats_new_request = (
                     f"An update of Mentor is waiting ({name}). Its maker's notes are in "
@@ -410,6 +434,8 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.update_row.set_subtitle(made)
         self.show_history(state)
         self.show_reports(state)
+        if self.waiting_version and hasattr(self, "update_log"):
+            self.follow_update()  # pressed in the chat before this page was open
 
     def show_reports(self, state):
         for row in self.report_rows:

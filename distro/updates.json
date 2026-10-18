@@ -202,5 +202,11 @@
     "name": "17.10.26.21",
     "summary": "Quieter in the background: a big text file in Downloads no longer keeps Mentor busy, a program that crashes again and again gives one card, and a broken download of an update is simply tried again later.",
     "published": "2026-10-18 02:42"
+  },
+  {
+    "version": 202610180728,
+    "name": "18.10.26.00",
+    "summary": "One Update button: when you press Update in Mentor Settings, the update card in the chat shows it too, and the other way round; and only the newest update has a card.",
+    "published": "2026-10-18 10:29"
   }
 ]

@@ -30,6 +30,7 @@ The program is `/usr/local/lib/mentor/mentor_update.py`, run as root as `/usr/lo
 - **Declined packages**: a package on Mentor's list that is not installed was removed by the user. It is kept in `state.json` (`declined_packages`) and no update installs it again.
 - **What an update cannot change**: the kernel, the boot splash and initramfs, users and passwords, anything customize.sh does besides `mentor-enable`. Those come with a new image (the launcher's Reinstall).
 - **Permission**: `/etc/polkit-1/rules.d/50-mentor-update.rules` lets the user's active session start `mentor-update-apply.service` and `mentor-update-check.service` without the password, and nothing else. The Update button is the consent.
+- **Two Update buttons, one install**: the card in the chat and Mentor Settings, Updates both have one. Each watches `/var/log/mentor/updates.log` (a Gio file monitor) and asks `mentor_update.apply_stage(VERSION)`: "installing update VERSION" written since this start means the install is running, wherever it was pressed, so both show "Updating…" (greyed out, Not now gone); "apply failed:" after it brings both back. Lines from before the last start do not count (an install always ends in a restart). The chat shows one update card: a newer one takes the place of the card of an older one, since the newest package holds all of Mentor's files (going from 16.10.26.10 straight to 18.10.26.00 was tested: 117 files and the packages added since).
 
 ## The maker's notes, and steps after an update
 
