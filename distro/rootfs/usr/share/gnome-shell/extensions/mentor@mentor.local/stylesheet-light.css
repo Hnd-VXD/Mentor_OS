@@ -1,0 +1,8 @@
+/* Loaded by GNOME Shell only while its style is light (a light set of Window colors, or GNOME light):
+   extensionSystem.js tries stylesheet-light.css before stylesheet.css. Dash to Panel paints its "Show
+   Applications" icon (the nine dots) white in its own stylesheet, for a dark taskbar; on the light one it
+   could not be seen (2026-10-18). #uiGroup makes this rule more specific than Dash to Panel's.
+   DESKTOP.md, "Window colors". */
+#uiGroup .dashtopanelMainPanel .dash-item-container .show-apps .overview-icon {
+    color: #2e3436;
+}

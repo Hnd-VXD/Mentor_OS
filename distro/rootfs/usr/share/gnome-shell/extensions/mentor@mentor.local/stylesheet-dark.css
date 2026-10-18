@@ -1,0 +1,4 @@
+/* Nothing to change in the dark style. This file is here so that the shell switches to
+   stylesheet-light.css by itself when the style turns light while it runs: it reloads an extension's
+   stylesheet on a change of style only when the one loaded is a -dark or -light one
+   (extensionSystem.js, _reloadExtensionStylesheets). DESKTOP.md, "Window colors". */

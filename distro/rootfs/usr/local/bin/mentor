@@ -421,6 +421,21 @@ def cmd_capture_text(args):
         sys.exit(found.get("error") or "not copied")
 
 
+def cmd_colors(args):
+    """The window colors of Mentor Settings (mentor_colors.py; DESKTOP.md, "Window colors")."""
+    import mentor_colors
+    name = " ".join(args.name)
+    if not name:
+        now = mentor_colors.current() or "GNOME's own"
+        for palette in mentor_colors.PALETTES:
+            print(f"{palette[0]:14} {'light' if palette[1] else 'dark'}" + ("   (in use)" if palette[0] == now else ""))
+        return
+    palette = mentor_colors.apply(name)
+    if palette is None:
+        sys.exit(f"No window colors called {name!r}. They are: " + ", ".join(p[0] for p in mentor_colors.PALETTES))
+    print(f"{palette[0]} is in use. Programs that are open show it when they are opened again.")
+
+
 def cmd_reminders(args):
     """The reminders that are set (TOOLS.md, Reminders); --fire is the reminder's own service."""
     if args.fire:
@@ -607,6 +622,9 @@ p = sub.add_parser("reminders", help="the reminders that are set; --cancel ID (o
 p.add_argument("--cancel", metavar="ID")
 p.add_argument("--fire", help=argparse.SUPPRESS)  # the reminder's own service, when it is due
 p.set_defaults(func=cmd_reminders)
+p = sub.add_parser("colors", help="window colors: list them, or use one by its name (Mentor Settings has them too)")
+p.add_argument("name", nargs="*")
+p.set_defaults(func=cmd_colors)
 p = sub.add_parser("webapp", help="websites as apps of their own: list, add NAME URL, remove NAME")
 p.add_argument("action", nargs="?", default="list", choices=("list", "add", "remove"))
 p.add_argument("name", nargs="?")

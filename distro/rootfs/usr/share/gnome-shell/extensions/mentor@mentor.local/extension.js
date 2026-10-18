@@ -1120,6 +1120,145 @@ export default class MentorExtension extends Extension {
                 items.forEach(item => item.destroy());
             };
         });
+
+        // The taskbar in the tone of the user's window colors (mentor_colors.py writes it into
+        // ~/.config/mentor/taskbar-color: "#f3ebcf light"), only while GNOME's style is the set's own:
+        // switched to dark by hand on a light set, the taskbar's text turned light on the light tone and
+        // could not be read (2026-10-18). Then the taskbar has GNOME's own colors until the style matches
+        // again. Dash to Panel's own settings, trans-use-custom-bg and trans-bg-color. DESKTOP.md, "Window colors".
+        this._part('taskbar color', () => {
+            const note = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'taskbar-color']);
+            const style = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            const source = Gio.SettingsSchemaSource.get_default();
+            if (!source.lookup('org.gnome.shell.extensions.dash-to-panel', true))
+                return () => {};  // no Dash to Panel: nothing to color
+            const taskbar = new Gio.Settings({schema_id: 'org.gnome.shell.extensions.dash-to-panel'});
+            const sync = () => {
+                let wanted = null;
+                try {
+                    const [color, kind] = new TextDecoder().decode(GLib.file_get_contents(note)[1]).trim().split(/\s+/);
+                    wanted = {color, light: kind === 'light'};
+                } catch (e) {
+                    return;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
+                }
+                const light = style.get_string('color-scheme') === 'prefer-light';
+                const use = wanted.light === light;
+                if (use && taskbar.get_string('trans-bg-color') !== wanted.color)
+                    taskbar.set_string('trans-bg-color', wanted.color);
+                if (taskbar.get_boolean('trans-use-custom-bg') !== use)
+                    taskbar.set_boolean('trans-use-custom-bg', use);
+            };
+            const changed = style.connect('changed::color-scheme', sync);
+            sync();
+            return () => style.disconnect(changed);
+        });
+
+        // The shell's own menus (the quick menu, the calendar and notifications, the keyboard menu) in the
+        // tones of the user's window colors too (the user's wish, 2026-10-18), while GNOME's style is the
+        // set's own: only backgrounds; GNOME's text colors and its accent stay. A stylesheet made from the
+        // tones in ~/.config/mentor/taskbar-color, loaded on top of the shell's theme, again when the shell
+        // makes its theme anew (a change of style). DESKTOP.md, "Window colors".
+        this._part('menu colors', () => {
+            const note = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'taskbar-color']);
+            const style = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            const context = St.ThemeContext.get_for_stage(global.stage);
+            let loaded = null, sheet = null, count = 0, busy = false, pending = 0;
+            const old = [];
+            // Each set of tones in a file of its own, loaded once, taken off the theme it was loaded on and
+            // off the current one too: on a change of style the shell makes a new theme and copies the extra
+            // stylesheets onto it (main.js, loadTheme). A file is deleted only two changes later, as the shell
+            // may still copy it: a missing one stops the shell's change of style. Found in the test, 2026-10-18.
+            const unload = () => {
+                if (sheet) {
+                    for (const theme of new Set([loaded, context.get_theme()])) {
+                        try {
+                            theme?.unload_stylesheet(sheet);
+                        } catch (e) {}
+                    }
+                    old.push(sheet);
+                    while (old.length > 2) {
+                        try {
+                            old.shift().delete(null);
+                        } catch (e) {}
+                    }
+                }
+                loaded = sheet = null;
+            };
+            const sync = () => {
+                busy = true;  // loading and unloading change the theme, and that calls us again
+                try {
+                    paint();
+                } finally {
+                    busy = false;
+                }
+            };
+            // after the change, once: never in the middle of the shell's own change of theme
+            const later = () => {
+                if (!busy && !pending) {
+                    pending = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                        pending = 0;
+                        sync();
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            };
+            const paint = () => {
+                unload();
+                let tones;
+                try {
+                    tones = new TextDecoder().decode(GLib.file_get_contents(note)[1]).trim().split(/\s+/);
+                } catch (e) {
+                    return;  // GNOME's own colors
+                }
+                const [header, kind, window] = tones;
+                const light = kind === 'light';
+                if (!window || light !== (style.get_string('color-scheme') === 'prefer-light'))
+                    return;  // the style was switched by hand: GNOME's own menus fit it
+                const shade = (color, amount) => light ? `st-darken(${color}, ${amount}%)` : `st-lighten(${color}, ${amount}%)`;
+                const ink = light ? '#222226' : '#ffffff';
+                const tile = light ? window : `st-lighten(${header}, 6%)`;
+                const css = `
+.popup-menu-content, .candidate-popup-content { background-color: ${header}; border-color: ${shade(header, 6)}; }
+.calendar .calendar-day-heading, .calendar .calendar-day, .calendar .calendar-month-header .calendar-month-label { background-color: ${header}; }
+.calendar .calendar-day:hover, .calendar .calendar-day-heading:hover { background-color: ${shade(header, 6)}; }
+.quick-toggle-menu, .message, .events-button, .world-clocks-button, .weather-button { background-color: ${tile}; }
+.events-button:hover, .world-clocks-button:hover, .weather-button:hover, .message:hover { background-color: ${shade(tile, 4)}; }
+.quick-toggle, .quick-settings .icon-button, .quick-toggle-has-menu .quick-toggle-menu-button { background-color: st-mix(${ink}, ${header}, ${light ? 12 : 9}%); }
+.quick-toggle:hover, .quick-settings .icon-button:hover { background-color: ${shade(`st-mix(${ink}, ${header}, ${light ? 12 : 9}%)`, 6)}; }
+.quick-toggle:checked, .calendar .calendar-day.calendar-today { color: -st-accent-fg-color; background-color: -st-accent-color; }
+.quick-toggle:checked:hover, .calendar .calendar-day.calendar-today:hover { background-color: ${light ? 'st-darken' : 'st-lighten'}(-st-accent-color, 4%); }
+.quick-toggle-has-menu .quick-toggle-menu-button:checked { color: -st-accent-fg-color; background-color: st-mix(-st-accent-color, ${light ? '#ffffff, 85%' : '#222226, 92%'}); }
+.quick-toggle-has-menu .quick-toggle-menu-button:checked:hover { background-color: ${light ? 'st-lighten' : 'st-darken'}(st-mix(-st-accent-color, ${light ? '#ffffff, 85%' : '#222226, 92%'}), 4%); }
+`;
+                try {
+                    sheet = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_user_runtime_dir(),
+                        `mentor-menu-colors-${++count}.css`]));
+                    sheet.replace_contents(new TextEncoder().encode(css), null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                    loaded = context.get_theme();
+                    loaded.load_stylesheet(sheet);
+                } catch (e) {
+                    console.warn(`mentor: the menu colors could not be loaded: ${e.message}`);
+                    loaded = null;
+                }
+            };
+            const watch = Gio.File.new_for_path(note).monitor_file(Gio.FileMonitorFlags.NONE, null);
+            const noted = watch.connect('changed', later);
+            const styled = style.connect('changed::color-scheme', later);
+            const themed = context.connect('changed', () => {
+                if (loaded !== context.get_theme())
+                    later();  // a new theme (the style changed): load ours on it again
+            });
+            sync();
+            return () => {
+                if (pending)
+                    GLib.source_remove(pending);
+                watch.disconnect(noted);
+                watch.cancel();
+                style.disconnect(styled);
+                context.disconnect(themed);
+                unload();
+            };
+        });
     }
 
     disable() {

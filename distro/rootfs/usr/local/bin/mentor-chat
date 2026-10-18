@@ -49,6 +49,10 @@ try:  # what was built here, for the offer to write it down (RECIPES.md)
     import mentor_settings
 except Exception:
     mentor_journal = mentor_recipes = mentor_settings = None
+try:  # the user's window colors, for this program's own dialogs while it runs (DESKTOP.md, "Window colors")
+    import mentor_colors
+except Exception:
+    mentor_colors = None
 try:  # whether an update is being installed, from whichever Update button (UPDATES.md)
     import mentor_update
 except Exception:
@@ -306,6 +310,7 @@ def preview_picture(path, widget):
     picture.add_controller(menu_click)
     view = Adw.ToolbarView(content=picture)
     view.add_top_bar(dialog_header(dialog))
+    keep_still(view)
     dialog.set_child(view)
     # Over the small ask bar (Super+Z) the preview is a window of its own: the bar is in front again after.
     root = widget.get_root()
@@ -396,7 +401,11 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
 .notice.warning button.look { background: rgba(255, 221, 87, 0.26); }
 .notice.problem button.look { background: rgba(255, 99, 88, 0.34); }
 .advice-open { background: none; border: none; box-shadow: none; padding: 0; font-weight: inherit; }
-dialog.advice-details sheet { background-color: rgba(24, 26, 31, 0.9); }
+/* Mentor's dialogs (a picture, History, a suggestion) in the user's window colors (Mentor Settings,
+   Window colors): libadwaita's own named colors, which each set defines. Before, they were always dark,
+   and a light set gave them dark text on that dark: the title and the close button could not be seen
+   (2026-10-18). Solid: a see-through one showed the chat behind its title. */
+dialog.advice-details sheet { background-color: var(--window-bg-color); color: var(--window-fg-color); }
 dialog.advice-details headerbar, dialog.advice-details toolbarview { background: none; }
 .tick-button { min-height: 0; min-width: 0; padding: 4px 8px 4px 0; background: none; border: none;
                box-shadow: none; outline: none; }
@@ -2636,6 +2645,24 @@ def words_with_apps(text, apps):
     return box
 
 
+def keep_still(view):
+    """A dialog drawn inside the desktop window (Adw.Dialog) moves that whole window when a drag starts on
+    an empty part of it, a title included: libadwaita gives its sheet the window's drag. The desktop then
+    jumped back and forth under the mouse (the user, dragging a picture's title, 2026-10-18). A drag that
+    starts on something that is not for the hands (an empty box, a title that cannot be selected) is
+    taken here and does nothing; buttons, the picture, text that can be selected and scrolling keep theirs."""
+    drag = Gtk.GestureDrag()
+
+    def begin(gesture, x, y):
+        target = view.pick(x, y, Gtk.PickFlags.DEFAULT)
+        empty = target is None or target is view or type(target) in (Gtk.Box, Gtk.CenterBox, Adw.ToolbarView) or (
+            isinstance(target, Gtk.Label) and not target.get_selectable())
+        if empty:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+    drag.connect("drag-begin", begin)
+    view.add_controller(drag)
+
+
 def dialog_header(dialog):
     """A dialog's title and close button. Not an Adw.HeaderBar: a header bar is a title bar, and
     inside the desktop window it acts on that window, so dragging History's moved the whole desktop
@@ -3227,6 +3254,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         search.connect("search-changed", again)
         view = Adw.ToolbarView(content=scroller)
         view.add_top_bar(dialog_header(dialog))
+        keep_still(view)
         view.add_top_bar(search)
         dialog.set_child(view)
         dialog.set_focus(search)
@@ -3454,6 +3482,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         buttons.append(send)
         view = Adw.ToolbarView(content=scroller)
         view.add_top_bar(dialog_header(dialog))
+        keep_still(view)
         view.add_bottom_bar(buttons)
         dialog.set_child(view)
         dialog.set_focus(send)  # not the text: a label that takes the focus selects all of itself
@@ -4462,6 +4491,29 @@ class AssistantApp(Adw.Application):
         provider.load_from_string(CSS)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.follow_colors()
+
+    def follow_colors(self):
+        """A new set of window colors reaches this program at once, not only at its next start: GTK reads the
+        user's stylesheet once, and the dialogs would keep the old set (DESKTOP.md, "Window colors")."""
+        if not mentor_colors:
+            return
+        self.colors = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.colors,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+
+        def load(*_):
+            try:
+                self.colors.load_from_string(mentor_colors.live_css(mentor_colors.current()))
+            except Exception:
+                pass
+        load()
+        sheet = Gio.File.new_for_path(os.path.join(GLib.get_user_config_dir(), "gtk-4.0", "gtk.css"))
+        self.colors_watch = sheet.monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.colors_watch.connect("changed", lambda *_: GLib.timeout_add(300, lambda: load() or False))
+        # The GNOME sets only remove Mentor's block and change the style: follow that too.
+        self.colors_style = Gio.Settings.new("org.gnome.desktop.interface")
+        self.colors_style.connect("changed::color-scheme", lambda *_: GLib.timeout_add(300, lambda: load() or False))
 
     def shell(self, method):
         """Ask the shell (the mentor extension) for Show, which clears the windows away so

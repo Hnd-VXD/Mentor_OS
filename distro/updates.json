@@ -250,5 +250,11 @@
     "name": "18.10.26.07",
     "summary": "The assistant knows the newest Mentor program on Windows: the mouse caught only in full screen, and what changed for slow starts.",
     "published": "2026-10-18 20:56"
+  },
+  {
+    "version": 202610181951,
+    "name": "18.10.26.08",
+    "summary": "Pick calm window colors in Mentor Settings: 20 dark and light sets. The taskbar and the system menus follow them too.",
+    "published": "2026-10-18 22:52"
   }
 ]

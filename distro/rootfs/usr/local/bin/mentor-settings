@@ -21,12 +21,13 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import mentor_journal
 import mentor_security
 import mentor_settings
 import mentor_tools
+import mentor_colors
 import mentor_update
 
 CHAT = "/usr/local/bin/mentor-chat"
@@ -154,6 +155,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         did.add(changes)
         page.add(did)
 
+        page.add(self.colors_group())
+
 
         more = Adw.PreferencesGroup()
         fold = Adw.ExpanderRow(title="More choices", subtitle="Pick which warnings you want, and a few more")
@@ -257,6 +260,86 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.busy = False
 
     # --- suggestions (their own tab; they were a window of the desktop's menu) ------------------------
+
+    def colors_group(self):
+        """Window colors: 20 matched sets of tones (mentor_colors.py), each shown as a little window,
+        sidebar and content, with its name. A click uses it (DESKTOP.md, "Window colors")."""
+        group = Adw.PreferencesGroup(title="Window colors",
+                                     description="The colors of the program windows. Programs that are open take them "
+                                                 "when they are opened again")
+        css = []
+        # Two groups, dark and light, each wrapping by itself: tidy at any width of the window.
+        flows = {}
+        sets = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12, margin_bottom=12,
+                       margin_start=12, margin_end=12)
+        for light, title in ((False, "Dark"), (True, "Light")):
+            sets.append(Gtk.Label(label=title, xalign=0, css_classes=["heading"], margin_start=6,
+                                  margin_top=0 if not light else 8))
+            flows[light] = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=10,
+                                       min_children_per_line=3, column_spacing=4, row_spacing=10, homogeneous=True)
+            sets.append(flows[light])
+        current = mentor_colors.current() or ("GNOME light" if self.light_now() else "GNOME dark")
+        first = None
+        for i, palette in enumerate(mentor_colors.PALETTES):
+            name, light, window, view, sidebar, header, text = palette
+            if window is None:  # GNOME's own tones
+                window, sidebar, text = ("#fafafb", "#ebebed", "#2e3436") if light else ("#222226", "#2e2e32", "#ffffff")
+            css.append(f".swatch-{i} .side {{ background: {sidebar}; }} .swatch-{i} .main {{ background: {window}; }}"
+                       f" .swatch-{i} .line {{ background: {text}; opacity: 0.55; }}")
+            picture = Gtk.Box(css_classes=["swatch-picture", f"swatch-{i}"], overflow=Gtk.Overflow.HIDDEN,
+                              width_request=72, height_request=46)
+            side = Gtk.Box(css_classes=["side"], width_request=22, orientation=Gtk.Orientation.VERTICAL,
+                           spacing=5, margin_start=0)
+            main = Gtk.Box(css_classes=["main"], hexpand=True, orientation=Gtk.Orientation.VERTICAL, spacing=5)
+            for box, widths in ((side, (12, 8, 10)), (main, (32, 22))):
+                for k, w in enumerate(widths):
+                    box.append(Gtk.Box(css_classes=["line"], width_request=w, height_request=3,
+                                       halign=Gtk.Align.START, margin_start=6, margin_top=8 if k == 0 else 0))
+            picture.append(side)
+            picture.append(main)
+            label = Gtk.Label(label=name, css_classes=["caption"], wrap=True, wrap_mode=Pango.WrapMode.WORD,
+                              max_width_chars=9, justify=Gtk.Justification.CENTER)  # "Warm / charcoal"
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            content.append(picture)
+            content.append(label)
+            choice = Gtk.ToggleButton(child=content, css_classes=["flat", "swatch"], tooltip_text=name,
+                                      active=name == current)
+            if first is None:
+                first = choice
+            else:
+                choice.set_group(first)
+            choice.connect("toggled", lambda b, name=name: b.get_active() and self.use_colors(name))
+            flows[light].append(choice)
+        provider = Gtk.CssProvider()
+        provider.load_from_string("\n".join(css) + "\n.swatch-picture { border-radius: 8px; "
+                                  "border: 1px solid alpha(currentColor, 0.15); }\n"
+                                  ".swatch { padding: 6px; border-radius: 12px; }\n"
+                                  ".swatch:checked { background: alpha(@accent_bg_color, 0.25); "
+                                  "box-shadow: inset 0 0 0 2px @accent_bg_color; }\n")
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        group.add(Gtk.ListBoxRow(activatable=False, child=sets))
+        self.colors_note = Gtk.Label(label="", css_classes=["dim-label", "caption"], xalign=0, wrap=True,
+                                     visible=False, margin_top=6)
+        group.add(self.colors_note)
+        return group
+
+    @staticmethod
+    def light_now():
+        return Gio.Settings.new("org.gnome.desktop.interface").get_string("color-scheme") == "prefer-light"
+
+    def use_colors(self, name):
+        palette = mentor_colors.apply(name)
+        if palette:
+            # This window takes them at once, over what it read at its start: GNOME's light or dark style
+            # changes at once too, and between the two a window showed white text on a light card (2026-10-18).
+            if getattr(self, "live_colors", None) is None:
+                self.live_colors = Gtk.CssProvider()
+                Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.live_colors,
+                                                          Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
+            self.live_colors.load_from_string(mentor_colors.live_css(name))
+            self.colors_note.set_label(f"{name} is in use. Programs that are open show it when they are opened again.")
+            self.colors_note.set_visible(True)
 
     def suggestions_page(self):
         """The bell's suggestions: on or off, which kinds, and everything the user turned away, each with

@@ -18,6 +18,7 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | (tab Suggestions) "Suggest things for this system", "What to suggest", "Not suggested any more" | the bell on the desktop: all of it on or off, each kind, and what was turned away with Bring back |
 | "Warnings when something is wrong" | the yellow and red cards in the chat, all of them |
 | **What Mentor did** "Show" | the journal (JOURNAL.md), to read and search |
+| **Window colors** (20 little windows) | the colors of the program windows: `mentor_colors.apply`, the user's GTK stylesheets and GNOME's light or dark style (DESKTOP.md, "Window colors"); `mentor colors` does the same from a command |
 | **More choices** (folded away) | each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "Show the exact command when my password is asked" |
 
 The window has two tabs: **Settings** (the table above) and **Updates** (`mentor settings updates` opens it): which Mentor this is ("Mentor 15.10.26.00"), an update that is waiting with **What's new?** and **Update**, "Look for an update now", and **Every update** this Mentor had, by year and then month (rows that open), newest first, each with **Ask Mentor**, and **Problems you reported** with **Report a problem** and each report's state, "Sent, not fixed yet" or "Fixed in Mentor NAME" (UPDATES.md).

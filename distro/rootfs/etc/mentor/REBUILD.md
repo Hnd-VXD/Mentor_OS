@@ -107,6 +107,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/share/applications/org.mentor.Recipes.desktop` | puts the Recipes app in the application grid | yes | at once | RECIPES.md |
 | `/usr/share/icons/hicolor/scalable/apps/org.mentor.Recipes.svg` | the Recipes app's icon (a recipe card with `</>` and a bookmark); `gtk-update-icon-cache -f /usr/share/icons/hicolor` after changing it | yes | at once | RECIPES.md |
 | `/usr/share/applications/org.mentor.Settings.desktop` | puts it in the application grid | yes | at once | SETTINGS.md |
+| `/usr/local/lib/mentor/mentor_colors.py` | the window colors of Mentor Settings and `mentor colors`: 20 sets of tones written into the user's `~/.config/gtk-4.0/gtk.css` and `gtk-3.0/gtk.css` | user | when a program is opened again | DESKTOP.md "Window colors" |
 | `/usr/local/lib/mentor/mentor_settings.py` | reads and writes the file of those choices (`~/.config/mentor/settings.json`) | user | next call | SETTINGS.md |
 | `/usr/share/applications/org.mentor.Chat.desktop` | gives the assistant its name and icon | yes | login | ASSISTANT.md |
 | `/usr/share/icons/hicolor/256x256/apps/org.mentor.Chat.png` | the icon; run `gtk-update-icon-cache -q -f /usr/share/icons/hicolor` after | yes | login | ASSISTANT.md |
