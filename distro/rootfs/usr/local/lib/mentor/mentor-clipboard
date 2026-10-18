@@ -289,5 +289,9 @@ class Bridge:
         subprocess.Popen(["notify-send", "--app-name=Mentor", "--icon=org.mentor.Chat", title, text])
 
 
+if not os.path.exists(PORT):
+    # No launcher on a host (Mentor started on a PC of its own, or in another VM): there is no other
+    # clipboard to share with. Nothing to do, and nothing wrong (etc/mentor/DESKTOP.md, "The shared clipboard").
+    raise SystemExit(0)
 Bridge()
 Gtk.main()

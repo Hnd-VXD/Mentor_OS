@@ -164,7 +164,7 @@ The packages the desktop needs: `gnome-shell`, `gdm`, `gnome-shell-extension-das
 
 `/usr/local/lib/mentor/mentor-clipboard` talks to the launcher on Windows over the virtio port `org.mentor.clipboard` (`/dev/virtio-ports/org.mentor.clipboard`), one JSON object per line: `{"text": "..."}` for text; for copied files `{"files": id, "count": n, "bytes": total}`, then `{"dir": id, "name": path}` and `{"file": id, "name": path, "size": n}` with `{"chunk": id, "data": base64}` as many as needed, then `{"files-end": id}` (or `{"files-cancel": id}`; `{"files-refused": why}` when a copy is too large). It runs on X11 through Xwayland on purpose (`GDK_BACKEND=x11` in its autostart file): a Wayland program sees the clipboard only while it has the keyboard, an X11 one always, and GNOME mirrors the clipboard between the two. So it needs `xorg-xwayland` and GTK 3. Files that arrive are put on the clipboard by `mentor-clipboard-files` (GTK 4). The udev rule gives the logged-in user the two ports.
 
-Check: `pgrep -af lib/mentor/mentor-clipboard` (one line); `ls -l /dev/virtio-ports/` (the two ports, when started by the launcher; on a real computer there are none and the clipboard is simply not shared); its errors: `journalctl -b --user -o cat | grep -i -A8 mentor-clipboard`.
+Check: `pgrep -af lib/mentor/mentor-clipboard` (one line); `ls -l /dev/virtio-ports/` (the two ports, when started by the launcher; on a real computer there are none and the clipboard is simply not shared: `mentor-clipboard` then ends at once, quietly, and `mentor doctor` says "no host to share the clipboard with" instead of checking it); its errors: `journalctl -b --user -o cat | grep -i -A8 mentor-clipboard`.
 
 ## Copy text from the screen
 

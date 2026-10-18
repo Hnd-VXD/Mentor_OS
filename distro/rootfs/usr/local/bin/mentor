@@ -286,8 +286,11 @@ def cmd_doctor(args):
             lines.append("-      the taskbar is switched off")
     say(os.path.exists("/run/mentor/desktop-ok"), "this start was reported as working")
     say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip()), "the assistant is running")
-    say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "lib/mentor/mentor-clipboard").strip()),
-        "the clipboard shared with the host")
+    if os.path.exists("/dev/virtio-ports/org.mentor.clipboard"):
+        say(bool(out("pgrep", "-u", str(os.getuid()), "-f", "lib/mentor/mentor-clipboard").strip()),
+            "the clipboard shared with the host")
+    else:  # no launcher on a host: nothing to share with (a PC of its own, another VM)
+        lines.append("-      no host to share the clipboard with")
     watching = out("systemctl", "is-active", "mentor-sentinel").strip() == "active"
     say(watching, "the watch on freezes", "" if watching else "not running (/etc/mentor/FREEZES.md)", minor=True)
     key = out("systemctl", "is-active", "mentor-emergency-key").strip() == "active"
@@ -331,9 +334,11 @@ def cmd_doctor(args):
               if "mentor" in line.lower() and ("error" in line.lower() or "could not" in line)]
     say(not errors, "errors of Mentor's in the shell's log", errors[-1][:200] if errors else "")
     chat = out("journalctl", "-b", "--no-pager", "-o", "cat", f"_UID={os.getuid()}")
-    trace = re.findall(r"Traceback \(most recent call last\):(?:\n.*){1,12}", chat)
-    trace = [t for t in trace if "mentor" in t]
-    say(not trace, "errors of the assistant's", trace[-1].strip().splitlines()[-1][:200] if trace else "")
+    # Each traceback up to its own last line, the error ("FileNotFoundError: …"): the lines before it
+    # are indented. Not a fixed number of lines, which once named a journal line that came after.
+    trace = re.findall(r"Traceback \(most recent call last\):\n((?:[ \t].*\n)*)(\S.*)", chat)
+    trace = [error for where, error in trace if "mentor" in where]
+    say(not trace, "errors of the assistant's", trace[-1][:200] if trace else "")
     print("\n".join(lines))
     print(f"\n{bad} thing(s) need attention. What each is and how to make it again: /etc/mentor/DESKTOP.md"
           if bad else "\nEverything of Mentor's desktop is in place.")
