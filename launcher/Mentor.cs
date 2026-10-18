@@ -611,14 +611,20 @@ static class Program
         return qmp.StopReason == "guest-reset" || bridge.TimedOut;
     }
 
-    // QEMU opens its sockets a moment after the process starts.
+    // QEMU opens its sockets a moment after the process starts; on a busy or just-started Windows that
+    // can take much longer than the usual second. It once took more than the 20 seconds this waited, and
+    // nothing was connected for the whole start (2026-10-18): no clipboard, no time zone, no game mouse
+    // kept off, and no word that the start worked, so after 8 minutes a working Mentor was stopped and
+    // started again. Now it waits up to 5 minutes, and says in launcher.log when it gave up.
     public static TcpClient Connect(int port)
     {
-        for (int attempt = 0; attempt < 100; attempt++)
+        DateTime end = DateTime.UtcNow.AddMinutes(5);
+        while (DateTime.UtcNow < end)
         {
             try { return new TcpClient("127.0.0.1", port); }
             catch (SocketException) { Thread.Sleep(200); }
         }
+        Note("could not connect to QEMU's port " + port + " within 5 minutes");
         return null;
     }
 
@@ -855,7 +861,9 @@ class HostBridge : Form
             Link.Tick();
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
-            if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained &&
+            // Only when the system could have told: with no control channel its word cannot arrive, and a
+            // working Mentor would be stopped for it (2026-10-18).
+            if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained && control != null &&
                 (DateTime.UtcNow - started).TotalSeconds > bootTimeout)
             {
                 TimedOut = true;
@@ -993,7 +1001,7 @@ class HostBridge : Form
     {
         gameMouse = on;
         string error = KeepMouse();
-        var answer = new Dictionary<string, object> { { "game-mouse", gameMouse && error == null }, { "ok", error == null } };
+        var answer = new Dictionary<string, object> { { "game-mouse", GameMouseNow && error == null }, { "ok", error == null } };
         if (error != null) answer["error"] = error;
         Answer(answer);
     }
@@ -1004,8 +1012,14 @@ class HostBridge : Form
     // it go with Ctrl+Alt+G (in full screen it keeps it until the tablet is back). Looked at on
     // every tick, as the system inside can make its mice the one in use when it starts them.
     // Returns null when it is so, otherwise why not.
+    // The game mouse only in full screen (the user's wish, 2026-10-18): in a window the pointer is never
+    // held, a game included, so it always moves freely between Mentor and Windows. Leaving full screen
+    // gives the tablet back at the next tick.
+    bool GameMouseNow { get { return gameMouse && VmWindow.IsFullscreen(qemu); } }
+
     string KeepMouse()
     {
+        bool gameMouse = GameMouseNow;
         if (noGameMouse) return gameMouse ? "this QEMU has no game mouse" : null;
         object result;
         string error = qmp.Execute("query-mice", null, 2000, out result);

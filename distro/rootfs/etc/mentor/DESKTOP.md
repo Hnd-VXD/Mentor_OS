@@ -210,18 +210,18 @@ Tested headless 2026-10-17: the key and a drag over a text editor and a web page
 
 ## The game mouse
 
-**What the user has.** In 3D games (shooters such as QC:DE or GZDoom, anything that turns the view with the mouse) the view turns when they move the mouse. Nothing to switch on: it happens by itself while a game is in front, and the normal pointer is back as soon as they leave the game.
+**What the user has.** In 3D games (shooters such as QC:DE or GZDoom, anything that turns the view with the mouse) the view turns when they move the mouse. Nothing to switch on: it happens by itself while a game is in front **and Mentor is full screen** (Ctrl+Alt+F, or the Full screen switch), and the normal pointer is back as soon as they leave the game or full screen. In a normal window the pointer is never held, a game included (the user's wish, 2026-10-18): it always moves freely between Mentor and Windows, and the view of a game does not turn with it there.
 
 **Why it is needed.** Mentor's window on Windows normally gives the system inside a *tablet*: it says where the pointer is, not how far it moved. That is what makes the pointer glide in and out of Mentor's window with no clicking. A game that holds the pointer (Wayland pointer lock) turns the view by how far the mouse moved, and a tablet never says that: menus work, the view does not move. The *game mouse* is a second pointer (QEMU `virtio-mouse-pci`, "QEMU Virtio Mouse") that only says how far it moved. Only one of the two is in use at a time; the launcher switches.
 
 **How it works.**
 1. The shell extension's part `game mouse` (`class GameMouse` in `extension.js`) watches the window in front. It wants the game mouse when the app in front has `Game` in the `Categories` of its desktop file, or its app id is in `games` in `~/.config/mentor/game-mouse.json`, and the overview is not open. `"mode": "on"` there wants it always, `"off"` never; `"auto"` (or no file) is the above.
 2. When what it wants changes, it runs `mentor game-mouse --send on` (or `off`) `--front APP-ID`. That sends `{"game-mouse": true}` on `org.mentor.control` and waits up to 5 seconds for the answer, `{"game-mouse": true, "ok": true}`. What came back is kept in `/run/user/UID/mentor-game-mouse.json` (`on`, `front`, `time`, and `error` when it did not work).
-3. Mentor.exe (`HostBridge.OnGameMouse`, `KeepMouse`) asks QEMU for its mice (QMP `query-mice`) and makes the one asked for the one in use (`human-monitor-command` `mouse_set N`). It checks again every 2 seconds.
-4. QEMU's window follows by itself. With the game mouse it **holds the Windows pointer after a click in Mentor's window**; in full screen it already holds it. **Ctrl+Alt+G** lets go of it in a normal window. In full screen it keeps the pointer until the game mouse is off, which is as soon as the user leaves the game (Super, Alt+Tab, or closing the game).
+3. Mentor.exe (`HostBridge.OnGameMouse`, `KeepMouse`; a Mentor.exe from 2026-10-18 evening on uses the game mouse only while its window is full screen, `GameMouseNow`) asks QEMU for its mice (QMP `query-mice`) and makes the one asked for the one in use (`human-monitor-command` `mouse_set N`). It checks again every 2 seconds.
+4. QEMU's window follows by itself. In full screen with the game mouse it holds the pointer. (With an older Mentor.exe the game mouse came in a normal window too, holding the pointer after a click; **Ctrl+Alt+G** let go of it.) In full screen it keeps the pointer until the game mouse is off, which is as soon as the user leaves the game (Super, Alt+Tab, or closing the game).
 
 **What to tell the user.** One sentence, in their language. Do not explain tablets or QEMU. For example:
-- When a game's view does not turn: "I switched on the game mouse: click once inside the game, and the view now turns with the mouse."
+- When a game's view does not turn: "Make Mentor full screen (Ctrl+Alt+F) and click once inside the game: the view then turns with the mouse."
 - If they are stuck with the pointer inside Mentor's window: "Press Ctrl+Alt+G to get the pointer back to Windows."
 - If they ask why the pointer is "caught" in a game: "In games Mentor keeps the mouse inside so you can look around; leaving the game, or Ctrl+Alt+G, gives it back."
 
@@ -229,7 +229,7 @@ Tested headless 2026-10-17: the key and a drag over a text editor and a web page
 1. `mentor game-mouse` (tool: `game_mouse` with no arguments). It prints the setting, what is in use now and what is in front.
 2. If it says `The launcher could not do it` and mentions a Mentor.exe from before the game mouse, the user's Mentor.exe is too old. Nothing inside Mentor can fix that. Tell them: "Your Mentor program on Windows needs updating for this: close Mentor, run MentorSetup.exe again and choose the same folder. It only fetches the new program, and nothing inside Mentor is lost." The download page is https://github.com/Hnd-VXD/Mentor_OS/releases/latest.
 3. If the game was not counted as a game (`Now: the normal pointer` while it was in front), find its app id. Ask the user to bring the game to the front, then use the `windows` tool. Then run `game_mouse` with `add_game` set to that id, for example `org.zdoom.GZDoom`. Tell the user to switch to the game again.
-4. If it is in use (`Now: the game mouse`) and the view still does not move, the user may not have clicked into Mentor's window yet. Ask them to click once inside the game.
+4. If it is wanted but Mentor is in a window, that is why: the game mouse is only used in full screen. Ask them to press Ctrl+Alt+F. If it is in use (`Now: the game mouse`) and the view still does not move, ask them to click once inside the game.
 5. Still nothing: set `mode` `on`, so the game mouse is used for everything, and let the user try. Set it back to `auto` afterwards: with `on`, the pointer needs a click to enter Mentor's window and Ctrl+Alt+G to leave it.
 6. Never change the game's own settings, files or launch options for mouse-look.
 

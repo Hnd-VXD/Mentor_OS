@@ -34,5 +34,11 @@
     "sha256": "5c8627deddffcb50e09304bd5c8e25b75619d25b618b78d720837bf03d44d16a",
     "summary": "One Start over… button (it took Reinstall's place) that says everything that is lost and offers a backup first; the screen switches share one row; the owl is larger, above Start.",
     "published": "2026-10-18 14:35"
+  },
+  {
+    "version": 202610181753,
+    "sha256": "7a98c1511d4809b459a0150d5fa1ce890e4f28f9136fd478d3197b023e65001e",
+    "summary": "A Mentor that is slow to start is no longer stopped and started again after 8 minutes; the mouse is only caught in full screen, in a game.",
+    "published": "2026-10-18 20:53"
   }
 ]
