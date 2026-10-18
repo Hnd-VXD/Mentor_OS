@@ -18,7 +18,7 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 | Part (name in `Status`) | What the user has | What of the shell it leans on |
 |---|---|---|
 | `desktop` | The assistant is the desktop: under every window, on every workspace, as large as the work area. A click on it or Super+A clears the windows away; Escape or Super+A brings them back. | `Meta.Window.set_type(DESKTOP)`, `stick()`, `move_resize_frame`; `global.display` signals `window-created`, `workareas-changed`; `Main.layoutManager` `monitors-changed`, `getWorkAreaForMonitor`. The window is known by `wm_class` / `gtk_application_id` `org.mentor.Chat`. |
-| `service` | Nothing to see: the D-Bus object `/org/mentor/Shell` (`org.mentor.Shell`: `Screenshot`, `Show`, `Restore`, `Toggle`, `Status`, `Ask`, `Windows`, `FocusWindow`, `CloseWindow`, `ScreenshotArea`, `ScreenshotWindow`, `SetClipboard`) on the shell's session bus name. screen_capture, Super+A, the assistant, the tools `windows`, `app_open` and `screen_text` (TOOLS.md), and Shift+Super+T use it. | `Shell.Screenshot`, `Gio.DBusExportedObject`. |
+| `service` | Nothing to see: the D-Bus object `/org/mentor/Shell` (`org.mentor.Shell`: `Screenshot`, `Show`, `Restore`, `Toggle`, `Status`, `Ask`, `Windows`, `FocusWindow`, `CloseWindow`, `ScreenshotArea`, `ScreenshotWindow`, `SetClipboard`, `NextInputSource` for Alt+Shift: "Keyboard layouts") on the shell's session bus name. screen_capture, Super+A, the assistant, the tools `windows`, `app_open` and `screen_text` (TOOLS.md), and Shift+Super+T use it. | `Shell.Screenshot`, `Gio.DBusExportedObject`. |
 | `start on the desktop` | A session begins on the desktop, not in the overview. | `Main.layoutManager._startingUp` (private), signal `startup-complete`, `Main.overview.hide()`. |
 | `system menu switches` | "Full Screen" and "Taskbar" in the system menu. Full Screen is lit while the window on Windows is full screen. | `QuickToggle`, `SystemIndicator`, `Main.panel.statusArea.quickSettings.addExternalIndicator`. The state comes from `/run/mentor/fullscreen`, written by mentor-clipboard. |
 | `game mouse` | Mouse-look works in 3D games: while an app marked as a game is in front, the launcher gives the system a mouse that only moves; otherwise the normal pointer. See "The game mouse" below. | `global.display` `notify::focus-window`, `Shell.WindowTracker.get_window_app`, `Shell.App.get_app_info().get_categories()`, `Main.overview` signals `showing` / `hiding`. Asks the launcher through `mentor game-mouse --send on|off`. |
@@ -255,6 +255,16 @@ Do not put `env GSK_RENDERER=cairo` into a copy of `org.gnome.Settings.desktop` 
 **Check.** Open Settings from the app grid. Then `tr '\0' '\n' < /proc/$(pgrep -f -o gnome-control-center)/environ | grep GSK` says `GSK_RENDERER=cairo`. Go to Mouse & Touchpad, then to another page: it answers.
 
 **If Settings freezes anyway.** Read `journalctl -b -o cat _COMM=gnome-control-center | tail -20`. If `GSK_RENDERER` is not in its environment (the check above), one of the two files is missing: `sudo mentor restore /usr/local/bin/gnome-control-center /usr/local/share/dbus-1/services/org.gnome.Settings.service` (the user runs it), then close Settings and open it again.
+
+## Keyboard layouts
+
+**What the user has.** With more than one keyboard layout (Settings, Keyboard, Input Sources; for example English and Greek), **Alt+Shift** switches to the next one, as on Windows, and so does GNOME's **Super+Space**. Alt+Shift switches when the two are let go with no other key in between, so Alt+Shift+Tab, Alt+Shift+F and the like stay shortcuts of the programs.
+
+**How.** `mentor-emergency-key` (root, it reads the keyboards below GNOME for Ctrl+Alt+Backspace too) sees Alt and Shift go down together with nothing else held, and when one of them goes up without another key pressed meanwhile, it asks the desktop of the session in front (`loginctl`, seat0, a graphical one) through D-Bus as that user: `org.mentor.Shell.NextInputSource` of Mentor's extension, which calls GNOME's own switcher (`getInputSourceManager()._modifiersSwitcher()`, the one GNOME's layout-switch keys use; the top bar's indicator follows). With one layout it does nothing. GNOME's own option `grp:alt_shift_toggle` is not used: it switches as the keys go down, and took Alt+Shift+Tab and Alt+Shift+F along (tested 2026-10-18). On the text consoles nothing is switched.
+
+**Check.** With two layouts: `gsettings get org.gnome.desktop.input-sources mru-sources` changes order after Alt+Shift, and not after Alt+Shift+F. `journalctl -u mentor-emergency-key` says "could not switch the layout" if the call failed. The extension's method: `gdbus call --session --dest org.gnome.Shell --object-path /org/mentor/Shell --method org.mentor.Shell.NextInputSource`.
+
+**When it does not work.** `systemctl is-active mentor-emergency-key` (it must run); `xkb-options` should hold no `grp:` option, which would switch a second time; a shell that renamed `_modifiersSwitcher` breaks only this method (the shell's code: `shell_source` search `_modifiersSwitcher`).
 
 ## Animations
 

@@ -1,6 +1,6 @@
 [Unit]
-Description=Mentor: the emergency key, Ctrl+Alt+Backspace opens the agent on a text screen even when the desktop is frozen
-Documentation=file:///etc/mentor/FREEZES.md
+Description=Mentor: the emergency key, Ctrl+Alt+Backspace opens the agent on a text screen even when the desktop is frozen; and Alt+Shift switches the keyboard layout
+Documentation=file:///etc/mentor/FREEZES.md file:///etc/mentor/DESKTOP.md
 
 [Service]
 ExecStart=/usr/local/lib/mentor/mentor-emergency-key

@@ -21,6 +21,7 @@ import St from 'gi://St';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {AppMenu} from 'resource:///org/gnome/shell/ui/appMenu.js';
+import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
@@ -487,6 +488,7 @@ const SERVICE = `
     <method name="SetClipboard">
       <arg type="s" direction="in" name="text"/>
     </method>
+    <method name="NextInputSource"/>
   </interface>
 </node>`;
 
@@ -671,6 +673,15 @@ class ShellService {
     // screen_text tool): GNOME offers no data-control protocol, so wl-copy cannot do it there.
     SetClipboard(text) {
         St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
+    }
+
+    // Alt+Shift, as on Windows (mentor-emergency-key, which reads the keyboards, calls this when the two
+    // are pressed and let go with no other key): the next keyboard layout, as GNOME's own layout-switch
+    // keys do. GNOME's Alt+Shift option switches on press and took Alt+Shift+Tab and Alt+Shift+F along.
+    NextInputSource() {
+        const manager = getInputSourceManager();
+        if (Object.keys(manager.inputSources).length > 1)
+            manager._modifiersSwitcher();
     }
 
     destroy() {
