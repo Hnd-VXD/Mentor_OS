@@ -50,6 +50,7 @@ Inside `desktop` (class `DesktopLayer`) there is more that leans on the shell:
 | No calendar server: GNOME's `gnome-shell-calendar-server` needs Evolution's data server (`evolution-data-server`, optional in Arch and not installed), so it fails at every start ("Could not activate remote peer 'org.gnome.Shell.CalendarServer'", "libecal-2.0.so.3: cannot open shared object file"). Harmless: the clock's calendar shows; only calendar events from online accounts would need it. Do not report it as a fault; install `evolution-data-server` only if the user wants their online calendar in the clock's menu | nothing of Mentor's | `ldd /usr/lib/gnome-shell-calendar-server \| grep "not found"` |
 | The languages GNOME offers: Settings, System, Region & Language lists about 37 languages. See "Languages" below | `mentor-enable` makes their locales (`/etc/locale.gen`, `locale-gen`) | `localectl list-locales` lists `de_DE.UTF-8` among others |
 | Chromium with uBlock Origin Lite | `/etc/chromium/policies/managed/mentor.json` | `chrome://policy` |
+| Chromium's Memory Saver: tabs not looked at for a while are put to sleep and wake when clicked (a tab with sound, a call or a form being filled stays awake). Recommended, not enforced: the user can turn it off in Chromium's Settings, Performance | `/etc/chromium/policies/recommended/mentor.json` (`HighEfficiencyModeEnabled` true, `MemorySaverModeSavings` 1, balanced) | `chrome://policy` lists both as Recommended, OK |
 | Chromium with no first-run window: Chromium 154 shows an empty "Additional Terms of Service" window ("This Space Intentionally Blank") on its first start, before the browser or a web app opens. Arch's launcher (`/usr/bin/chromium`) reads flags from `/etc/chromium-flags.conf` and then `~/.config/chromium-flags.conf`; Mentor's has `--no-first-run` | `/etc/chromium-flags.conf` | `chromium --help \| head` lists the flags it found; a new profile (`chromium --user-data-dir=/tmp/x`) opens straight to its page |
 
 mentor-chat itself leans on libadwaita (`Adw.TabView`, `Adw.AlertDialog`, `Adw.Dialog`, `Adw.SwitchRow`, `Adw.WrapBox`) and GTK 4. A new GNOME brings new versions of both; a class that has gone shows as a Python traceback in the journal (`journalctl -b --user | grep -A12 mentor-chat`), and the desktop then stays empty.
@@ -253,6 +254,16 @@ Do not put `env GSK_RENDERER=cairo` into a copy of `org.gnome.Settings.desktop` 
 **Check.** Open Settings from the app grid. Then `tr '\0' '\n' < /proc/$(pgrep -f -o gnome-control-center)/environ | grep GSK` says `GSK_RENDERER=cairo`. Go to Mouse & Touchpad, then to another page: it answers.
 
 **If Settings freezes anyway.** Read `journalctl -b -o cat _COMM=gnome-control-center | tail -20`. If `GSK_RENDERER` is not in its environment (the check above), one of the two files is missing: `sudo mentor restore /usr/local/bin/gnome-control-center /usr/local/share/dbus-1/services/org.gnome.Settings.service` (the user runs it), then close Settings and open it again.
+
+## Memory
+
+**What the user has.** When memory runs short, what has not been used for a while is compressed in memory itself (zram) instead of a program being closed; Chromium puts tabs to sleep that have not been looked at for a while (Memory Saver, table above). Together they keep many open tabs from slowing the desktop down.
+
+**How.** `zram-generator` (package) reads `/etc/systemd/zram-generator.conf` at every start and makes `/dev/zram0`: half the memory, at most 8 GB, compressed with zstd, swap priority 100. `/etc/sysctl.d/90-mentor-zram.conf` sets `vm.swappiness` 180 and `vm.page-cluster` 0 (moving a page into compressed RAM is cheap) and the watermarks Fedora uses. There is no swap on the disk. The freeze watch (FREEZES.md) still closes the largest app when memory runs out even so.
+
+**Check.** `swapon --show` lists `/dev/zram0`; `zramctl` shows how much is in it and how small it became (DATA against COMPR); `sysctl vm.swappiness` says 180.
+
+**When it is wrong.** No `/dev/zram0`: `pacman -Q zram-generator`, then `systemctl status systemd-zram-setup@zram0`. To turn it off (a user who wants no swap): remove the `[zram0]` section, `systemctl daemon-reload`, `swapoff /dev/zram0`; in the sandbox, as every system change.
 
 ## Languages
 

@@ -220,5 +220,11 @@
     "name": "18.10.26.02",
     "summary": "The assistant knows the new Mentor window on Windows: one Start over button, and the screen switches in one row.",
     "published": "2026-10-18 14:38"
+  },
+  {
+    "version": 202610181320,
+    "name": "18.10.26.03",
+    "summary": "Lighter with many tabs open: Chromium puts tabs you have not looked at for a while to sleep, and when memory runs short Mentor first compresses what is idle instead of closing a program.",
+    "published": "2026-10-18 16:22"
   }
 ]
