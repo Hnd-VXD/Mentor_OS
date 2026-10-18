@@ -422,6 +422,13 @@ dropdown.model > button, menubutton.model > button { min-height: 34px; padding: 
                            background: rgba(20, 22, 27, 0.86); color: #ffffff;
                            border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: none; }
 tabbar.agent-tabs, tabbar.agent-tabs .box { background: none; box-shadow: none; border: none; }
+/* Over a program (Super+Z, Alt+Space) the answer and the box are solid: see-through, a page of white text
+   behind them showed through the answer and it could not be read (the user, over Reddit, 2026-10-18).
+   On the desktop they stay a little see-through, over the wallpaper. */
+window.ask-over .agent-card { background: rgb(24, 26, 32); border: 1px solid rgba(255, 255, 255, 0.12);
+                              box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+window.ask-over .ask, window.ask-over .attachment, window.ask-over .attachment-note,
+window.ask-over dropdown.model > button, window.ask-over menubutton.model > button { background: rgb(24, 26, 32); }
 tabbar.agent-tabs tab.working button.tab-close-button { opacity: 0; }
 tabbar.agent-tabs tab { min-height: 34px; border-radius: 12px; background: rgba(20, 22, 27, 0.7); color: #ffffff; }
 tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }

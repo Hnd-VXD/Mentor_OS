@@ -232,5 +232,11 @@
     "name": "18.10.26.04",
     "summary": "Smooth animations: windows, the overview and menus open and close smoothly again, drawn by the graphics card; with the Graphics card switch off they stay off.",
     "published": "2026-10-18 17:00"
+  },
+  {
+    "version": 202610181502,
+    "name": "18.10.26.05",
+    "summary": "Answers you can read over any page: when you ask with the box over a program (Super+Z), the answer has a solid background and the page behind no longer shows through.",
+    "published": "2026-10-18 18:04"
   }
 ]
