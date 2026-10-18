@@ -436,9 +436,9 @@ CHAT_WIDTH = 720
 
 def zoom_css(percent):
     return f".chat-zoom {{ font-size: {percent}%; }}\n"
-# The steps card's gear turns while the agent works. Not a CSS animation: Mentor switches GNOME's
-# animations off (enable-animations=false, for speed in the VM), and GTK then leaves those still.
-# So it is turned a step at a time by a timer (Conversation.add_step), through these classes.
+# The steps card's gear turns while the agent works. Not a CSS animation: GTK leaves those still when
+# GNOME's animations are off (a user's choice, or Mentor's before 2026-10-18), so it is turned a step at
+# a time by a timer (Conversation.add_step), through these classes.
 GEAR_STEPS = 16
 CSS += "".join(f".gear.turn-{i} {{ -gtk-icon-transform: rotate({i / GEAR_STEPS}turn); }}\n" for i in range(GEAR_STEPS))
 

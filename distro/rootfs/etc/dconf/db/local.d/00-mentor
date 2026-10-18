@@ -2,8 +2,9 @@
 
 [org/gnome/desktop/interface]
 color-scheme='prefer-dark'
-# The VM has no GPU acceleration; animations are drawn by the CPU and make it feel slow.
-enable-animations=false
+# Animations on: the desktop is drawn by the graphics card (Mentor.exe's Graphics card switch, on by
+# default, or a PC's own). Without one, Mentor's extension holds them back for the session (DESKTOP.md, "Animations").
+enable-animations=true
 
 # Minimize and maximize buttons next to close, as on Ubuntu and Windows.
 [org/gnome/desktop/wm/preferences]

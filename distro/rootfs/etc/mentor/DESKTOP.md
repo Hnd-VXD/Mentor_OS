@@ -10,7 +10,7 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 - **The shell extension** (`/usr/share/gnome-shell/extensions/mentor@mentor.local/`) makes that window the desktop and adds Mentor's pieces to the shell. It is set up part by part (`_part` in `extension.js`); a part that fails is logged, left out and reported by `Status`, and the others carry on.
 - **Dash to Panel** (package `gnome-shell-extension-dash-to-panel`) is the taskbar; **AppIndicator support** the tray icons. Both are other people's extensions and break on their own schedule.
 - **No "Dash to Panel has been updated!"**: Dash to Panel announces itself whenever its version differs from the `extension-version` it stored, on a fresh install and after each upgrade. `mentor-taskbar-quiet.service` (a user oneshot before `graphical-session-pre.target`, script `/usr/local/lib/mentor/mentor-taskbar-quiet`) stores the version from its `metadata.json` before the shell starts. It cannot be done from Mentor's extension: GNOME enables Dash to Panel before it.
-- **Defaults** are in `/etc/dconf/db/local.d/00-mentor` (run `dconf update` after changing it): the enabled extensions, favourites, key bindings, wallpaper, dark style, animations off.
+- **Defaults** are in `/etc/dconf/db/local.d/00-mentor` (run `dconf update` after changing it): the enabled extensions, favourites, key bindings, wallpaper, dark style, animations on (held back by the extension where no graphics card draws the screen: "Animations" below).
 - **The launcher on Windows** (Mentor.exe) talks to the system inside over two serial ports: `org.mentor.control` (start-up reports, full screen, restore points, the game mouse) and `org.mentor.clipboard` (text and files, and the window's full-screen state).
 
 ## The parts of the extension
@@ -26,6 +26,7 @@ This is for the agent. It lists everything Mentor adds to or changes in GNOME, w
 | `search` | Typing in the overview offers "Ask Mentor" with the typed words. | The search provider interface of `Main.overview.searchController`. |
 | (in `desktop`) the text box over a program | The assistant's own text box, lifted out of the desktop by Alt+Space and Super+Z (`mentor-chat --ask`), is a second window of the assistant: `_adopt` makes it float above the others, on every workspace, in the middle of the bottom of the screen (`_float`). All of it is in ASKBAR.md. | `Meta.Window.make_above`, `stick`, `move_frame`, `Main.activateWindow`. |
 | `app menus` | "Ask Mentor…" in the right-click menu of every app icon. | `AppMenu.prototype.open` and `addAction` (overridden with `InjectionManager`). |
+| `animations` | Smooth animations when a graphics card draws the screen; none where only the processor does (the launcher's Graphics card switch off, or no GPU driver). | `St.Settings.get().inhibit_animations()` / `uninhibit_animations()`; `Status` says `"animations": "on"`, `"held back: no graphics card draws the screen"` or `"off in the settings"` |
 
 Inside `desktop` (class `DesktopLayer`) there is more that leans on the shell:
 
@@ -254,6 +255,14 @@ Do not put `env GSK_RENDERER=cairo` into a copy of `org.gnome.Settings.desktop` 
 **Check.** Open Settings from the app grid. Then `tr '\0' '\n' < /proc/$(pgrep -f -o gnome-control-center)/environ | grep GSK` says `GSK_RENDERER=cairo`. Go to Mouse & Touchpad, then to another page: it answers.
 
 **If Settings freezes anyway.** Read `journalctl -b -o cat _COMM=gnome-control-center | tail -20`. If `GSK_RENDERER` is not in its environment (the check above), one of the two files is missing: `sudo mentor restore /usr/local/bin/gnome-control-center /usr/local/share/dbus-1/services/org.gnome.Settings.service` (the user runs it), then close Settings and open it again.
+
+## Animations
+
+**What the user has.** Windows, the overview and menus open and close with GNOME's short animations, drawn by the graphics card. Measured on 2026-10-18 (Radeon 860M, Mentor.exe's display): the window shows about 118 frames a second on a 120 Hz screen, and opening and closing the overview over and over costs the shell about 12 % of one processor core while it moves (2 % with animations off), nothing when the screen is still.
+
+**How.** `00-mentor` has `enable-animations=true` (until 2026-10-18 false, from the time the VM had no 3D). The extension's part `animations` holds them back for the session, without touching the user's setting, when the screen is drawn without a graphics card: a virtio-gpu whose feature bit 0 (`VIRTIO_GPU_F_VIRGL`, the first character of `/sys/bus/virtio/devices/*/features`) is 0, which is the launcher's Graphics card switch off; or no `/dev/dri/renderD*` at all. Note: the render node exists even without 3D, so the bit is what tells. A PC with a real graphics card keeps them.
+
+**Check.** `gdbus call --session --dest org.gnome.Shell --object-path /org/mentor/Shell --method org.mentor.Shell.Status` has `"animations": "on"` (or why not). A user who wants none: `gsettings set org.gnome.desktop.interface enable-animations false` (Settings, Accessibility, Reduce Animation); that is theirs and wins.
 
 ## Memory
 

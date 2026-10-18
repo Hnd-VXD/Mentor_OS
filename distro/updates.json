@@ -226,5 +226,11 @@
     "name": "18.10.26.03",
     "summary": "Lighter with many tabs open: Chromium puts tabs you have not looked at for a while to sleep, and when memory runs short Mentor first compresses what is idle instead of closing a program.",
     "published": "2026-10-18 16:22"
+  },
+  {
+    "version": 202610181358,
+    "name": "18.10.26.04",
+    "summary": "Smooth animations: windows, the overview and menus open and close smoothly again, drawn by the graphics card; with the Graphics card switch off they stay off.",
+    "published": "2026-10-18 17:00"
   }
 ]

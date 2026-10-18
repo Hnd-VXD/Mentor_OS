@@ -897,6 +897,42 @@ class AskProvider {
     }
 }
 
+// True when nothing draws the screen but the processor: a virtio-gpu without 3D (its feature bit 0,
+// VIRTIO_GPU_F_VIRGL, is off in /sys/bus/virtio/devices/*/features), or no render node of any GPU
+// driver at all (/dev/dri/renderD*).
+function drawnWithoutGraphicsCard() {
+    const read = path => {
+        try {
+            return new TextDecoder().decode(GLib.file_get_contents(path)[1]).trim();
+        } catch (e) {
+            return '';
+        }
+    };
+    const list = path => {
+        try {
+            const names = [];
+            const children = Gio.File.new_for_path(path).enumerate_children('standard::name', 0, null);
+            let info;
+            while ((info = children.next_file(null)))
+                names.push(info.get_name());
+            return names;
+        } catch (e) {
+            return [];
+        }
+    };
+    if (!list('/dev/dri').some(name => name.startsWith('renderD')))
+        return true;
+    for (const device of list('/sys/bus/virtio/devices')) {
+        let driver = '';
+        try {
+            driver = GLib.file_read_link(`/sys/bus/virtio/devices/${device}/driver`);
+        } catch (e) {}  // a device without a driver
+        if (driver.endsWith('/virtio_gpu') && !read(`/sys/bus/virtio/devices/${device}/features`).startsWith('1'))
+            return true;
+    }
+    return false;
+}
+
 export default class MentorExtension extends Extension {
     // The parts are set up one by one. One that a new version of the shell has broken is
     // noted and left out; the others still work, and `mentor doctor` says which is which.
@@ -920,6 +956,9 @@ export default class MentorExtension extends Extension {
             // a window known as the desktop, and one that really is one (not a window that can be moved)
             assistant_on_desktop: this._desktop?.window?.get_window_type() === Meta.WindowType.DESKTOP,
             taskbar_panels: global.dashToPanel?.panels?.length ?? 0,
+            // whether the shell animates now, and why not when it does not (DESKTOP.md, "Animations")
+            animations: St.Settings.get().enable_animations ? 'on'
+                : this._animationsHeld ? 'held back: no graphics card draws the screen' : 'off in the settings',
         };
     }
 
@@ -927,6 +966,22 @@ export default class MentorExtension extends Extension {
         this._parts = {};
         this._undo = [];
         this._desktop = null;
+
+        // Animations are on (00-mentor), except where the screen is drawn without a graphics card: there
+        // the processor draws each frame and they make the desktop feel slow. That is the launcher's
+        // Graphics card switch off (virtio-gpu without 3D), or no GPU driver at all. A real graphics card,
+        // in the VM or on a PC of its own, keeps them. The user's own setting is not touched: the shell
+        // holds them back for this session only. DESKTOP.md, "Animations".
+        this._part('animations', () => {
+            this._animationsHeld = drawnWithoutGraphicsCard();
+            if (!this._animationsHeld)
+                return () => {};
+            St.Settings.get().inhibit_animations();
+            return () => {
+                St.Settings.get().uninhibit_animations();
+                this._animationsHeld = false;
+            };
+        });
 
         this._part('desktop', () => {
             this._desktop = new DesktopLayer();
