@@ -242,7 +242,7 @@ def arch_news():
         if time.time() - when > MORE_DAYS * 86400:
             continue
         found.append({
-            "id": "news-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "news",
+            "id": "news-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "news", "source": "Arch news",
             "title": f"Arch news: {title}",
             "body": f"{day_of(when)}. {short(text, 180)}",
             "details": laid[:12000], "link": link,
@@ -264,7 +264,7 @@ def gnome_news():
         if time.time() - when > MORE_DAYS * 86400:
             continue
         found.append({
-            "id": "gnome-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "gnome",
+            "id": "gnome-" + (link.rstrip("/").rsplit("/", 1)[-1] or str(int(when))), "kind": "gnome", "source": "This week in GNOME",
             "title": f"This week in GNOME: {title}",
             "body": f"{day_of(when)}. {short(text, 180)}",
             "details": laid[:20000], "link": link,
@@ -301,7 +301,7 @@ def headlines():
         for title, link, text, when, laid in [item for item in items
                                               if time.time() - item[3] <= HEADLINE_DAYS * 86400][:HEADLINE_EACH]:
             found.append({
-                "id": "headline-" + format(abs(hash_of([link])), "x"), "kind": "headlines",
+                "id": "headline-" + format(abs(hash_of([link])), "x"), "kind": "headlines", "source": site,
                 "title": f"{site}: {title}",
                 "body": f"{day_of(when)}. {short(text, 180)}",
                 "details": laid[:12000], "link": link,

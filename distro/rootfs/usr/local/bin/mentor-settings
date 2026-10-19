@@ -441,7 +441,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.show_hidden()
 
         def add(title, subtitle, change):
-            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            row = Adw.ActionRow(title=GLib.markup_escape_text(str(title)), subtitle=subtitle)  # titles may hold "&"
             row.add_suffix(button("Bring back", lambda: bring_back(change)))
             self.hidden.add(row)
             self.hidden_rows.append(row)
@@ -449,9 +449,15 @@ class SettingsWindow(Adw.ApplicationWindow):
         for kind in state["never"]:
             add(KINDS.get(kind, kind), "You chose not to be told about these again",
                 lambda s, kind=kind: s.update(never=[k for k in s["never"] if k != kind]))
+        for source in state.get("sources_off", []):
+            add(source, "You chose not to see news from here",
+                lambda s, source=source: s.update(sources_off=[x for x in s.get("sources_off", []) if x != source]))
+        for key, title in list(reversed(list(state.get("hidden", {}).items())))[:20]:  # the last hidden first
+            add(title or key, "You skipped this",
+                lambda s, key=key: s.setdefault("hidden", {}).pop(key, None))
         try:
             with open(ADVICE_PATH) as f:
-                titles = {s["id"]: s.get("title") for s in json.load(f) if isinstance(s, dict) and s.get("id")}
+                titles ={s["id"]: s.get("title") for s in json.load(f) if isinstance(s, dict) and s.get("id")}
         except (OSError, ValueError):
             titles = {}
         for key, when in sorted(state.get("until", {}).items(), key=lambda item: item[1]):

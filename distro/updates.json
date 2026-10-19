@@ -280,5 +280,11 @@
     "name": "19.10.26.02",
     "summary": "Dragging around a picture's preview or History no longer moves the desktop: it stays still.",
     "published": "2026-10-19 10:06"
+  },
+  {
+    "version": 202610190822,
+    "name": "19.10.26.03",
+    "summary": "News cards say plainly what they do: Skip article brings the next news, and Don't show news from a site stops only that site. Not now waits one day.",
+    "published": "2026-10-19 11:22"
   }
 ]

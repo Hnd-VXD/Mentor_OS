@@ -2871,6 +2871,8 @@ def _advice_state():
     state.setdefault("off", False)
     state.setdefault("never", [])
     state.setdefault("until", {})
+    state.setdefault("hidden", {})  # cards the user skipped one by one ("Skip"): id -> title
+    state.setdefault("sources_off", [])  # where articles come from ("LWN", "Arch news"): "Don't suggest this source"
     return state
 
 
@@ -2883,7 +2885,10 @@ def suggestions_status(a):
         found = []
     now = time.time()
     put_off = {key: when for key, when in state["until"].items() if when > now}
-    showing = [s for s in found if s.get("kind") not in state["never"] and s["id"] not in put_off]
+    showing = [s for s in found if s.get("kind") not in state["never"] and s["id"] not in put_off
+               and s["id"] not in state["hidden"]
+               and not (s.get("kind") in ("news", "gnome", "headlines")
+                        and str(s.get("source") or s.get("title", "").split(": ", 1)[0]) in state["sources_off"])]
     lines = ["Suggestions are turned off altogether." if state["off"] else "Suggestions are on."]
     lines.append("Behind the bell now: " + ("; ".join(s.get("title", s["id"]) for s in showing) or "nothing")
                  + (" (not shown while suggestions are off)" if state["off"] and showing else ""))
@@ -2896,6 +2901,11 @@ def suggestions_status(a):
         title = next((s.get("title") for s in found if s["id"] == key), None)
         lines.append(f"Put off until {time.strftime('%d %B %H:%M', time.localtime(when))}: {title or key} [{key}]"
                      + ("" if title else " (no longer found on the system)"))
+    if state["sources_off"]:
+        lines.append("Sources of articles the user wants no more of: " + ", ".join(state["sources_off"]))
+    if state["hidden"]:
+        lines.append(f"Cards the user skipped (Skip: {len(state['hidden'])}), the last: "
+                     + "; ".join(f"{title} [{key}]" for key, title in list(state["hidden"].items())[-5:]))
     lines.append(f"Kinds there are: {', '.join(ADVICE_KINDS)}.")
     return 0, "\n".join(lines)
 
@@ -2907,13 +2917,26 @@ def suggestions_restore(a):
     if what == "all":
         if state["never"] or state["until"] or state["off"]:
             done.append("everything that was turned away or put off is back, and suggestions are on")
-        state.update(never=[], until={}, off=False)
+        if state["hidden"]:
+            done.append("the cards hidden one by one may show again")
+        if state["sources_off"]:
+            done.append("articles from " + ", ".join(state["sources_off"]) + " may show again")
+        state.update(never=[], until={}, off=False, hidden={}, sources_off=[])
     elif what == "on":
         state["off"] = False
         done.append("suggestions are on")
     elif what in state["never"]:
         state["never"].remove(what)
         done.append(f"{ADVICE_KINDS.get(what, what)} will be suggested again")
+    elif what == "hidden":
+        if state["hidden"]:
+            done.append(f"{len(state['hidden'])} hidden cards may show again")
+        state["hidden"] = {}
+    elif what in state["sources_off"]:
+        state["sources_off"].remove(what)
+        done.append(f"articles from {what} may show again")
+    elif what in state["hidden"]:
+        done.append(f"{state['hidden'].pop(what)} may show again")
     elif what in state["until"]:
         del state["until"][what]
         done.append(f"{what} is no longer put off")
@@ -3172,7 +3195,7 @@ TOOLS = {
         "Bring back suggestions the user turned away: a kind they chose never to hear of (updates, disk, "
         "failed, news, gnome, apps, github, recipes), one they put off (its id from suggestions_status), 'on' to turn suggestions on, or "
         "'all' for everything. Only when the user asks for it.",
-        _schema({"what": {"type": "string", "description": "A kind, an id from suggestions_status, 'on' or 'all'."}},
+        _schema({"what": {"type": "string", "description": "A kind, an id from suggestions_status (also a hidden card's), 'hidden' for every card skipped with Skip, a source of articles the user turned away ('LWN'), 'on' or 'all'."}},
                 ["what"]), suggestions_restore),
     "desktop_check": (
         "Which parts of Mentor's own desktop work right now: the extension and each of its parts, the taskbar, "

@@ -364,6 +364,19 @@ ADVICE_ICONS = {"updates": "software-update-available-symbolic", "disk": "drive-
                 "failed": "dialog-warning-symbolic", "news": "web-browser-symbolic", "gnome": "start-here-symbolic",
                 "apps": "view-app-grid-symbolic", "github": "applications-engineering-symbolic",
                 "recipes": "emblem-favorite-symbolic", "headlines": "web-browser-symbolic"}
+ARTICLE_KINDS = ("news", "gnome", "headlines")  # one card, one article: "Don't show news from SITE" for these
+# Cards whose id changes with what is in them (an article, a day's apps, a list of projects, a recipe):
+# "Skip" hides that one card for good and brings the next of its sort. The others (updates, disk, failed) keep the same id
+# while the thing lasts, so they get "Not now" instead.
+SEE_ONCE_KINDS = ARTICLE_KINDS + ("apps", "github", "recipes")
+KIND_SOURCES = {"github": "GitHub", "apps": "Flathub", "recipes": "Mentor Recipes"}  # where the others come from
+
+
+def news_source(suggestion):
+    """Where an article comes from ("LWN", "Arch news"): its own field, or the start of its title in cards
+    written before there was one."""
+    title = str(suggestion.get("title") or "")
+    return str(suggestion.get("source") or (title.split(": ", 1)[0] if ": " in title else suggestion.get("kind")))
 ADVICE_MORE_KEPT = 14  # days a card asked for with "More" stays in the bell if nothing is done with it
 WELCOME_PROMPT = (
     "This is the first start of Mentor for this user. Greet them in one sentence, then set the system up "
@@ -3313,6 +3326,8 @@ class DesktopWindow(Adw.ApplicationWindow):
         state.setdefault("until", {})   # a suggestion -> when it may be made again
         state.setdefault("extra", [])   # cards the user asked for with "More", whole
         state.setdefault("had", {})     # a group of "More" -> the keys of what it already gave
+        state.setdefault("hidden", {})  # an article the user hid -> its title, never shown again
+        state.setdefault("sources_off", [])  # where articles come from ("LWN") that the user wants no more of
         return state
 
     def save_advice_state(self, state):
@@ -3331,10 +3346,20 @@ class DesktopWindow(Adw.ApplicationWindow):
         except (OSError, ValueError):
             found = []
         ids = {s["id"] for s in found}
-        found += [s for s in state["extra"] if isinstance(s, dict) and s.get("id") and s.get("prompt")
-                  and s["id"] not in ids]
-        return [s for s in found
-                if s.get("kind") not in state["never"] and state["until"].get(s["id"], 0) <= time.time()]
+        extra = [s for s in state["extra"] if isinstance(s, dict) and s.get("id") and s.get("prompt")
+                 and s["id"] not in ids]
+        # A card brought by "Skip" takes the place of the one skipped, not the end of the list.
+        instead = {s["replaces"]: s for s in extra if s.get("replaces")}
+        ordered, every = [], ids | {s["id"] for s in extra}
+        for s in found + [s for s in extra if s.get("replaces") not in every]:
+            ordered.append(s)
+            while s["id"] in instead and len(ordered) <= len(found) + len(extra):
+                s = instead[s["id"]]
+                ordered.append(s)
+        return [s for s in ordered
+                if s.get("kind") not in state["never"] and s["id"] not in state["hidden"]
+                and not (s.get("kind") in ARTICLE_KINDS and news_source(s) in state["sources_off"])
+                and state["until"].get(s["id"], 0) <= time.time()]
 
     # --- more of the same, asked for -------------------------------------------
     # mentor-advisor keeps, beside the day's cards, more of each sort (more.json, SUGGESTIONS.md).
@@ -3363,27 +3388,29 @@ class DesktopWindow(Adw.ApplicationWindow):
         for name, group in (more.items() if isinstance(more, dict) else ()):
             if not isinstance(group, dict) or not group.get("label"):
                 continue
-            had = set(state["had"].get(name, ())) | given
+            had = set(state["had"].get(name, ())) | given | set(state["hidden"])
             entries = [e for e in group.get("entries", ()) if isinstance(e, dict) and e.get("key")
                        and str(e["key"]) not in had
-                       and (e.get("kind") or group.get("kind")) not in state["never"]]
+                       and (e.get("kind") or group.get("kind")) not in state["never"]
+                       and not (e.get("kind") in ARTICLE_KINDS and news_source(e) in state["sources_off"])]
             if entries:
                 waiting[name] = (group, entries)
         return waiting
 
-    def give_more(self, name):
-        """The next few of a group, as cards in the bell."""
+    def give_more(self, name, choose=None, replaces=None):
+        """The next few of a group, as cards in the bell; with choose (entries -> those to take), for "Skip",
+        in the place of the card replaces. False when there was nothing more."""
         state = self.advice_state()
         group, entries = self.more_waiting(state).get(name, (None, []))
         if not entries:
-            return
+            return False
         now = int(time.time())
-        taken = entries[:max(1, int(group.get("per_card") or 5))]
+        taken = choose(group, entries) if choose else entries[:max(1, int(group.get("per_card") or 5))]
         if group.get("head"):  # lines of one card
             names = [str(e.get("name") or e["key"]) for e in taken]
             lines = "\n".join(str(e.get("line") or e.get("name") or e["key"]) for e in taken)
             cards = [{
-                "id": f"more-{name}-{now}", "kind": group.get("kind") or name, "title": group.get("title") or group["label"],
+                "id": f"more-{name}-{now}-{len(state['extra'])}", "kind": group.get("kind") or name, "title": group.get("title") or group["label"],
                 "body": (lambda t: t if len(t) <= 200 else t[:199] + "\u2026")(", ".join(names) + "."),
                 "details": "\n\n".join(str(e.get("details") or e.get("line") or "") for e in taken),
                 "link": group.get("link") or "", "since": now,
@@ -3396,11 +3423,31 @@ class DesktopWindow(Adw.ApplicationWindow):
                 card["shown_at"] = now
         for card in cards:
             card.setdefault("shown_at", now)
+            if replaces:
+                card["replaces"] = replaces
         state["extra"] = [s for s in state["extra"] if isinstance(s, dict)
                           and now - s.get("shown_at", now) < ADVICE_MORE_KEPT * 86400] + cards
         state["had"][name] = (list(state["had"].get(name, ())) + [str(e["key"]) for e in taken])[-1500:]
         self.save_advice_state(state)
         self.refresh_advice()
+        return True
+
+    def skip(self, suggestion):
+        """This one goes for good, and the next of its sort comes in its place: for an article the next news,
+        from the same site when it has more; for a list (GitHub projects, apps) the next few."""
+        self.put_off(suggestion, hide=True)
+        kind = suggestion.get("kind")
+        place = suggestion.get("replaces") or suggestion["id"]  # a card brought by Skip is gone too: its place
+        if kind in ARTICLE_KINDS:
+            source = news_source(suggestion)
+            self.give_more("news", lambda group, entries: [next(
+                (e for e in entries if news_source(e) == source), entries[0])], replaces=place)
+            return
+        for name, (group, _entries) in self.more_waiting().items():
+            if (group.get("kind") or name) == kind:
+                self.give_more(name, lambda group, entries: entries[:max(1, int(group.get("per_card") or 5))],
+                               replaces=place)
+                return
 
     def refresh_advice(self):
         """Fill the bell with the suggestions there are; no suggestions, no bell."""
@@ -3444,12 +3491,27 @@ class DesktopWindow(Adw.ApplicationWindow):
             look.connect("clicked", lambda _b, suggestion=suggestion: self.take_advice(suggestion))
             later = Gtk.Button(label="Not now")
             later.add_css_class("flat")
-            later.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, days=3))
-            never = Gtk.Button(label="Don\u2019t suggest this again")
-            never.add_css_class("flat")
-            never.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, never=True))
+            later.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, days=1))
             buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END)
-            for button in (never, later, look):
+            if suggestion.get("kind") in ARTICLE_KINDS:  # every article from where this one came from
+                never = Gtk.Button(label=f"Don\u2019t show news from {news_source(suggestion)}")
+                never.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, source=True))
+            elif suggestion.get("kind") in KIND_SOURCES:  # the same words as on news: this kind is one source
+                never = Gtk.Button(label=f"Don\u2019t show news from {KIND_SOURCES[suggestion['kind']]}")
+                never.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, never=True))
+            else:  # this whole kind
+                never = Gtk.Button(label="Don\u2019t suggest this again")
+                never.connect("clicked", lambda _b, suggestion=suggestion: self.put_off(suggestion, never=True))
+            never.add_css_class("flat")
+            if suggestion.get("kind") in SEE_ONCE_KINDS:  # this one goes, the next of its sort comes in its place
+                skip = Gtk.Button(label="Skip article",
+                                  tooltip_text="Show the next one instead")
+                skip.add_css_class("flat")
+                skip.connect("clicked", lambda _b, suggestion=suggestion: self.skip(suggestion))
+                shown = (never, skip, look)
+            else:
+                shown = (never, later, look)
+            for button in shown:
                 buttons.append(button)
             one = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             one.append(top)
@@ -3527,13 +3589,18 @@ class DesktopWindow(Adw.ApplicationWindow):
         GLib.idle_add(from_the_top)
         GLib.timeout_add(250, from_the_top)
 
-    def put_off(self, suggestion, days=0, never=False):
+    def put_off(self, suggestion, days=0, never=False, hide=False, source=False):
         state = self.advice_state()
         if never and suggestion.get("kind") not in state["never"]:
             state["never"].append(suggestion.get("kind"))
+        if source and news_source(suggestion) not in state["sources_off"]:
+            state["sources_off"].append(news_source(suggestion))
+        if hide:  # this article only, for good; the oldest forgotten past 500
+            state["hidden"][suggestion["id"]] = suggestion.get("title") or suggestion["id"]
+            state["hidden"] = dict(list(state["hidden"].items())[-500:])
         if days:
             state["until"][suggestion["id"]] = time.time() + days * 86400
-        if never or days > 3:  # a card from "More", done with: gone for good ("Not now" keeps it)
+        if never or hide or source or days > 3:  # a card from "More", done with: gone for good ("Not now" keeps it)
             state["extra"] = [s for s in state["extra"] if not isinstance(s, dict) or s.get("id") != suggestion["id"]]
         self.save_advice_state(state)
         self.refresh_advice()
