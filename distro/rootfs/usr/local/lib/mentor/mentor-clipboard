@@ -35,7 +35,7 @@ import gi
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 PORT = "/dev/virtio-ports/org.mentor.clipboard"
 OWNER = "/usr/local/lib/mentor/mentor-clipboard-files"
@@ -173,6 +173,18 @@ class Bridge:
 
     # --- from the host -------------------------------------------------------------
 
+    @staticmethod
+    def shell_picture(path):
+        """The PNG at PATH onto the clipboard by the shell (the mentor extension's SetClipboardImage)."""
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            done = bus.call_sync("org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "SetClipboardImage",
+                                 GLib.Variant("(s)", (path,)), GLib.VariantType("(b)"),
+                                 Gio.DBusCallFlags.NONE, 5000, None)
+            return bool(done.unpack()[0])
+        except GLib.Error:
+            return False
+
     def read_host(self):
         for _ in range(64):  # as much as is there, without starving the clipboard's own events
             try:
@@ -218,8 +230,12 @@ class Bridge:
                     self.synced = None
                     self.received = []
                     self.picture_set = time.monotonic()
-                    self.clipboard.set_image(picture)
-                    self.clipboard.store()
+                    # Through the shell, which hands it to every program: held here (X11), a large one never
+                    # reached Wayland programs, and Chromium's page hung waiting (2026-10-19). Here only when
+                    # the shell cannot (an older extension, no shell).
+                    if not self.shell_picture(HOST_PICTURE):
+                        self.clipboard.set_image(picture)
+                        self.clipboard.store()
             return
         if "text" in message:
             text = message["text"]

@@ -540,6 +540,10 @@ const SERVICE = `
       <arg type="s" direction="in" name="text"/>
     </method>
     <method name="NextInputSource"/>
+    <method name="SetClipboardImage">
+      <arg type="s" direction="in" name="path"/>
+      <arg type="b" direction="out" name="done"/>
+    </method>
     <method name="AwaitCopy">
       <arg type="s" direction="in" name="pattern"/>
     </method>
@@ -727,6 +731,25 @@ class ShellService {
     // screen_text tool): GNOME offers no data-control protocol, so wl-copy cannot do it there.
     SetClipboard(text) {
         St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, text);
+    }
+
+    // A picture copied on Windows, onto the clipboard by the shell itself (mentor-clipboard calls this with
+    // the PNG it keeps). Held by mentor-clipboard, an X11 program, a picture over about 256 KB never reached
+    // Wayland programs: Chromium waited for it and its page hung ("Page Unresponsive", the user pasting a
+    // screenshot into a forum, 2026-10-19). Held by the shell, every program gets it whole. Only a PNG.
+    SetClipboardImage(path) {
+        try {
+            const [, contents] = Gio.File.new_for_path(path).load_contents(null);
+            const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+            if (contents.length < 8 || png.some((b, i) => contents[i] !== b))
+                return false;
+            St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'image/png',
+                new GLib.Bytes(contents));
+            return true;
+        } catch (e) {
+            console.error(`mentor: SetClipboardImage: ${e.message}`);
+            return false;
+        }
     }
 
     // Alt+Shift, as on Windows (mentor-emergency-key, which reads the keyboards, calls this when the two
