@@ -2676,7 +2676,9 @@ def keep_still(view):
     an empty part of it, a title included: libadwaita gives its sheet the window's drag. The desktop then
     jumped back and forth under the mouse (the user, dragging a picture's title, 2026-10-18). A drag that
     starts on something that is not for the hands (an empty box, a title that cannot be selected) is
-    taken here and does nothing; buttons, the picture, text that can be selected and scrolling keep theirs."""
+    taken here and does nothing; buttons, the picture, text that can be selected and scrolling keep theirs.
+    Whatever this misses (the dimmed space around a picture's preview), the shell keeps the desktop still on
+    the screen while it is dragged (the extension's _holdStill, DESKTOP.md)."""
     drag = Gtk.GestureDrag()
 
     def begin(gesture, x, y):

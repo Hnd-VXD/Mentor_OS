@@ -53,6 +53,8 @@ class DesktopLayer {
             [global.workspace_manager, global.workspace_manager.connect('active-workspace-changed',
                 () => this._tellWorkspace())],
             [global.display, global.display.connect('notify::focus-window', () => this._focusWhenAlone())],
+            [global.display, global.display.connect('grab-op-begin', (_d, window, op) => this._holdStill(window, op))],
+            [global.display, global.display.connect('grab-op-end', (_d, window) => this._letGo(window))],
             [Main.layoutManager, Main.layoutManager.connect('monitors-changed', () => {
                 this._place();
                 this._onScreenChanged();
@@ -372,14 +374,62 @@ class DesktopLayer {
             this.show();
     }
 
+    // A drag that reaches the window manager moves the desktop window, and nothing can stop it once begun
+    // (mutter 51 has no call for that, and a dialog of the desktop's, a picture's preview or History, is a
+    // window attached to it: dragging around it drags the desktop). So while it is dragged, its picture is
+    // shifted back by as much as it moved, in the same frame (_keepPlace, `translation`): on the screen it
+    // stays still. When the drag ends it is put back in its place (_letGo). Before, it moved with the mouse
+    // and was put back after each step, and it jittered (the user, 2026-10-19).
+    _holdStill(window, op) {
+        if (window !== this._window)
+            return;
+        const moves = [Meta.GrabOp.MOVING, Meta.GrabOp.MOVING_UNCONSTRAINED, Meta.GrabOp.KEYBOARD_MOVING];
+        if (!moves.includes(op))
+            return;
+        this._held = true;
+        this._holds = (this._holds ?? 0) + 1;
+    }
+
+    _letGo(window) {
+        if (!this._held || window !== this._window)
+            return;
+        this._held = false;
+        this._place();
+        this._shift(window, 0, 0);
+    }
+
+    // The desktop's picture and those of its attached dialogs, which move with it
+    _shift(window, x, y) {
+        const windows = [window];
+        window.foreach_transient(child => {
+            windows.push(child);
+            return true;
+        });
+        for (const w of windows) {
+            const actor = w.get_compositor_private();
+            if (actor) {
+                actor.translation_x = x;
+                actor.translation_y = y;
+            }
+        }
+    }
+
     // Back where it belongs, once whatever moved it is done (not while it is being dragged).
     _keepPlace(window) {
-        if (window !== this._window || this._placing)
+        if (window !== this._window)
             return;
         const area = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
         const frame = window.get_frame_rect();
+        if (this._held) {  // being dragged: still on the screen, put back when it ends
+            this._shift(window, area.x - frame.x, area.y - frame.y);
+            return;
+        }
+        if (this._placing)
+            return;
         if (frame.x === area.x && frame.y === area.y && frame.width === area.width && frame.height === area.height)
             return;
+        if (frame.width === area.width && frame.height === area.height)
+            this._putBack = (this._putBack ?? 0) + 1;  // moved, not resized
         this._placing = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
             this._placing = 0;
             this._place();
@@ -967,6 +1017,11 @@ export default class MentorExtension extends Extension {
             parts: this._parts,
             // a window known as the desktop, and one that really is one (not a window that can be moved)
             assistant_on_desktop: this._desktop?.window?.get_window_type() === Meta.WindowType.DESKTOP,
+            // times the desktop was moved (by a drag that reached the window manager) and put back
+            // (_keepPlace): it should stay 0 (DESKTOP.md, "The desktop cannot be moved")
+            desktop_put_back: this._desktop?._putBack ?? 0,
+            // drags of the desktop held still on the screen (_holdStill)
+            desktop_drags_held: this._desktop?._holds ?? 0,
             taskbar_panels: global.dashToPanel?.panels?.length ?? 0,
             // whether the shell animates now, and why not when it does not (DESKTOP.md, "Animations")
             animations: St.Settings.get().enable_animations ? 'on'
