@@ -561,7 +561,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         elif waiting:
             name = mentor_update.display_name(waiting["version"], waiting.get("name"))
             self.update_row.set_title(f"An update is waiting: {name}")
-            self.update_row.set_subtitle(str(waiting.get("summary", "")) + "\nInstalling it restarts Mentor (about a minute).")
+            # escaped: rows read markup, and a summary with "&" was not shown at all (2026-10-19)
+            self.update_row.set_subtitle(GLib.markup_escape_text(str(waiting.get("summary", "")))
+                                         + "\nInstalling it restarts Mentor (about a minute).")
             self.update_button.set_visible(True)
             self.waiting_version = int(waiting["version"])
             if waiting.get("notes"):
@@ -697,7 +699,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         if entry.get("outcome") == "included":
             when = "Came with this Mentor" + (f" (published {when})" if when else "")
         row = Adw.ActionRow(title=f"Mentor {name}" + (" — went back" if undone else ""),
-                            subtitle=(entry.get("summary") or "") + (f"\n{when}" if when else ""))
+                            subtitle=GLib.markup_escape_text((entry.get("summary") or "") + (f"\n{when}" if when else "")))
         row.set_subtitle_lines(4)
         row.add_suffix(button("Ask Mentor", lambda entry=entry, name=name, undone=undone:
                               ask(self.review_request(entry, name, undone))))

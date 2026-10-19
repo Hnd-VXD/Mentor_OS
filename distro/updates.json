@@ -268,5 +268,11 @@
     "name": "19.10.26.00",
     "summary": "Mentor Settings has a Themes tab: accent colors and your pointer's color and size. Mentor also warns before a restart that would stop the assistant.",
     "published": "2026-10-19 08:25"
+  },
+  {
+    "version": 202610190555,
+    "name": "19.10.26.01",
+    "summary": "Pressing Space on a big file in Files now shows at once that its preview is opening. Two small fixes in the chat and Mentor Settings.",
+    "published": "2026-10-19 08:56"
   }
 ]

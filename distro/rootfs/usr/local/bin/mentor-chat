@@ -1132,7 +1132,9 @@ class Conversation(Gtk.Box):
         self.usage_box = None  # at the top of the model's menu: the model chosen and its limits (the window fills it)
         self.trouble = None  # what the Codex or the Antigravity CLI last complained of
         self.pending = ""  # what the Antigravity CLI has said so far of a text it sends in pieces
-        bar =Gtk.Box(spacing=8, margin_bottom=28)
+        # As far from the taskbar below as from the line above it (bottom's margin_top): 28 left a wide gap
+        # (the user, 2026-10-19).
+        bar = Gtk.Box(spacing=8, margin_bottom=6)
         bar.append(attach)
         bar.append(self.entry)
         bar.append(self.model)

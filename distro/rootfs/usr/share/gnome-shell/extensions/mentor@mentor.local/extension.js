@@ -21,6 +21,7 @@ import St from 'gi://St';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {AppMenu} from 'resource:///org/gnome/shell/ui/appMenu.js';
+import {Spinner} from 'resource:///org/gnome/shell/ui/animation.js';
 import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {QuickToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
@@ -1060,6 +1061,83 @@ export default class MentorExtension extends Extension {
 
         // In the app grid, a click on the empty space around the icons leaves it, as a click
         // beside the windows leaves the overview. Not the click that closes an open folder.
+        // Space in Files: the preview (Sushi, org.gnome.NautilusPreviewer) shows its window only once it has
+        // started, which for a big file, or its first time, took long enough to wonder whether Space did
+        // anything (the user, 2026-10-19). Files' request (ShowFile on org.gnome.NautilusPreviewer2) is seen
+        // through dbus-monitor; if no preview window has come a quarter of a second later, a card "Opening
+        // preview…" with a spinner shows over the window in front, until the preview's window comes (or 20 s).
+        this._part('preview wait', () => {
+            const PREVIEWER = /nautiluspreviewer|sushi/i;
+            const isPreview = window => window && (PREVIEWER.test(window.get_wm_class() ?? '') ||
+                PREVIEWER.test(window.get_gtk_application_id() ?? ''));
+            let card = null, spinner = null, later = 0, giveUp = 0;
+            const hide = () => {
+                if (later)
+                    GLib.source_remove(later);
+                if (giveUp)
+                    GLib.source_remove(giveUp);
+                later = giveUp = 0;
+                spinner?.stop();
+                card?.destroy();
+                card = spinner = null;
+            };
+            const show = () => {
+                later = 0;
+                if (global.display.list_all_windows().some(isPreview))
+                    return GLib.SOURCE_REMOVE;  // it is already there (Space again closes it)
+                spinner = new Spinner(24);
+                const label = new St.Label({text: 'Opening preview…', y_align: Clutter.ActorAlign.CENTER});
+                card = new St.BoxLayout({style: 'background-color: rgba(30, 30, 33, 0.92); color: #ffffff; ' +
+                    'border-radius: 14px; padding: 14px 20px; spacing: 12px; font-weight: bold;'});
+                card.add_child(spinner);
+                card.add_child(label);
+                Main.layoutManager.addTopChrome(card);
+                const front = global.display.focus_window;
+                const area = front ? front.get_frame_rect()
+                    : Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex);
+                const [, width] = card.get_preferred_width(-1);
+                const [, height] = card.get_preferred_height(-1);
+                card.set_position(Math.round(area.x + (area.width - width) / 2), Math.round(area.y + (area.height - height) / 2));
+                spinner.play();
+                // A new window's class is set after it is made (window-created came too early to tell, tested
+                // 2026-10-19): look every 0.3 s while the card shows, 20 s at most.
+                let looks = 0;
+                giveUp = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+                    if (++looks < 67 && !global.display.list_all_windows().some(isPreview))
+                        return GLib.SOURCE_CONTINUE;
+                    giveUp = 0;
+                    hide();
+                    return GLib.SOURCE_REMOVE;
+                });
+                return GLib.SOURCE_REMOVE;
+            };
+            // dbus-monitor prints each request it sees; one line with "member=ShowFile" is one Space
+            const monitor = Gio.Subprocess.new(['dbus-monitor', '--session',
+                "type='method_call',interface='org.gnome.NautilusPreviewer2',member='ShowFile'"],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE);
+            const lines = new Gio.DataInputStream({base_stream: monitor.get_stdout_pipe()});
+            const cancel = new Gio.Cancellable();
+            const read = () => lines.read_line_async(GLib.PRIORITY_DEFAULT, cancel, (stream, result) => {
+                let line;
+                try {
+                    [line] = stream.read_line_finish_utf8(result);
+                } catch (e) {
+                    return;  // cancelled, or dbus-monitor ended
+                }
+                if (line === null)
+                    return;
+                if (line.includes('member=ShowFile') && !later && !card)
+                    later = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, show);
+                read();
+            });
+            read();
+            return () => {
+                cancel.cancel();
+                monitor.force_exit();
+                hide();
+            };
+        });
+
         // Every app in the app grid (Show Apps), the ones pinned to the taskbar too: GNOME leaves out the
         // favorites (Files, Chromium, Console), as its dash shows them, and the user looked for them in vain
         // (2026-10-19). While the grid and its folders list their apps (_loadApps), they are told that no app

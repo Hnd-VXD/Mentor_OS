@@ -91,7 +91,8 @@ It leans on: `python-gobject`, `gtk4`, `libadwaita` (`Adw.PreferencesPage`, `Adw
 2. **A missing module** (`ModuleNotFoundError: mentor_settings`, `mentor_security`, `mentor_journal`): `mentor verify`; the user puts the file back.
 3. **A switch does nothing.** Read the file it writes (table above) before and after. Written but without effect: look at who reads it (table "How it is made").
 4. **The safety row stays on "Checking…"** Run `mentor security` in a terminal and see where it stops.
-5. **The user cannot open the window, and wants a choice changed.** Change the file by hand as "Where each choice is kept" says, when they ask.
+5. **A row shows a title but no text under it** (an update's summary in Updates, for one): libadwaita's rows read their text as markup, where `&` and `<` are special, and text that is not valid markup is not shown at all ("Failed to set text … from markup" when it is run in a terminal). Text from outside (an update's summary, a file's name) goes through `GLib.markup_escape_text` first, as the update rows do (2026-10-19).
+6. **The user cannot open the window, and wants a choice changed.** Change the file by hand as "Where each choice is kept" says, when they ask.
 
 ## Making it again from nothing
 
