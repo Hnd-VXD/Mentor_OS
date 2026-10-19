@@ -4300,7 +4300,13 @@ class DesktopWindow(Adw.ApplicationWindow):
     def on_focus(self, *_):
         if not self.is_active():
             return
-        if self.stack.get_visible_child_name() == "sign-in":
+        # Back from a sign-in in another window: the engine may be ready now. Not for a key the user asked
+        # to set ("Set a key for …", `change`): the model has a key already, so this took the card away as
+        # soon as the user came back from NVIDIA's page or Bitwarden with the new one (2026-10-19). That
+        # card stays until Save or Cancel.
+        showing = getattr(self, "connect_showing", None)
+        changing = isinstance(showing, tuple) and len(showing) > 3 and showing[3]
+        if self.stack.get_visible_child_name() == "sign-in" and not changing:
             self.check_sign_in()
         self.focus_entry()
 

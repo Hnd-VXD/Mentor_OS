@@ -298,5 +298,11 @@
     "name": "19.10.26.06",
     "summary": "Copying your key on NVIDIA's page brings Mentor back with the key already in the box. Folders in Show Apps show every app in their picture.",
     "published": "2026-10-19 12:22"
+  },
+  {
+    "version": 202610191010,
+    "name": "19.10.26.07",
+    "summary": "The box for a new key stays open while you get the key from another program, until you press Save or Cancel.",
+    "published": "2026-10-19 13:10"
   }
 ]
