@@ -408,14 +408,17 @@ window.agent { background: none; border: none; outline: none; box-shadow: none; 
 .tool-row { font-size: 0.9em; padding: 4px 10px; border-radius: 10px;
             background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
 .chat-error { color: #ff8a75; }
-.notice { border-radius: 14px; padding: 12px 16px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55); }
-.notice.warning { background: rgba(255, 214, 64, 0.30); color: #fff6cf; border: 1px solid rgba(255, 221, 87, 0.65); }
-.notice.problem { background: rgba(214, 40, 30, 0.34); color: #ffffff; border: 1px solid rgba(255, 99, 88, 0.75); }
-.notice.idea { background: rgba(48, 196, 120, 0.32); color: #f0fff6; border: 1px solid rgba(110, 235, 165, 0.80); }
-.notice button { color: inherit; text-shadow: none; }
-.notice.idea button.look { background: rgba(110, 235, 165, 0.36); font-weight: 600; }
-.notice.warning button.look { background: rgba(255, 221, 87, 0.26); }
-.notice.problem button.look { background: rgba(255, 99, 88, 0.34); }
+/* The cards nearly solid, as the answers are (.steps): a deep tone of their color, the color itself in the border
+   and the buttons. At a third of a color they let a light wallpaper through and could hardly be read (the user,
+   2026-10-19). */
+.notice { border-radius: 14px; padding: 12px 16px; }
+.notice.warning { background: rgba(58, 47, 10, 0.92); color: #fff3c4; border: 1px solid rgba(255, 214, 64, 0.85); }
+.notice.problem { background: rgba(66, 18, 16, 0.92); color: #ffffff; border: 1px solid rgba(255, 99, 88, 0.90); }
+.notice.idea { background: rgba(14, 52, 34, 0.92); color: #effff5; border: 1px solid rgba(90, 220, 150, 0.85); }
+.notice button { color: inherit; }
+.notice.idea button.look { background: rgba(90, 220, 150, 0.30); font-weight: 600; }
+.notice.warning button.look { background: rgba(255, 214, 64, 0.26); }
+.notice.problem button.look { background: rgba(255, 99, 88, 0.32); }
 .advice-open { background: none; border: none; box-shadow: none; padding: 0; font-weight: inherit; }
 /* Mentor's dialogs (a picture, History, a suggestion) in the user's window colors (Mentor Settings,
    Window colors): libadwaita's own named colors, which each set defines. Before, they were always dark,
