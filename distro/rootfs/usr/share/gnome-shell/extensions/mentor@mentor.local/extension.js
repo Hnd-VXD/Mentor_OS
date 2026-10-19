@@ -1440,6 +1440,7 @@ export default class MentorExtension extends Extension {
                 } catch (e) {
                     lightBar = false;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
                     mark();
+                    lines();
                     return;
                 }
                 const light = style.get_string('color-scheme') === 'prefer-light';
@@ -1450,6 +1451,29 @@ export default class MentorExtension extends Extension {
                     taskbar.set_boolean('trans-use-custom-bg', use);
                 lightBar = use && wanted.light;
                 mark();
+                lines();
+            };
+            // The line under an open app (Dash to Panel's "running indicator") and the shade behind the one in
+            // front are light by default and could not be seen on a light tone (the user, 2026-10-19): dark on
+            // it, Dash to Panel's own again otherwise; only Mentor's values are put back, never the user's own.
+            const DARK = '#3d3d3d';
+            const DOTS = [1, 2, 3, 4].flatMap(n => [`dot-color-${n}`, `dot-color-unfocused-${n}`]);
+            const lines = () => {
+                if (lightBar) {
+                    for (const key of DOTS) {
+                        if (taskbar.get_string(key) !== DARK)
+                            taskbar.set_string(key, DARK);
+                    }
+                    if (!taskbar.get_boolean('dot-color-override'))
+                        taskbar.set_boolean('dot-color-override', true);
+                    if (taskbar.get_string('focus-highlight-color') !== '#000000')
+                        taskbar.set_string('focus-highlight-color', '#000000');
+                    if (taskbar.get_int('focus-highlight-opacity') !== 12)
+                        taskbar.set_int('focus-highlight-opacity', 12);
+                } else if (taskbar.get_string('dot-color-1') === DARK) {
+                    for (const key of [...DOTS, 'dot-color-override', 'focus-highlight-color', 'focus-highlight-opacity'])
+                        taskbar.reset(key);
+                }
             };
             // A light tone: its text stays dark in the overview too (Show Apps). The taskbar is GNOME's own
             // panel (#panel), which the overview gives white text (#panel:overview, for its dark background):
@@ -1477,6 +1501,7 @@ export default class MentorExtension extends Extension {
                     global.dashToPanel?.disconnect?.(remade);
                 lightBar = false;
                 mark();
+                lines();
             };
         });
 
