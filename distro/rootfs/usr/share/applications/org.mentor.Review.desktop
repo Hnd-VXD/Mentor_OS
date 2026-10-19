@@ -3,5 +3,5 @@ Type=Application
 Name=Mentor Review
 Comment=Preview of a change the agent wants to apply
 Exec=/usr/local/lib/mentor/mentor-review
-Icon=org.mentor.Chat
+Icon=org.mentor.Settings
 NoDisplay=true

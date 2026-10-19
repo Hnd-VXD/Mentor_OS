@@ -6,3 +6,12 @@
 #uiGroup .dashtopanelMainPanel .dash-item-container .show-apps .overview-icon {
     color: #2e3436;
 }
+
+/* The clock, the keyboard layout and the status icons stay dark on a light taskbar in the overview (Show
+   Apps) too: the overview gives GNOME's panel white text (#panel:overview .panel-button) for its own dark
+   background, and on the set's light tone it could not be read (2026-10-19). The class is set by the
+   extension's part "taskbar color" only while the taskbar has a light set's tone. */
+#uiGroup #panel.mentor-light-taskbar .panel-button,
+#uiGroup #panel.mentor-light-taskbar:overview .panel-button {
+    color: #2e3436;
+}

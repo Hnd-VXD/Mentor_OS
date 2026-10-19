@@ -1060,6 +1060,61 @@ export default class MentorExtension extends Extension {
 
         // In the app grid, a click on the empty space around the icons leaves it, as a click
         // beside the windows leaves the overview. Not the click that closes an open folder.
+        // Every app in the app grid (Show Apps), the ones pinned to the taskbar too: GNOME leaves out the
+        // favorites (Files, Chromium, Console), as its dash shows them, and the user looked for them in vain
+        // (2026-10-19). While the grid and its folders list their apps (_loadApps), they are told that no app
+        // is a favorite; pinning, the taskbar and the right-click menus are untouched.
+        this._part('pinned apps in the grid', () => {
+            const grid = Main.overview._overview.controls.appDisplay ?? Main.overview._overview._controls?.appDisplay;
+            if (!grid?._loadApps)
+                throw new Error('the app grid has no _loadApps');
+            const injections = new InjectionManager();
+            const wrapped = new Set();
+            const unpinned = (view, run) => {
+                const favorites = view._appFavorites;
+                view._appFavorites = Object.create(favorites, {isFavorite: {value: () => false}});
+                try {
+                    return run();
+                } finally {
+                    view._appFavorites = favorites;
+                }
+            };
+            const wrap = proto => {
+                if (!proto?._loadApps || wrapped.has(proto))
+                    return;
+                wrapped.add(proto);
+                injections.overrideMethod(proto, '_loadApps', original => function (...args) {
+                    return unpinned(this, () => original.call(this, ...args));
+                });
+            };
+            const appDisplay = Object.getPrototypeOf(grid);
+            wrap(appDisplay);
+            // Dragging a pinned app inside the grid: GNOME takes it for one dragged from the dash, makes a
+            // stand-in icon for it ("is not part of the IconGridLayout") and, on the drop, unpins it from the
+            // taskbar (found 2026-10-19). An icon that is the grid's own is not a favorite there either; one
+            // dragged in from the taskbar is still handled as GNOME does.
+            for (const method of ['_onDragBegin', 'acceptDrop']) {
+                if (!appDisplay[method])
+                    continue;
+                injections.overrideMethod(appDisplay, method, original => function (...args) {
+                    const source = method === 'acceptDrop' ? args[0] : args[1];
+                    const own = source?.id && this._items?.get?.(source.id) === source;
+                    return own ? unpinned(this, () => original.call(this, ...args)) : original.call(this, ...args);
+                });
+            }
+            wrap(Object.getPrototypeOf(grid._folderIcons?.[0]?.view ?? {}));  // FolderView, not exported
+            grid._redisplay();
+            // a folder view made after this (the first folder of a new layout) is a FolderView too
+            if (!wrapped.size || wrapped.size < 2) {
+                wrap(Object.getPrototypeOf(grid._folderIcons?.[0]?.view ?? {}));
+                grid._redisplay();
+            }
+            return () => {
+                injections.clear();
+                grid._redisplay();
+            };
+        });
+
         this._part('app grid click', () => {
             const grid = Main.overview._overview?.controls?.appDisplay;
             if (!grid)
@@ -1139,7 +1194,9 @@ export default class MentorExtension extends Extension {
                     const [color, kind] = new TextDecoder().decode(GLib.file_get_contents(note)[1]).trim().split(/\s+/);
                     wanted = {color, light: kind === 'light'};
                 } catch (e) {
-                    return;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
+                    lightBar = false;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
+                    mark();
+                    return;
                 }
                 const light = style.get_string('color-scheme') === 'prefer-light';
                 const use = wanted.light === light;
@@ -1147,10 +1204,36 @@ export default class MentorExtension extends Extension {
                     taskbar.set_string('trans-bg-color', wanted.color);
                 if (taskbar.get_boolean('trans-use-custom-bg') !== use)
                     taskbar.set_boolean('trans-use-custom-bg', use);
+                lightBar = use && wanted.light;
+                mark();
             };
+            // A light tone: its text stays dark in the overview too (Show Apps). The taskbar is GNOME's own
+            // panel (#panel), which the overview gives white text (#panel:overview, for its dark background):
+            // on the light tone it could not be read (the user, 2026-10-19). The class is what
+            // stylesheet-light.css darkens; Dash to Panel makes its panels anew now and then (panels-created).
+            let lightBar = false;
+            const mark = () => {
+                for (const panel of global.dashToPanel?.panels ?? []) {
+                    if (panel.panel?.add_style_class_name)
+                        (lightBar ? panel.panel.add_style_class_name : panel.panel.remove_style_class_name)
+                            .call(panel.panel, 'mentor-light-taskbar');
+                }
+            };
+            const remade = global.dashToPanel?.connect?.('panels-created', mark) ?? 0;
             const changed = style.connect('changed::color-scheme', sync);
+            // another set of the same style (Cream to GNOME light) leaves the style as it was: the note says it
+            const watch = Gio.File.new_for_path(note).monitor_file(Gio.FileMonitorFlags.NONE, null);
+            const noted = watch.connect('changed', () => sync());
             sync();
-            return () => style.disconnect(changed);
+            return () => {
+                watch.disconnect(noted);
+                watch.cancel();
+                style.disconnect(changed);
+                if (remade)
+                    global.dashToPanel?.disconnect?.(remade);
+                lightBar = false;
+                mark();
+            };
         });
 
         // While a set of Mentor's Window colors is in use, GNOME's light or dark style is the set's own:
@@ -1275,7 +1358,11 @@ export default class MentorExtension extends Extension {
                 } catch (e) {
                     return;  // GNOME's own colors
                 }
-                const [header, kind, window] = tones;
+                // The fifth field, when there is one, is the menus' own tone: an accent set has its color in
+                // the title bars and taskbar, and GNOME's dark grey in the menus, where lit switches in the
+                // accent color could not be told from the rest on the same color (2026-10-19).
+                const [bar, kind, window] = tones;
+                const header = tones[4] ?? bar;
                 const light = kind === 'light';
                 if (!window || light !== (style.get_string('color-scheme') === 'prefer-light'))
                     return;  // the style was switched by hand: GNOME's own menus fit it

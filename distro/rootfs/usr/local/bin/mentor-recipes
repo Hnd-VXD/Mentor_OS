@@ -123,7 +123,7 @@ class RecipesWindow(Adw.ApplicationWindow):
     that opens to say what it does. Built for hundreds: rows are only hidden by the search, never rebuilt."""
 
     def __init__(self, app):
-        super().__init__(application=app, title="Recipes", default_width=680, default_height=760)
+        super().__init__(application=app, title="Recipes", default_width=800, default_height=760)
         self.rows = []  # (row, the words it can be found by)
         self.built = 0.0
         self.view = Adw.ToolbarView()

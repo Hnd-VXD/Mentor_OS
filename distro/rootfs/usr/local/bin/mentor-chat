@@ -2723,6 +2723,9 @@ class DesktopWindow(Adw.ApplicationWindow):
                          default_width=1280, default_height=760)
         self.remove_css_class("background")
         self.add_css_class("agent")
+        # while the assistant works: GNOME's session inhibitor (hold_session), and an update the user asked
+        # to install when it is done (install_update)
+        self.hold_cookie, self.hold_reason, self.update_after = 0, "", None
         self.settings = load_settings()
         # The conversation's text size in percent (ZOOM_LEVELS), and the cards' width with it.
         zoom = self.settings.get("zoom")
@@ -3689,6 +3692,58 @@ class DesktopWindow(Adw.ApplicationWindow):
         if page:
             page.set_loading(conversation.busy)
             self.show_close(page, not conversation.busy)
+        self.hold_session()
+        # An update the user asked for while the assistant worked ("Update when it's done"): now it is done.
+        if self.update_after and not self.busy_work():
+            waiting, self.update_after = self.update_after, None
+            GLib.timeout_add(1500, lambda: self.install_update(*waiting) and False)
+
+    def busy_work(self):
+        """What the assistant is working on: the titles of the conversations it is busy in."""
+        titles = []
+        for conversation in self.conversations():
+            if conversation.busy:
+                page = self.tabs.get_page(conversation) if conversation.get_parent() else None
+                titles.append((page.get_title() if page else "") or "a request")
+        return titles
+
+    def hold_session(self):
+        """While the assistant works, GNOME's own Log Out, Restart and Power Off warn first: a session
+        inhibitor, which GNOME's end-session dialog lists as "Mentor Assistant" with the reason and "Log Out
+        Anyway". Logging out or restarting ends the assistant, and its work stops halfway (the user's wish,
+        2026-10-19). Asked of org.gnome.SessionManager directly with the app's id: Gtk.Application.inhibit
+        gave it none, and the dialog then listed nothing. It lasts while this program is connected, and is
+        let go when the work is done. DESKTOP.md, "Restarts while Mentor works"."""
+        # GNOME's dialog shows one line of about 40 letters under "Mentor Assistant", below its own "Some
+        # applications are busy": a longer reason was cut off before it said why (tested 2026-10-19).
+        reason = "Still working. Please wait." if self.busy_work() else ""
+        if reason == self.hold_reason:
+            return
+        self.hold_reason = reason
+
+        def call(method, args, done=None):
+            def finished(bus, result):
+                try:
+                    out = bus.call_finish(result)
+                except GLib.Error:
+                    return  # no session manager (a text console, another desktop): nothing to hold
+                if done:
+                    done(out.unpack()[0])
+            Gio.bus_get_sync(Gio.BusType.SESSION, None).call(
+                "org.gnome.SessionManager", "/org/gnome/SessionManager", "org.gnome.SessionManager", method, args,
+                None, Gio.DBusCallFlags.NONE, 5000, None, finished)
+
+        if self.hold_cookie:
+            call("Uninhibit", GLib.Variant("(u)", (self.hold_cookie,)))
+            self.hold_cookie = 0
+        if reason:
+            def held(cookie):
+                if self.hold_reason == reason:
+                    self.hold_cookie = cookie
+                else:  # the work changed while the call went: let this one go, a newer one follows
+                    call("Uninhibit", GLib.Variant("(u)", (cookie,)))
+            # flags 1: log out (a restart or power off is a log out first)
+            call("Inhibit", GLib.Variant("(susu)", (self.get_application().get_application_id(), 0, reason, 1)), held)
 
     def show_close(self, page, shown):
         """The (x) of a conversation's tab: gone while the agent works in it, back when it is done or
@@ -4059,8 +4114,25 @@ class DesktopWindow(Adw.ApplicationWindow):
         """The update card's Update button: Mentor installs the waiting update and restarts by itself
         (mentor-update-apply.service, which polkit lets the user start). Not while the assistant works:
         the restart would cut it off. `summary` is what the card said."""
-        if any(conversation.busy for conversation in self.conversations()):
-            body.set_label(f"{summary}\n\nMentor is still working on something. Press Update again when it is done.")
+        titles = self.busy_work()
+        if titles:
+            # Said plainly, with a way to wait: a line on the card alone was easy to miss (the user, 2026-10-19).
+            dialog = Adw.AlertDialog(
+                heading="Mentor is still working",
+                body=f"It is working on “{titles[0]}”. Restarting now would stop it halfway.\n\n"
+                     "Mentor can update as soon as it is done. It asks you again before it restarts.")
+            dialog.add_response("cancel", "Not now")
+            dialog.add_response("later", "Update when it's done")
+            dialog.set_response_appearance("later", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("later")
+            dialog.set_close_response("cancel")
+
+            def answered(_dialog, response):
+                if response == "later":
+                    self.update_after = (install, dismiss, body, summary)
+                    body.set_label(f"{summary}\n\nMentor updates when it has finished what it is doing.")
+            dialog.connect("response", answered)
+            dialog.present(self)
             return
         # The restart comes a second or two after the install starts: ask before, never after (the user
         # was surprised by it, 2026-10-15).
@@ -4549,6 +4621,16 @@ class AssistantApp(Adw.Application):
         # The GNOME sets only remove Mentor's block and change the style: follow that too.
         self.colors_style = Gio.Settings.new("org.gnome.desktop.interface")
         self.colors_style.connect("changed::color-scheme", lambda *_: GLib.timeout_add(300, lambda: load() or False))
+
+        # An accent pointer takes a new accent color (an Accent set, or Settings, Appearance): made again in a
+        # process of its own, about half a second, the window never waiting (mentor_pointer.py; DESKTOP.md, "Pointer").
+        def pointer(*_):
+            try:
+                Gio.Subprocess.new(["python3", "-c", "import sys; sys.path.insert(0, '/usr/local/lib/mentor'); "
+                                    "import mentor_pointer; mentor_pointer.follow_accent()"], Gio.SubprocessFlags.NONE)
+            except GLib.Error:
+                pass
+        self.colors_style.connect("changed::accent-color", pointer)
 
     def shell(self, method):
         """Ask the shell (the mentor extension) for Show, which clears the windows away so

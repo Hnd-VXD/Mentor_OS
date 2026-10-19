@@ -28,6 +28,7 @@ import mentor_security
 import mentor_settings
 import mentor_tools
 import mentor_colors
+import mentor_pointer
 import mentor_update
 
 CHAT = "/usr/local/bin/mentor-chat"
@@ -106,7 +107,7 @@ class WidePage(Gtk.ScrolledWindow):
 
 class SettingsWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Mentor Settings", default_width=560, default_height=720)
+        super().__init__(application=app, title="Mentor Settings", default_width=680, default_height=720)
         self.busy = False  # a switch being set from here, not by the user
         self.look_request = ""
         page = WidePage()
@@ -155,9 +156,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         did.add(changes)
         page.add(did)
 
-        page.add(self.colors_group())
-
-
         more = Adw.PreferencesGroup()
         fold = Adw.ExpanderRow(title="More choices", subtitle="Pick which warnings you want, and a few more")
         self.watch_rows = {}
@@ -181,6 +179,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         # Two tabs: these settings, and Mentor's own updates with their history (the user's wish).
         self.tabs = Adw.ViewStack()
         self.tabs.add_titled_with_icon(page, "settings", "Settings", "emblem-system-symbolic")
+        # How it looks, in a tab of its own (the user's wish, 2026-10-19): window colors with their accent sets,
+        # and the pointer.
+        themes = WidePage()
+        themes.add(self.colors_group())
+        themes.add(self.pointer_group())
+        self.tabs.add_titled_with_icon(themes, "themes", "Themes", "applications-graphics-symbolic")
         self.tabs.add_titled_with_icon(self.suggestions_page(), "suggestions", "Suggestions", "starred-symbolic")
         self.tabs.add_titled_with_icon(self.updates_page(), "updates", "Updates", "software-update-available-symbolic")
         header = Adw.HeaderBar()
@@ -262,28 +266,34 @@ class SettingsWindow(Adw.ApplicationWindow):
     # --- suggestions (their own tab; they were a window of the desktop's menu) ------------------------
 
     def colors_group(self):
-        """Window colors: 20 matched sets of tones (mentor_colors.py), each shown as a little window,
-        sidebar and content, with its name. A click uses it (DESKTOP.md, "Window colors")."""
+        """Window colors: 20 matched sets of tones and 9 accent sets (mentor_colors.py), each shown as a little
+        window, sidebar and content, with its name. A click uses it (DESKTOP.md, "Window colors")."""
         group = Adw.PreferencesGroup(title="Window colors",
                                      description="The colors of the program windows. Programs that are open take them "
                                                  "when they are opened again")
         css = []
-        # Two groups, dark and light, each wrapping by itself: tidy at any width of the window.
+        # Three groups, dark, light and accent, each wrapping by itself, five to a row at most: even rows
+        # (six and four looked ragged in the wider window, 2026-10-19). Accent: sets whose title bars, taskbar
+        # and menus are in one of GNOME's accent colors, which they also set (the user's wish, 2026-10-19).
         flows = {}
         sets = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12, margin_bottom=12,
                        margin_start=12, margin_end=12)
-        for light, title in ((False, "Dark"), (True, "Light")):
+        for kind, title in ((False, "Dark"), (True, "Light"), ("accent", "Accent")):
             sets.append(Gtk.Label(label=title, xalign=0, css_classes=["heading"], margin_start=6,
-                                  margin_top=0 if not light else 8))
-            flows[light] = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=10,
-                                       min_children_per_line=3, column_spacing=4, row_spacing=10, homogeneous=True)
-            sets.append(flows[light])
+                                  margin_top=0 if kind is False else 8))
+            flows[kind] = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=5,
+                                      min_children_per_line=3, column_spacing=4, row_spacing=10, homogeneous=True)
+            sets.append(flows[kind])
         current = mentor_colors.current() or ("GNOME light" if self.light_now() else "GNOME dark")
         first = None
-        for i, palette in enumerate(mentor_colors.PALETTES):
+        for i, palette in enumerate(mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES):
             name, light, window, view, sidebar, header, text = palette
+            accent = mentor_colors.is_accent(palette)
+            full = mentor_colors.label(palette)  # "Orange accent": what mentor_colors knows it by
             if window is None:  # GNOME's own tones
                 window, sidebar, text = ("#fafafb", "#ebebed", "#2e3436") if light else ("#222226", "#2e2e32", "#ffffff")
+            if accent:  # its picture shows its color, as its title bars and taskbar will be
+                sidebar = header
             css.append(f".swatch-{i} .side {{ background: {sidebar}; }} .swatch-{i} .main {{ background: {window}; }}"
                        f" .swatch-{i} .line {{ background: {text}; opacity: 0.55; }}")
             picture = Gtk.Box(css_classes=["swatch-picture", f"swatch-{i}"], overflow=Gtk.Overflow.HIDDEN,
@@ -302,14 +312,14 @@ class SettingsWindow(Adw.ApplicationWindow):
             content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
             content.append(picture)
             content.append(label)
-            choice = Gtk.ToggleButton(child=content, css_classes=["flat", "swatch"], tooltip_text=name,
-                                      active=name == current)
+            choice = Gtk.ToggleButton(child=content, css_classes=["flat", "swatch"], tooltip_text=full,
+                                      active=full == current)
             if first is None:
                 first = choice
             else:
                 choice.set_group(first)
-            choice.connect("toggled", lambda b, name=name: b.get_active() and self.use_colors(name))
-            flows[light].append(choice)
+            choice.connect("toggled", lambda b, full=full: b.get_active() and self.use_colors(full))
+            flows["accent" if accent else light].append(choice)
         provider = Gtk.CssProvider()
         provider.load_from_string("\n".join(css) + "\n.swatch-picture { border-radius: 8px; "
                                   "border: 1px solid alpha(currentColor, 0.15); }\n"
@@ -322,6 +332,55 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.colors_note = Gtk.Label(label="", css_classes=["dim-label", "caption"], xalign=0, wrap=True,
                                      visible=False, margin_top=6)
         group.add(self.colors_note)
+        return group
+
+    def pointer_group(self):
+        """The mouse pointer: black (GNOME's own), white, or the accent color, and its size (mentor_pointer.py;
+        DESKTOP.md, "Pointer"). Both change at once."""
+        group = Adw.PreferencesGroup(title="Pointer", description="The mouse pointer's color and size")
+        color_now, size_now = mentor_pointer.current()
+        colors = Adw.ActionRow(title="Color")
+        buttons = Gtk.Box(css_classes=["linked"], valign=Gtk.Align.CENTER)
+        first = None
+        for color in mentor_pointer.COLORS:
+            choice = Gtk.ToggleButton(label=color.capitalize(), active=color == color_now,
+                                      tooltip_text="The accent color, as it changes" if color == "accent" else None)
+            if first is None:
+                first = choice
+            else:
+                choice.set_group(first)
+            choice.connect("toggled", lambda b, color=color: b.get_active() and later(
+                lambda: mentor_pointer.apply(color), lambda _result: None))
+            buttons.append(choice)
+        colors.add_suffix(buttons)
+        group.add(colors)
+        size = Adw.ActionRow(title="Size")
+        sizes = mentor_pointer.SIZES
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, len(sizes) - 1, 1)
+        scale.set_size_request(260, -1)
+        scale.set_draw_value(False)
+        scale.set_round_digits(0)
+        scale.set_valign(Gtk.Align.CENTER)
+        for i in range(len(sizes)):
+            scale.add_mark(i, Gtk.PositionType.BOTTOM, None)
+        scale.set_value(min(range(len(sizes)), key=lambda i: abs(sizes[i] - size_now)))
+        pending = {}
+
+        def moved(widget):
+            # set when the slider rests a moment: every step of a drag would change the pointer under the hand
+            if pending.get("id"):
+                GLib.source_remove(pending["id"])
+
+            def now():
+                pending["id"] = 0
+                index = int(round(widget.get_value()))
+                widget.set_value(index)
+                later(lambda: mentor_pointer.apply(size=sizes[index]), lambda _result: None)
+                return False
+            pending["id"] = GLib.timeout_add(250, now)
+        scale.connect("value-changed", moved)
+        size.add_suffix(scale)
+        group.add(size)
         return group
 
     @staticmethod
@@ -667,7 +726,32 @@ class SettingsWindow(Adw.ApplicationWindow):
 
     def install_update(self):
         if self.agent_busy():
-            self.update_row.set_subtitle("Mentor is still working on something. Press Update again when it is done.")
+            # Said plainly, with a way to wait, as the chat's card does (the user, 2026-10-19).
+            dialog = Adw.AlertDialog(
+                heading="Mentor is still working",
+                body="The assistant is in the middle of something. Restarting now would stop it halfway.\n\n"
+                     "Mentor can update as soon as it is done. It asks you again before it restarts.")
+            dialog.add_response("cancel", "Not now")
+            dialog.add_response("later", "Update when it's done")
+            dialog.set_response_appearance("later", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("later")
+            dialog.set_close_response("cancel")
+
+            def answered(_dialog, response):
+                if response != "later":
+                    return
+                self.update_row.set_subtitle("Mentor updates when it has finished what it is doing")
+                self.update_button.set_sensitive(False)
+
+                def look():  # every few seconds; this window may be closed meanwhile, then nothing happens
+                    if self.agent_busy():
+                        return True
+                    self.update_button.set_sensitive(True)
+                    self.install_update()
+                    return False
+                GLib.timeout_add_seconds(5, look)
+            dialog.connect("response", answered)
+            dialog.present(self)
             return
         # The restart comes a second or two after the install starts: ask before (as the chat's card does).
         dialog = Adw.AlertDialog(heading=RESTART_HEADING, body=RESTART_BODY)
@@ -767,6 +851,8 @@ class SettingsApp(Adw.Application):
         elif "suggestions" in asked:
             self.window.tabs.set_visible_child_name("suggestions")
             self.window.show_hidden()
+        elif "themes" in asked:  # mentor settings themes: window colors and the pointer
+            self.window.tabs.set_visible_child_name("themes")
         self.window.present()
         return 0
 

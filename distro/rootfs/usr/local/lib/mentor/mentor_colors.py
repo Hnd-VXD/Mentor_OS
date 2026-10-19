@@ -48,8 +48,39 @@ GNOME_TONES = {False: ("#222226", "#1d1d20", "#2e2e32", "#2e2e32", "#ffffff"),
                True: ("#fafafb", "#ffffff", "#ebebed", "#ffffff", "#2e3436")}
 
 
+# Accent sets (the user's wish, 2026-10-19: "Orange should be like selecting a theme, make the elements
+# orange"): as Windows' "accent color on title bars and taskbar". The title bars, the taskbar and the
+# shell's menus in the color, deepened until white text on it has a contrast of at least 4.6:1; the side
+# panels a dark tint of it; the windows themselves GNOME's dark, so all text stays white and readable.
+# Each also sets GNOME's own accent color (switches, selections) to the same: the key after the name.
+ACCENT_SETS = [
+    ("Blue", "blue", "#2e74c8", "#2b3a50"), ("Teal", "teal", "#1d7e90", "#273c44"),
+    ("Green", "green", "#338241", "#2c3d32"), ("Yellow", "yellow", "#9b6a00", "#433824"),
+    ("Orange", "orange", "#c74c00", "#4d3124"), ("Red", "red", "#dc2b3f", "#512a32"),
+    ("Pink", "pink", "#b25180", "#483340"), ("Purple", "purple", "#9141ac", "#412f4a"),
+    ("Slate", "slate", "#637587", "#373a42"),
+]
+# as palettes: name, light?, window, view, sidebar, headerbar, text
+ACCENT_PALETTES = [(name, False, "#222226", "#1d1d20", side, header, "#ffffff")
+                   for name, _key, header, side in ACCENT_SETS]
+ACCENT_KEYS = {name: key for name, key, _header, _side in ACCENT_SETS}
+
+
 def find(name):
-    return next((p for p in PALETTES if p[0].lower() == str(name).strip().lower()), None)
+    wanted = str(name).strip().lower()
+    # "Slate" is a dark set and an accent: the accent one is called "Slate accent" where both could be meant
+    if wanted.endswith(" accent"):
+        return next((p for p in ACCENT_PALETTES if p[0].lower() == wanted[:-7]), None)
+    return next((p for p in PALETTES + ACCENT_PALETTES if p[0].lower() == wanted), None)
+
+
+def is_accent(palette):
+    return palette is not None and any(palette is p for p in ACCENT_PALETTES)
+
+
+def label(palette):
+    """The name to show and to give `mentor colors`: the accent sets say so ("Orange accent")."""
+    return palette[0] + " accent" if is_accent(palette) else palette[0]
 
 
 def css(palette, gtk3=False):
@@ -57,6 +88,10 @@ def css(palette, gtk3=False):
     name, _light, window, view, sidebar, header, text = palette
     if window is None:
         return ""
+    name = label(palette)
+    # an accent set keeps its color for title bars (and taskbar and menus): dialogs, popovers and cards take
+    # GNOME's own dark grey, or every one of them would be orange (in the side panels' tint they looked muddy)
+    panel = GNOME_TONES[False][2] if is_accent(palette) else header
     colors = {
         "window-bg-color": window, "window-fg-color": text,
         "view-bg-color": view, "view-fg-color": text,
@@ -64,12 +99,12 @@ def css(palette, gtk3=False):
         "sidebar-bg-color": sidebar, "sidebar-fg-color": text, "sidebar-backdrop-color": sidebar,
         "secondary-sidebar-bg-color": sidebar, "secondary-sidebar-fg-color": text,
         "secondary-sidebar-backdrop-color": sidebar,
-        "dialog-bg-color": header, "dialog-fg-color": text,
-        "popover-bg-color": header, "popover-fg-color": text,
-        "thumbnail-bg-color": header, "thumbnail-fg-color": text,
+        "dialog-bg-color": panel, "dialog-fg-color": text,
+        "popover-bg-color": panel, "popover-fg-color": text,
+        "thumbnail-bg-color": panel, "thumbnail-fg-color": text,
         # Cards and boxed lists (Settings' rows) carry text too: set, so that a program open while the style
         # changes between light and dark never shows white text on a light card (2026-10-18).
-        "card-bg-color": view if _light else header, "card-fg-color": text,
+        "card-bg-color": view if _light else panel, "card-fg-color": text,
     }
     if gtk3:
         lines = [f"@define-color {key.replace('-', '_')} {value};" for key, value in colors.items()]
@@ -77,6 +112,14 @@ def css(palette, gtk3=False):
                   f"@define-color theme_base_color {view};", f"@define-color theme_text_color {text};"]
     else:
         lines = [":root {"] + [f"  --{key}: {value};" for key, value in colors.items()] + ["}"]
+        if is_accent(palette):
+            # libadwaita draws title bars flat, the window's own color through them, so --headerbar-bg-color
+            # alone never showed (tested 2026-10-19): an accent set paints them, in focus; behind another
+            # window they take the window's color, as GNOME's do.
+            lines += ["toolbarview > .top-bar, window > headerbar.titlebar {",
+                      "  background-color: var(--headerbar-bg-color); color: var(--headerbar-fg-color); }",
+                      "toolbarview > .top-bar:backdrop, window > headerbar.titlebar:backdrop {",
+                      "  background-color: var(--headerbar-backdrop-color); }"]
     return "\n".join([BEGIN, f"/* {name} */", *lines, END])
 
 
@@ -131,8 +174,10 @@ def apply(name):
     if palette[5]:
         os.makedirs(os.path.dirname(note), exist_ok=True)
         with open(note, "w") as f:
-            # the title bar tone, light or dark, then the window and content tones (the shell's menus use them)
-            f.write(f"{palette[5]} {'light' if palette[1] else 'dark'} {palette[2]} {palette[3]}\n")
+            # the title bar tone, light or dark, then the window and content tones (the shell's menus use them);
+            # an accent set adds the menus' own tone, GNOME's dark grey (the extension's part "menu colors")
+            menus = f" {GNOME_TONES[False][2]}" if is_accent(palette) else ""
+            f.write(f"{palette[5]} {'light' if palette[1] else 'dark'} {palette[2]} {palette[3]}{menus}\n")
         subprocess.run(["gsettings", "set", taskbar, "trans-bg-color", palette[5]], check=False)
         subprocess.run(["gsettings", "set", taskbar, "trans-use-custom-bg", "true"], check=False)
     else:
@@ -140,6 +185,9 @@ def apply(name):
             os.remove(note)
         subprocess.run(["gsettings", "reset", taskbar, "trans-use-custom-bg"], check=False)
         subprocess.run(["gsettings", "reset", taskbar, "trans-bg-color"], check=False)
+    if is_accent(palette):  # GNOME's own accent the same color: switches, selections, today in the calendar
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "accent-color",
+                        ACCENT_KEYS[palette[0]]], check=False)
     # The style last, after the note: the extension's part "keep style" puts back any style that is not the
     # one the note names, and would otherwise undo this change (2026-10-19).
     subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",

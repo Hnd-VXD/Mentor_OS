@@ -427,13 +427,23 @@ def cmd_colors(args):
     name = " ".join(args.name)
     if not name:
         now = mentor_colors.current() or "GNOME's own"
-        for palette in mentor_colors.PALETTES:
-            print(f"{palette[0]:14} {'light' if palette[1] else 'dark'}" + ("   (in use)" if palette[0] == now else ""))
+        for palette in mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES:
+            name = mentor_colors.label(palette)
+            kind = "accent" if mentor_colors.is_accent(palette) else "light" if palette[1] else "dark"
+            print(f"{name:16} {kind}" + ("   (in use)" if name == now else ""))
         return
     palette = mentor_colors.apply(name)
     if palette is None:
-        sys.exit(f"No window colors called {name!r}. They are: " + ", ".join(p[0] for p in mentor_colors.PALETTES))
-    print(f"{palette[0]} is in use. Programs that are open show it when they are opened again.")
+        sys.exit(f"No window colors called {name!r}. They are: " + ", ".join(
+            mentor_colors.label(p) for p in mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES))
+    print(f"{mentor_colors.label(palette)} is in use. Programs that are open show it when they are opened again.")
+
+
+def cmd_pointer(args):
+    """The mouse pointer's color and size, as Mentor Settings sets them (mentor_pointer.py; DESKTOP.md, "Pointer")."""
+    import mentor_pointer
+    color, size = mentor_pointer.apply(args.color, args.size)
+    print(f"The pointer is {color}, size {size}. Sizes: " + ", ".join(map(str, mentor_pointer.SIZES)))
 
 
 def cmd_reminders(args):
@@ -625,6 +635,10 @@ p.set_defaults(func=cmd_reminders)
 p = sub.add_parser("colors", help="window colors: list them, or use one by its name (Mentor Settings has them too)")
 p.add_argument("name", nargs="*")
 p.set_defaults(func=cmd_colors)
+p = sub.add_parser("pointer", help="the mouse pointer: say its color and size, or set them (black, white, accent; --size)")
+p.add_argument("color", nargs="?", choices=("black", "white", "accent"))
+p.add_argument("--size", type=int, help="24, 30, 36, 48, 72 or 96 (the nearest is used)")
+p.set_defaults(func=cmd_pointer)
 p = sub.add_parser("webapp", help="websites as apps of their own: list, add NAME URL, remove NAME")
 p.add_argument("action", nargs="?", default="list", choices=("list", "add", "remove"))
 p.add_argument("name", nargs="?")
@@ -663,8 +677,8 @@ p = sub.add_parser("restore", help="put files of Mentor's back as they were buil
 p.add_argument("paths", nargs="*")
 p.add_argument("--all", action="store_true", help="every file that verify lists")
 p.set_defaults(func=cmd_restore)
-p = sub.add_parser("settings", help="open Mentor Settings: safety, suggestions, warnings, the journal")
-p.add_argument("page", nargs="?", default="", choices=("", "safety", "suggestions", "warnings", "changes", "about", "updates"))
+p = sub.add_parser("settings", help="open Mentor Settings: safety, suggestions, warnings, the journal, themes")
+p.add_argument("page", nargs="?", default="", choices=("", "safety", "suggestions", "warnings", "changes", "about", "updates", "themes"))
 p.set_defaults(func=lambda args: sys.exit(subprocess.run(["/usr/local/bin/mentor-settings", *filter(None, [args.page])]).returncode))
 p = sub.add_parser("recipes", help="the recipes kept on this computer; with a file: a report of what it would do (made by rules)")
 p.add_argument("file", nargs="?", help="a recipe file to look at, without running anything")

@@ -184,6 +184,7 @@ Every engine has them, whatever its own tools (Gemini had none: asked how to mak
 | `mentor capture-text` | Shift+Super+T: the text in an area the user drags out, put on the clipboard | DESKTOP.md "Copy text from the screen" |
 | `mentor scale [--keep]` | the desktop scaled as the Windows screen is | DESKTOP.md |
 | `mentor colors [NAME]` | the window colors: lists the sets, or uses one | DESKTOP.md "Window colors" |
+| `mentor pointer [black\|white\|accent] [--size N]` | the mouse pointer: says its color and size, or sets them (sizes 24, 30, 36, 48, 72, 96; the nearest is used) | DESKTOP.md "Pointer" |
 | `mentor reminders [--cancel ID\|all]` | the reminders that are set | this file, "Reminders" |
 | `mentor webapp [list\|add NAME URL\|remove NAME]` | websites as apps of their own | this file, "Web apps" |
 | `mentor tool-report [--days N] [--json]` | where the tools fall short | this file, "Finding the next tools" |

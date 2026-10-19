@@ -262,5 +262,11 @@
     "name": "18.10.26.09",
     "summary": "Window buttons are now small yellow, green and red squares, and light or dark always matches your window colors.",
     "published": "2026-10-19 01:44"
+  },
+  {
+    "version": 202610190524,
+    "name": "19.10.26.00",
+    "summary": "Mentor Settings has a Themes tab: accent colors and your pointer's color and size. Mentor also warns before a restart that would stop the assistant.",
+    "published": "2026-10-19 08:25"
   }
 ]

@@ -158,7 +158,7 @@ Lines about `Vulkan`, `MESA` or `ZINK` in the log are the graphics driver talkin
 
 ## Making it again from nothing
 
-The owl on the big cards in the middle (the welcome, "Connect the agent", the keyring) is the simpler one, Mentor Settings' icon `org.mentor.Settings` (`CARD_ICON` in `mentor-chat`, the user's choice on 2026-10-17); the assistant's own icon `org.mentor.Chat` is the round emblem.
+The owl on the big cards in the middle (the welcome, "Connect the agent", the keyring) is the simpler one, Mentor Settings' icon `org.mentor.Settings` (`CARD_ICON` in `mentor-chat`, the user's choice on 2026-10-17); the assistant's entry (`org.mentor.Chat.desktop`, and `org.mentor.Review.desktop`) uses that one too, `Icon=org.mentor.Settings`, so notifications and GNOME's log-out dialog show the simpler owl (the user's choice, 2026-10-19); the round emblem `org.mentor.Chat.png` stays installed but is no longer shown.
 
 ```
 src=/etc/mentor/source/rootfs
