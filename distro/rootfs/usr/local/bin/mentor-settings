@@ -354,8 +354,14 @@ class SettingsWindow(Adw.ApplicationWindow):
             buttons.append(choice)
         colors.add_suffix(buttons)
         group.add(colors)
-        size = Adw.ActionRow(title="Size")
-        sizes = mentor_pointer.SIZES
+        # Only the sizes that look different at this zoom: in a virtual machine a larger one is shown one size
+        # smaller (the extension's part "pointer fits"), so at 150% the last steps were all alike (the user,
+        # 2026-10-19). The others come back at a smaller zoom; the row says so.
+        zoom = max((getattr(m, "get_scale", m.get_scale_factor)() for m in Gdk.Display.get_default().get_monitors()),
+                   default=1)
+        sizes = mentor_pointer.fitting(zoom)
+        size = Adw.ActionRow(title="Size", subtitle="" if len(sizes) == len(mentor_pointer.SIZES) else
+                             f"Larger sizes at a smaller zoom (now {round(zoom * 100)}%)")
         scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, len(sizes) - 1, 1)
         scale.set_size_request(260, -1)
         scale.set_draw_value(False)

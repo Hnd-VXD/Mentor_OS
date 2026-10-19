@@ -310,5 +310,11 @@
     "name": "19.10.26.08",
     "summary": "No more two pointers at a larger zoom: while the zoom would make it too large, the pointer is one size smaller.",
     "published": "2026-10-19 14:20"
+  },
+  {
+    "version": 202610191130,
+    "name": "19.10.26.09",
+    "summary": "At a larger zoom, the pointer's Size slider in Mentor Settings shows only the sizes that look different.",
+    "published": "2026-10-19 14:30"
   }
 ]

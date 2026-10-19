@@ -151,6 +151,17 @@ def apply(color=None, size=None):
     return current()
 
 
+LARGEST = 64  # the virtual graphics card's pointer, in pixels: the extension's part "pointer fits" keeps within it
+
+
+def fitting(scale):
+    """The sizes that can be seen as they are at the screen's SCALE: in a virtual machine only those whose pixels
+    (size times scale) fit the card's pointer, at least the smallest; elsewhere all of them."""
+    if not os.path.isdir("/sys/module/virtio_gpu"):
+        return SIZES
+    return tuple(s for s in SIZES if s * scale <= LARGEST) or SIZES[:1]
+
+
 def follow_accent():
     """The accent color changed (an Accent set, or Settings, Appearance): an accent pointer takes it too."""
     color, _size = current()
