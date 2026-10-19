@@ -34,10 +34,20 @@ def accent():
     return key if key in ACCENTS else "blue"
 
 
+# The size the user chose. In a virtual machine the extension (part "pointer fits") may use a smaller one while
+# the screen's scale would make the chosen one too large for the graphics card's pointer (DESKTOP.md, "Pointer").
+CHOSEN = os.path.expanduser("~/.config/mentor/pointer-size")
+
+
 def current():
-    """(color, size) as GNOME has them now."""
+    """(color, size) as the user chose them: the size from CHOSEN when it is there, else GNOME's."""
     theme = _gsettings("get", "org.gnome.desktop.interface", "cursor-theme")
     color = "white" if theme == PREFIX + "white" else "accent" if theme.startswith(PREFIX + "accent") else "black"
+    try:
+        with open(CHOSEN) as f:
+            return color, int(f.read().strip())
+    except (OSError, ValueError):
+        pass
     try:
         size = int(_gsettings("get", "org.gnome.desktop.interface", "cursor-size"))
     except ValueError:
@@ -134,6 +144,9 @@ def apply(color=None, size=None):
                        check=False)
     if size is not None:
         size = min(SIZES, key=lambda s: abs(s - int(size)))
+        os.makedirs(os.path.dirname(CHOSEN), exist_ok=True)
+        with open(CHOSEN, "w") as f:
+            f.write(f"{size}\n")
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", str(size)], check=False)
     return current()
 

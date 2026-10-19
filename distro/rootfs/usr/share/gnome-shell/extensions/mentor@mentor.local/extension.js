@@ -1302,6 +1302,63 @@ export default class MentorExtension extends Extension {
             };
         });
 
+        // The pointer no larger than the virtual graphics card's own pointer can hold (64 by 64 pixels): past
+        // that GNOME draws it into the picture itself ("Can't handle cursor size 72x72"), and in Mentor's
+        // window the card's last pointer stayed beside it, two pointers (the user, size 48 at 150%,
+        // 2026-10-19). While the scale makes the chosen size too large, the next smaller one is used; the
+        // chosen one comes back with a smaller scale. The user's choice is kept in ~/.config/mentor/pointer-size
+        // (Mentor Settings, Pointer writes it; a change made elsewhere is taken as the new choice). Only on the
+        // virtual card (virtio_gpu): a real one has a larger pointer plane, or none of this trouble.
+        this._part('pointer fits', () => {
+            if (!GLib.file_test('/sys/module/virtio_gpu', GLib.FileTest.IS_DIR))
+                return () => {};
+            const SIZES = [24, 30, 36, 48, 72, 96];
+            const LARGEST = 64;
+            const settings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            const path = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'pointer-size']);
+            const chosen = () => {
+                try {
+                    const size = parseInt(new TextDecoder().decode(GLib.file_get_contents(path)[1]));
+                    if (size > 0)
+                        return size;
+                } catch (e) {}
+                return null;
+            };
+            const choose = size => {
+                GLib.mkdir_with_parents(GLib.path_get_dirname(path), 0o755);
+                GLib.file_set_contents(path, `${size}\n`);
+            };
+            let ours = null;  // the size set here, told apart from one the user set
+            const fit = () => {
+                let scale = 1;
+                for (let i = 0; i < global.display.get_n_monitors(); i++)
+                    scale = Math.max(scale, global.display.get_monitor_scale(i));
+                const want = chosen() ?? settings.get_int('cursor-size');
+                const size = SIZES.filter(s => s <= want && s * scale <= LARGEST).pop() ?? SIZES[0];
+                if (settings.get_int('cursor-size') !== size) {
+                    ours = size;
+                    settings.set_int('cursor-size', size);
+                }
+            };
+            if (chosen() === null)
+                choose(settings.get_int('cursor-size'));
+            const changed = settings.connect('changed::cursor-size', () => {
+                const size = settings.get_int('cursor-size');
+                if (size === ours)
+                    return;
+                choose(size);  // the user's own change (GNOME Settings, Accessibility; or Mentor Settings)
+                fit();
+            });
+            const monitors = Main.layoutManager.connect('monitors-changed', fit);
+            fit();
+            // The fitted size stays when the part stops: it stops at every screen lock, where the chosen one
+            // would bring the two pointers back.
+            return () => {
+                settings.disconnect(changed);
+                Main.layoutManager.disconnect(monitors);
+            };
+        });
+
         this._part('app grid click', () => {
             const grid = Main.overview._overview?.controls?.appDisplay;
             if (!grid)
