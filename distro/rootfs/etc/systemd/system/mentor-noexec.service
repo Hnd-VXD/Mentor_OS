@@ -1,0 +1,15 @@
+[Unit]
+Description=Mentor: no programs from temporary folders (/tmp, /var/tmp, /dev/shm)
+Documentation=file:/etc/mentor/SECURITY.md
+DefaultDependencies=no
+After=local-fs.target tmp.mount
+Before=sysinit.target
+ConditionPathExists=!/etc/mentor/allow-exec-in-tmp
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mentor/mentor-noexec
+
+[Install]
+WantedBy=sysinit.target

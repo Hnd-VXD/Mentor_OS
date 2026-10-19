@@ -126,7 +126,8 @@ class SettingsWindow(Adw.ApplicationWindow):
                                   subtitle="You can still use the internet as always")
         self.wall.connect("notify::active", self.on_firewall)
         safe.add(self.wall)
-        safe.add(switch("Let Mentor check by itself when someone tries", "It tells you in the chat what it was, in a few words",
+        safe.add(switch("Let Mentor look by itself at what seems wrong",
+                        "Someone trying to connect, or a program that behaves oddly: it tells you in the chat in a few words",
                         bool(mentor_settings.get("auto_review")), lambda on: mentor_settings.put("auto_review", on)))
         self.health = Adw.ActionRow(title="Checking…")
         self.look = button("Let Mentor look", lambda: ask(self.look_request))
@@ -185,6 +186,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         themes.add(self.colors_group())
         themes.add(self.pointer_group())
         self.tabs.add_titled_with_icon(themes, "themes", "Themes", "applications-graphics-symbolic")
+        # What Mentor stopped from going online, and what unknown went online (the user's wish, 2026-10-20).
+        self.tabs.add_titled_with_icon(self.security_page(), "security", "Security", "security-high-symbolic")
         self.tabs.add_titled_with_icon(self.suggestions_page(), "suggestions", "Suggestions", "starred-symbolic")
         self.tabs.add_titled_with_icon(self.updates_page(), "updates", "Updates", "software-update-available-symbolic")
         header = Adw.HeaderBar()
@@ -405,6 +408,127 @@ class SettingsWindow(Adw.ApplicationWindow):
             self.live_colors.load_from_string(mentor_colors.live_css(name))
             self.colors_note.set_label(f"{name} is in use. Programs that are open show it when they are opened again.")
             self.colors_note.set_visible(True)
+
+    # --- security (its own tab) -------------------------------------------------------------------
+
+    def security_page(self):
+        """Programs going online (mentor-netguard, OpenSnitch's daemon): what is blocked, each program once with
+        the places it tried to reach, and Unblock; unknown programs that went online, with Block; the watch for
+        unusual programs and the weekly check of the system's programs. SECURITY.md."""
+        page = WidePage()
+        self.blocked_group = Adw.PreferencesGroup(
+            title="Blocked from the internet",
+            description="Programs Mentor stopped from going online, with your yes. Unblock one to let it out again "
+                        "(your password is asked).")
+        self.online_group = Adw.PreferencesGroup(
+            title="Went online, not known to Mentor",
+            description="Programs that are not from Mentor, a package or an app store, and connected to the internet. "
+                        "They were let through.")
+        self.watch_group = Adw.PreferencesGroup(title="Watching")
+        for group in (self.blocked_group, self.online_group, self.watch_group):
+            page.add(group)
+        self.security_rows = []
+        self.show_security()
+        # the guard writes net.json as programs go online: the lists follow
+        self.net_monitor = Gio.File.new_for_path("/var/lib/mentor/guard/net.json").monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.net_monitor.connect("changed", lambda *_: GLib.timeout_add(500, lambda: self.show_security() and False))
+        return page
+
+    def show_security(self):
+        for group, row in self.security_rows:
+            group.remove(row)
+        self.security_rows = []
+
+        def add(group, row):
+            group.add(row)
+            self.security_rows.append((group, row))
+
+        try:
+            with open("/var/lib/mentor/guard/net.json") as f:
+                net = json.load(f)
+        except (OSError, ValueError):
+            net = None
+        if net is None:
+            add(self.blocked_group, Adw.ActionRow(title="The guard on programs going online is not running",
+                                                  subtitle="Ask Mentor to look: SECURITY.md, “Programs going online”"))
+        blocked = (net or {}).get("blocked", {})
+        tries = (net or {}).get("tries", {})
+        for program in sorted(blocked):
+            places = sorted(set(tries.get(program, {}).get("destinations", [])))
+            count = tries.get(program, {}).get("count", 0)
+            since = str(blocked[program])[:10]
+            row = Adw.ExpanderRow(title=GLib.markup_escape_text(os.path.basename(program)),
+                                  subtitle=GLib.markup_escape_text(
+                                      f"{os.path.dirname(program)} · blocked since {since} · "
+                                      + (f"tried {count} time(s)" if count else "has not tried since")))
+            row.add_suffix(button("Unblock", lambda program=program: self.netguard("unblock", program)))
+            for place in places[:30] or ["No try since it was blocked"]:
+                row.add_row(Adw.ActionRow(title=GLib.markup_escape_text(place)))
+            add(self.blocked_group, row)
+        if net is not None and not blocked:
+            add(self.blocked_group, Adw.ActionRow(title="Nothing is blocked"))
+        unknown = {p: e for p, e in (net or {}).get("unknown", {}).items() if p not in blocked}
+        for program, entry in sorted(unknown.items(), key=lambda item: -item[1].get("last", 0)):
+            places = sorted(set(entry.get("destinations", [])))
+            last = time.strftime("%-d %B %H:%M", time.localtime(entry.get("last", 0)))
+            row = Adw.ExpanderRow(title=GLib.markup_escape_text(os.path.basename(program)),
+                                  subtitle=GLib.markup_escape_text(
+                                      f"{os.path.dirname(program)} · {entry.get('count', 0)} connection(s), "
+                                      f"last {last}"))
+            row.add_suffix(button("Ask Mentor", lambda program=program: ask(
+                f"Mentor Settings shows that {program} went online, and Mentor does not know it. Find out what it is "
+                "(SECURITY.md, \"Programs going online\"), tell me in plain words, and block it only if I agree.")))
+            row.add_suffix(button("Block", lambda program=program: self.netguard("block", program)))
+            for place in places[:30]:
+                row.add_row(Adw.ActionRow(title=GLib.markup_escape_text(place)))
+            add(self.online_group, row)
+        if net is not None and not unknown:
+            add(self.online_group, Adw.ActionRow(title="None", subtitle="Every program that went online is one Mentor knows"))
+        # the watch for unusual programs, and the weekly check of the system's programs
+        try:
+            import mentor_guard
+            found = list(mentor_guard.findings())
+            when = mentor_guard.last_look()
+            row = Adw.ActionRow(
+                title=("Nothing unusual" if not found else f"{len(found)} thing(s) look wrong"),
+                subtitle="Mentor looks at what runs every ten minutes"
+                         + (f"; last at {time.strftime('%H:%M', time.localtime(when))}" if when else "; not yet"))
+            if found:
+                row.add_suffix(button("Let Mentor look", lambda found=found: ask(
+                    "\n\n---\n\n".join(request for _k, _l, _t, _x, request in found[:4])), suggested=True))
+            add(self.watch_group, row)
+            check = mentor_guard._load(mentor_guard.check_state_path(), {})
+            done = check.get("time")
+            row = Adw.ActionRow(title="Weekly check of this system's programs",
+                                subtitle=("Last done " + time.strftime("%-d %B", time.localtime(done)) if done
+                                          else "Not done yet") + ": every installed program compared with what was installed")
+            row.add_suffix(button("Check now", lambda: ask(
+                "Run the weekly check of the system's program files now: run_command `mentor check-files` (it takes "
+                "a few minutes; give it a timeout of 1800 seconds). Then tell me the result in one or two plain "
+                "sentences. If files CHANGED, follow /etc/mentor/SECURITY.md, \"Unusual programs\", and change "
+                "nothing before I agree.")))
+            add(self.watch_group, row)
+        except Exception as e:
+            add(self.watch_group, Adw.ActionRow(title="The watch for unusual programs could not be read",
+                                                subtitle=GLib.markup_escape_text(str(e))))
+        noexec = subprocess.run(["findmnt", "-no", "OPTIONS", "--target", "/tmp"], capture_output=True,
+                                text=True).stdout
+        add(self.watch_group, Adw.ActionRow(
+            title="Programs cannot start from temporary folders" if "noexec" in noexec
+            else "Programs can start from temporary folders",
+            subtitle="/tmp, /var/tmp and /dev/shm hold files, not programs" if "noexec" in noexec
+            else "The protection is off: SECURITY.md, \u201cNo programs from temporary folders\u201d"))
+        return False
+
+    def netguard(self, what, program):
+        """Block or unblock a program going online, as root (the password dialog says what for)."""
+        import shlex
+        name = os.path.basename(program)
+        arguments = {"command": f"/usr/local/lib/mentor/mentor-netguard {what} {shlex.quote(program)}",
+                     "explain": (f"Letting {name} go online again. You asked for this in Mentor Settings."
+                                 if what == "unblock" else
+                                 f"Stopping {name} from going online. You asked for this in Mentor Settings.")}
+        later(lambda: mentor_tools.call("run_root_command", arguments), lambda _r: self.show_security())
 
     def suggestions_page(self):
         """The bell's suggestions: on or off, which kinds, and everything the user turned away, each with
@@ -865,6 +989,8 @@ class SettingsApp(Adw.Application):
         elif "suggestions" in asked:
             self.window.tabs.set_visible_child_name("suggestions")
             self.window.show_hidden()
+        elif "security" in asked:  # mentor settings security: what is blocked from the internet
+            self.window.tabs.set_visible_child_name("security")
         elif "themes" in asked:  # mentor settings themes: window colors and the pointer
             self.window.tabs.set_visible_child_name("themes")
         self.window.present()

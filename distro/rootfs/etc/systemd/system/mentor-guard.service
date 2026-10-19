@@ -1,0 +1,9 @@
+[Unit]
+Description=Mentor looks for unusual programs
+Documentation=file:/etc/mentor/SECURITY.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-guard
+Nice=15
+IOSchedulingClass=idle

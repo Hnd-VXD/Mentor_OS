@@ -367,6 +367,13 @@ def checks():
                f"These hold my API keys and can be read by other users: {', '.join(loose)}. Make the folder mode "
                "700 and the files 600 (run_command with chmod; say so in `changes`).")
 
+    # Unusual programs: what the watch running as root found at its last look (mentor_guard.py).
+    try:
+        import mentor_guard
+        yield from mentor_guard.findings()
+    except Exception:  # the watch is not there (an older system): the other checks still count
+        pass
+
 
 def report():
     """The checks as text, for the agent and for `mentor security`."""
@@ -380,6 +387,11 @@ def report():
             f"{source} at least {times} time(s) ({', '.join(ports[:5])})" for source, ports, times in knocks[:6]))
     elif on:
         lines.append("Refused in the last day: nobody")
+    try:
+        import mentor_guard
+        lines += mentor_guard.summary()
+    except Exception:
+        pass
     ports = listening()
     lines.append("Programs waiting for connections from other computers"
                  + (" (the firewall refuses them unless a rule lets them in): " if on else ": ")

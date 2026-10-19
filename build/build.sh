@@ -75,7 +75,9 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-update "$dest"/usr/local/lib/mentor/mentor-enable \
         "$dest"/usr/local/lib/mentor/mentor-crash-watch "$dest"/usr/local/bin/gnome-control-center \
         "$dest"/usr/local/lib/mentor/mentor-host-link "$dest"/usr/local/lib/mentor/mentor-hello \
-        "$dest"/usr/local/lib/mentor/mentor-volume
+        "$dest"/usr/local/lib/mentor/mentor-volume "$dest"/usr/local/lib/mentor/mentor-guard \
+        "$dest"/usr/local/lib/mentor/mentor-netguard "$dest"/usr/local/lib/mentor/mentor-execlog \
+        "$dest"/usr/local/lib/mentor/mentor-noexec
     echo "$VERSION" > "$dest/etc/mentor/version"
     echo "$VERSION_NAME" > "$dest/etc/mentor/version-name"
     # Every update published before this build (distro/updates.json, kept by publish-update.ps1) is in it

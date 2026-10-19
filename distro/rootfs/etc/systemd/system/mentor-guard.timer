@@ -1,0 +1,10 @@
+[Unit]
+Description=Mentor looks for unusual programs every ten minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

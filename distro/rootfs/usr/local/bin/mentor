@@ -46,6 +46,32 @@ def cmd_connect(args):
                  f"Any other MCP-capable agent works too: register the stdio server {MCP_SERVER}")
 
 
+def cmd_check_files(args):
+    """The weekly check of the system's program files (SECURITY.md, "Unusual programs"), when the user agrees."""
+    import mentor_guard
+    print("Comparing every installed program with what its package installed. This takes a few minutes…", flush=True)
+    changed, new, packages, first = mentor_guard.check_files()
+    if not packages:
+        print("The check could not run (pacman -Qkk gave nothing).")
+        return 1
+    if first:
+        print(f"Checked the files of {packages} packages." + (
+            f" {len(changed)} differ from what was installed; this was the first check, so they are noted as "
+            "they are, and only what changes from now on will count:\n" + "\n".join(changed[:40])
+            if changed else " Every one is as it was installed."))
+        return 0
+    if new:
+        print(f"Checked the files of {packages} packages. CHANGED since the last check ({len(new)}):")
+        for path in new[:40]:
+            print(f"  {path}  (package: {mentor_guard._package(path) or '?'})")
+        print("An update in progress, a repair by hand, or a harmful program can do this: `pacman -Qkk PACKAGE`, "
+              "the journal and /var/log/pacman.log say more.")
+        return 3
+    print(f"Checked the files of {packages} packages: every one is as it was installed"
+          + (f" (or as at the last check: {len(changed)} differed already then)." if changed else "."))
+    return 0
+
+
 def run_tool(name, arguments):
     ok, text = mentor_tools.call(name, arguments)
     if not ok:
@@ -685,6 +711,8 @@ p.add_argument("file", nargs="?", help="a recipe file to look at, without runnin
 p.set_defaults(func=lambda args: run_tool("recipe_inspect", {"path": args.file}) if args.file else run_tool("recipe_list", {}))
 p = sub.add_parser("security", help="look at how safe this system is right now: firewall, password, remote login")
 p.set_defaults(func=lambda args: run_tool("security_check", {}))
+p = sub.add_parser("check-files", help="compare every installed program with what its package installed (a few minutes)")
+p.set_defaults(func=cmd_check_files)
 p = sub.add_parser("journal", help="what the agent changed on this system, when, and after which request")
 p.add_argument("search", nargs="*", help="words to look for: a package, a file, a setting, part of a request")
 p.add_argument("-n", "--lines", type=int, default=40, help="how many of the newest (0: all)")

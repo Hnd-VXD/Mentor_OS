@@ -12,6 +12,7 @@ git
 github-cli
 openssh
 nftables
+opensnitch
 python
 nodejs
 npm

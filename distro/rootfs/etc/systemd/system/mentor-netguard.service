@@ -1,0 +1,12 @@
+[Unit]
+Description=Mentor's guard on programs going online (OpenSnitch's interface, with no window)
+Documentation=file:/etc/mentor/SECURITY.md
+Before=opensnitchd.service
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-netguard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

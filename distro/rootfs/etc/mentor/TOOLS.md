@@ -174,6 +174,7 @@ Every engine has them, whatever its own tools (Gemini had none: asked how to mak
 | `mentor tools` | lists the tools and what they do | this file |
 | `mentor call TOOL '{"key": "value"}'` | calls one tool, as an engine would | this file |
 | `mentor connect claude`, `codex`, `gemini` | registers the tools (mentor-mcp) with that engine's program (`claude mcp add`, `codex mcp add`, `agy mcp add`) | ENGINES.md |
+| `mentor check-files` | the weekly check of the system's programs: every installed package's files compared with what it installed (`pacman -Qkk`), as the user; says what CHANGED since the last check | SECURITY.md |
 | `mentor keyring` | makes the "login" keyring open by itself again; the user types the password once, what is kept in it stays | REBUILD.md |
 | `mentor window fullscreen`, `windowed`, `toggle` | the window on Windows full screen or not (tool `window_mode`; "Full Screen" in the system menu) | DESKTOP.md |
 | `mentor game-mouse [auto\|on\|off]`, `--add-game ID`, `--remove-game ID` | mouse-look in 3D games; nothing: how it stands (tool `game_mouse`) | DESKTOP.md "The game mouse" |

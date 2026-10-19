@@ -380,6 +380,16 @@ If a part cannot be mended, it fails alone: the windows keep their colors, and t
 
 **When it is wrong.** No warning at logout while the assistant works: the inhibitor did not take; `journalctl --user -b -o cat | grep -i inhibit` and the check above. The warning stays when nothing works: a tab still marked busy (its gear turning); Stop in that tab clears it. The update never comes after "Update when it's done": the chat must be running (it waits, not Mentor Settings once closed); press Update again.
 
+## Shutdown
+
+**What the user has.** A shutdown or restart never waits more than 30 seconds for a program that does not stop; it is then stopped by force. GNOME's own wait is 90 seconds: once, at the restart right after systemd itself was upgraded (262 to 262.1), the screen stayed black 85 seconds (2026-10-19). The user chose 30 seconds over 15.
+
+**How.** `/etc/systemd/system.conf.d/90-mentor-stop-timeout.conf` and `/etc/systemd/user.conf.d/90-mentor-stop-timeout.conf`: `DefaultTimeoutStopSec=30s`, for the system's services and the user's own. systemd also gives it to `systemd-shutdown` for the last programs left. A unit with its own `TimeoutStopSec=` keeps it. Updates (Mentor's, and the system's through `system_upgrade`) are installed before the shutdown begins, so this does not cut them.
+
+**Check.** `systemctl show -p DefaultTimeoutStopUSec` and `systemctl --user show -p DefaultTimeoutStopUSec` say `30s` (after the next start). A slow restart: `journalctl --list-boots` and the time between one boot's last entry and the next one's first (about 15 seconds is usual); the end of the earlier boot (`journalctl -b -1 | tail -40`) shows what was stopping, though the very last wait comes after the log is closed.
+
+**When it is wrong.** A program that needs longer to stop cleanly (a database writing much at once) is cut: give its unit its own `TimeoutStopSec=` in a drop-in, not a longer default.
+
 ## Keyboard layouts
 
 **What the user has.** With more than one keyboard layout (Settings, Keyboard, Input Sources; for example English and Greek), **Alt+Shift** switches to the next one, as on Windows, and so does GNOME's **Super+Space**. Alt+Shift switches when the two are let go with no other key in between, so Alt+Shift+Tab, Alt+Shift+F and the like stay shortcuts of the programs.

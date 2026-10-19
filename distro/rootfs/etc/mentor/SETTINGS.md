@@ -11,13 +11,14 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | **Not sure about something?** "Ask Mentor" | hands you a request: ask them what they want to change or understand, and explain simply |
 | **Keep me safe** | |
 | "Block other computers from getting in" | the firewall, on or off (the password is asked) |
-| "Let Mentor check by itself when someone tries" | when the firewall turns other computers away, you are asked to look at once, without the user asking (SECURITY.md, "Refused connections") |
+| "Let Mentor look by itself at what seems wrong" | when the firewall turns other computers away, or the watch for unusual programs finds something (SECURITY.md, "Unusual programs"), you are asked to look at once, without the user asking (SECURITY.md, "Refused connections") |
 | "Everything looks fine" or "2 things need a look", with "Let Mentor look" | what the safety check finds, handed to you in one request |
 | "Change my password" | GNOME Settings on System, Users (`gnome-control-center system users`), where Password opens GNOME's dialog for it; until 2026-10-18 a Console window on `passwd` |
 | **What Mentor tells me** | |
 | (tab Suggestions) "Suggest things for this system", "What to suggest", "Not suggested any more" | the bell on the desktop: all of it on or off, each kind, and what was turned away with Bring back: kinds, sources of articles ("LWN") and cards skipped one by one with "Skip" (the last 20 shown) |
 | "Warnings when something is wrong" | the yellow and red cards in the chat, all of them |
 | **What Mentor did** "Show" | the journal (JOURNAL.md), to read and search |
+| (tab Security) "Blocked from the internet", "Went online, not known to Mentor", "Watching" | programs going online (SECURITY.md, "Programs going online"): each blocked program once, with the places it tried (the row opens), and Unblock (password); unknown programs that went online, with Ask Mentor and Block; the watch for unusual programs, the weekly check (Check now), whether temporary folders hold programs. `mentor settings security` opens it; `security_page` and `show_security` in `mentor-settings`, which follow `/var/lib/mentor/guard/net.json` |
 | (tab Themes) **Window colors** (20 little windows) | the colors of the program windows: `mentor_colors.apply`, the user's GTK stylesheets and GNOME's light or dark style (DESKTOP.md, "Window colors"); `mentor colors` does the same from a command |
 | (tab Themes) **Accent** (nine sets under Dark and Light, in Window colors) | sets like Windows' "accent color on title bars and taskbar": the title bars and the taskbar in that color, the windows and the menus GNOME's dark with what is switched on in the color; each also sets GNOME's own accent color (`org.gnome.desktop.interface accent-color`). `mentor_colors.ACCENT_SETS`; `mentor colors "Orange accent"` from a command (DESKTOP.md, "Window colors", "Accent sets") |
 | (tab Themes) **Pointer**: Color (Black, White, Accent) and Size (a slider) | the mouse pointer, at once: `mentor_pointer.apply`, GNOME's `cursor-theme` and `cursor-size` (DESKTOP.md, "Pointer"); `mentor pointer` from a command |

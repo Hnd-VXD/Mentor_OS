@@ -1,0 +1,9 @@
+[Unit]
+Description=Mentor tells the user at once when its watch for unusual programs finds something
+
+[Path]
+PathChanged=/var/lib/mentor/guard/findings.json
+PathChanged=/var/lib/mentor/guard/net.json
+
+[Install]
+WantedBy=default.target

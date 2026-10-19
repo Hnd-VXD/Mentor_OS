@@ -1,0 +1,9 @@
+[Unit]
+Description=Mentor turns what its watch for unusual programs found into cards
+# Started by mentor-guard-notice.path at each change of what the watch found: cheap, and never to be
+# stopped for starting often (a busy guard once hit the start limit, 2026-10-20).
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mentor/mentor-watch --guard

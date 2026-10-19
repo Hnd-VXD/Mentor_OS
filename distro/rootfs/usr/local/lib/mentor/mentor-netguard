@@ -1,0 +1,320 @@
+#!/usr/bin/python3
+"""Mentor's guard on what goes out to the internet (SECURITY.md, "Programs going online").
+
+OpenSnitch's daemon (opensnitchd, package opensnitch) sees every new outgoing connection and the program that makes
+it, and asks its interface what to do. This is that interface, with no window: a gRPC server on the socket the
+daemon talks to (unix:///tmp/osui.sock). The user's wish, 2026-10-20: a card the first time an unknown program goes
+online, a list of what is blocked in Mentor Settings (Security), and a way to unblock it.
+
+  - A program Mentor knows (from a package, Mentor, Flatpak, Steam, an AppImage, or one Mentor's assistant installed:
+    mentor_guard.origin and the assistant's journal) is allowed until the next start: it is not asked about again.
+  - Any other program is allowed this once and written down (/var/lib/mentor/guard/net.json, which every user may
+    read): mentor_guard turns it into a card, and with "Let Mentor look by itself at what seems wrong" the
+    assistant looks at once. Nothing is blocked unless the user agrees.
+  - A blocked program has a rule of OpenSnitch's own, /etc/opensnitchd/rules/mentor-block-NAME.json (deny, always,
+    by its program file), which the daemon reads at once. Its tries are counted per program, with where they went.
+
+Commands (as root):  mentor-netguard               run the interface (mentor-netguard.service)
+                     mentor-netguard block PATH    block a program (the assistant, with the user's yes)
+                     mentor-netguard unblock PATH  let it out again (Mentor Settings, Security; asks the password)
+                     mentor-netguard list          what is blocked, and what unknown programs went online
+"""
+import datetime
+import importlib.util
+import json
+import os
+import re
+import sys
+import threading
+import time
+from concurrent import futures
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_guard
+
+SOCKET = "/tmp/osui.sock"
+RULES = "/etc/opensnitchd/rules"
+NET = "/var/lib/mentor/guard/net.json"   # unknown programs that went online, and the tries of blocked ones
+PREFIX = "mentor-block-"
+KEEP_DESTINATIONS = 40                   # where a program went: the last this many, per program
+LOCK = threading.Lock()
+
+
+def _proto():
+    """OpenSnitch's generated gRPC modules, loaded from its package without the rest of its interface (Qt)."""
+    import glob
+    base = glob.glob("/usr/lib/python3*/site-packages/opensnitch/proto")[0]
+    package = importlib.util.module_from_spec(importlib.util.spec_from_loader("ostproto", loader=None, is_package=True))
+    package.__path__ = [base]
+    sys.modules["ostproto"] = package
+    pb = importlib.import_module("ostproto.ui_pb2")
+    grpc_mod = importlib.import_module("ostproto.ui_pb2_grpc")
+    return pb, grpc_mod
+
+
+def _slug(path):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", path.strip("/"))[:120]
+
+
+def rule_path(program):
+    return os.path.join(RULES, PREFIX + _slug(program) + ".json")
+
+
+def blocked():
+    """{program: when it was blocked} from Mentor's own deny rules."""
+    found = {}
+    for name in os.listdir(RULES) if os.path.isdir(RULES) else ():
+        if name.startswith(PREFIX) and name.endswith(".json"):
+            try:
+                with open(os.path.join(RULES, name)) as f:
+                    rule = json.load(f)
+                found[rule.get("mentor_program") or rule["operator"]["data"]] = rule.get("created", "")
+            except (OSError, ValueError, KeyError):
+                continue
+    return found
+
+
+_cache = {"data": None, "dirty": False}
+
+
+def load():
+    """What was written down, from memory once read (the daemon asks often): the file is written by save()."""
+    if _cache["data"] is not None:
+        return _cache["data"]
+    data = mentor_guard._load(NET, {})
+    data.setdefault("unknown", {})   # program -> {first, last, count, destinations: [..], user}
+    data.setdefault("tries", {})     # blocked program -> {count, last, destinations: [..]}
+    _cache["data"] = data
+    return data
+
+
+def save(data, news=True):
+    """Write net.json: at once when there is news (a new program, a new place, a change of what is blocked), since
+    a change of the file wakes the user's session to make a card; mere counts every 30 seconds (flusher). Written
+    at every try, a program trying 40 times a second woke the session so often that systemd stopped it
+    (start-limit-hit, 2026-10-20)."""
+    _cache["data"] = data
+    if not news:
+        _cache["dirty"] = True
+        return
+    data["blocked"] = blocked()
+    data["time"] = time.time()
+    mentor_guard._save(NET, data, mode=0o644)
+    _cache["dirty"] = False
+
+
+def flusher():
+    while True:
+        time.sleep(30)
+        with LOCK:
+            if _cache["dirty"] and _cache["data"] is not None:
+                save(_cache["data"])
+
+
+def _remember(entry, destination):
+    """Count a connection; True when it went somewhere new for this program (news worth a card)."""
+    entry["count"] = entry.get("count", 0) + 1
+    entry["last"] = time.time()
+    places = entry.setdefault("destinations", [])
+    new = destination not in places
+    if not new:
+        places.remove(destination)
+    places.append(destination)
+    del places[:-KEEP_DESTINATIONS]
+    return new
+
+
+def _script(path):
+    """A script (run by python3, bash…), not a program file of its own: blocked by its command line."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"#!" or path.endswith((".py", ".sh", ".pl", ".rb", ".js"))
+    except OSError:
+        return path.endswith((".py", ".sh", ".pl", ".rb", ".js"))
+
+
+def block(program, why=""):
+    os.makedirs(RULES, exist_ok=True)
+    if _script(program):  # what goes online is python3 or bash; the script is in its command line
+        operator = {"type": "regexp", "operand": "process.command", "sensitive": False,
+                    "data": ".*" + re.escape(program) + ".*", "list": []}
+    else:
+        operator = {"type": "simple", "operand": "process.path", "sensitive": False, "data": program, "list": []}
+    now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")  # RFC 3339, as the daemon wants
+    rule = {"created": now, "updated": now,
+            "name": PREFIX + _slug(program), "description": "Blocked by Mentor" + (f": {why}" if why else ""),
+            "enabled": True, "precedence": True, "nolog": False, "action": "deny", "duration": "always",
+            "operator": operator, "mentor_program": program}
+    with open(rule_path(program), "w") as f:
+        json.dump(rule, f, indent=2)
+    with LOCK:
+        _cache["data"] = None
+        save(load())
+
+
+def unblock(program):
+    try:
+        os.remove(rule_path(program))
+    except FileNotFoundError:
+        pass
+    with LOCK:
+        _cache["data"] = None
+        data = load()
+        data["tries"].pop(program, None)
+        save(data)
+
+
+# --- the interface the daemon talks to -------------------------------------------------------------
+
+_journal = {"text": "", "read": 0}
+_seen = {"last": 0}  # the newest event already counted: the daemon sends its last events again at every ping
+_known = {}
+
+
+ENGINES = mentor_guard.ENGINES  # the AI engines Mentor sets up for the user, in their home
+INTERPRETERS = re.compile(r"^/usr/bin/(python3?(\.\d+)?|bash|sh|dash|zsh|perl|ruby|node|lua\S*|php)$")
+
+
+def program_of(path, args):
+    """What really goes online: for an interpreter (python3, bash, node…) the script it runs, when that is a file
+    of its own; otherwise the program file itself."""
+    if INTERPRETERS.match(path):
+        for arg in list(args)[1:]:
+            if arg.startswith("-"):
+                continue
+            if arg.startswith("/") and os.path.isfile(arg):
+                return arg, True
+            break
+        return path, True
+    return path, False
+
+
+def known(program):
+    """Whether a program is one Mentor knows, so that it goes online without a word: from a package, Mentor, Flatpak,
+    Steam or an AppImage, one of the AI engines Mentor set up, or one Mentor's assistant installed (its journal
+    names it). The user's own others in ~/.local are not: a harmful program can sit there too."""
+    # The assistant's journal, read again as soon as it changes: a program a recipe has just installed goes online
+    # right after (its check missed one read a minute before, 2026-10-20).
+    stamp = 0.0
+    for _name, home in mentor_guard._homes():
+        try:
+            stamp += os.path.getmtime(os.path.join(home, ".local/state/mentor/journal.jsonl"))
+        except OSError:
+            pass
+    if stamp != _journal["read"]:
+        _journal["text"], _journal["read"] = mentor_guard._mentor_journal_text(), stamp
+        _known.clear()
+    if program in _known and time.time() - _known[program][1] < 600:
+        return _known[program][0]
+    if not mentor_guard._MENTOR:
+        mentor_guard._MENTOR = mentor_guard._mentor_files()
+    where = mentor_guard.origin(program)
+    ok = (where not in ("none", "home")) or bool(ENGINES.match(program)) or program in _journal["text"]
+    _known[program] = (ok, time.time())
+    return ok
+
+
+def serve():
+    pb, grpc_mod = _proto()
+    import grpc
+
+    def rule(action, duration, program, name):
+        return pb.Rule(name=name, enabled=True, precedence=False, action=action, duration=duration,
+                       operator=pb.Operator(type="simple", operand="process.path", data=program))
+
+    class UI(grpc_mod.UIServicer):
+        def Ping(self, request, context):
+            # The daemon's statistics carry the last connections: blocked ones are counted per program.
+            try:
+                tries = [e for e in request.stats.events if e.rule.action == "deny" and e.rule.name.startswith(PREFIX)
+                         and e.unixnano > _seen["last"]]
+                if tries:
+                    names = {PREFIX + _slug(p): p for p in blocked()}
+                    with LOCK:
+                        data = load()
+                        news = False
+                        for event in tries:
+                            c = event.connection
+                            program = names.get(event.rule.name) or program_of(c.process_path, c.process_args)[0]
+                            news |= _remember(data["tries"].setdefault(program, {}), f"{c.dst_host or c.dst_ip}:{c.dst_port}")
+                        save(data, news)
+                    _seen["last"] = max(e.unixnano for e in tries)
+            except Exception as e:
+                print(f"mentor-netguard: ping: {e}", file=sys.stderr)
+            return pb.PingReply(id=request.id)
+
+        def AskRule(self, request, context):
+            program, interpreter = program_of(request.process_path or "?", request.process_args)
+            try:
+                if program in blocked():  # blocked a moment ago, before the daemon read the new rule
+                    with LOCK:
+                        data = load()
+                        save(data, _remember(data["tries"].setdefault(program, {}),
+                                             f"{request.dst_host or request.dst_ip}:{request.dst_port}"))
+                    return rule("deny", "once", request.process_path, PREFIX + _slug(program))
+                if known(program):
+                    if interpreter:  # never all of python3 or bash at once: each script is looked at
+                        return rule("allow", "once", request.process_path, "mentor-once")
+                    return rule("allow", "until restart", program, "mentor-known-" + _slug(program))
+                with LOCK:
+                    data = load()
+                    first = program not in data["unknown"]
+                    entry = data["unknown"].setdefault(program, {"first": time.time(), "user": request.user_id,
+                                                                 "args": " ".join(request.process_args)[:300]})
+                    save(data, _remember(entry, f"{request.dst_host or request.dst_ip}:{request.dst_port}") or first)
+            except Exception as e:
+                print(f"mentor-netguard: ask: {e}", file=sys.stderr)
+            return rule("allow", "once", request.process_path, "mentor-once")
+
+        def Subscribe(self, request, context):
+            return request
+
+        def Notifications(self, request_iterator, context):
+            for _ in request_iterator:
+                pass
+            return iter(())
+
+        def PostAlert(self, request, context):
+            return pb.MsgResponse(id=request.id)
+
+    try:
+        os.remove(SOCKET)
+    except FileNotFoundError:
+        pass
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+    grpc_mod.add_UIServicer_to_server(UI(), server)
+    server.add_insecure_port("unix://" + SOCKET)
+    server.start()
+    os.chmod(SOCKET, 0o600)
+    with LOCK:
+        save(load())
+    threading.Thread(target=flusher, daemon=True).start()
+    server.wait_for_termination()
+
+
+def main(argv):
+    if not argv:
+        serve()
+        return 0
+    if argv[0] in ("block", "unblock") and len(argv) == 2:
+        if os.geteuid() != 0:
+            print("mentor-netguard: as root (the rules are root's)", file=sys.stderr)
+            return 1
+        (block if argv[0] == "block" else unblock)(argv[1])
+        print(f"{argv[0]}ed {argv[1]}")
+        return 0
+    if argv[0] == "list":
+        data = mentor_guard._load(NET, {})
+        for program, since in sorted(data.get("blocked", {}).items()):
+            tries = data.get("tries", {}).get(program, {})
+            print(f"blocked  {program}  (since {since}; {tries.get('count', 0)} tries"
+                  + (f", to {', '.join(tries.get('destinations', [])[-4:])}" if tries else "") + ")")
+        for program, entry in sorted(data.get("unknown", {}).items()):
+            print(f"online   {program}  ({entry.get('count', 0)} connections, to "
+                  f"{', '.join(entry.get('destinations', [])[-4:])})")
+        return 0
+    print(__doc__)
+    return 2
+
+
+sys.exit(main(sys.argv[1:]))

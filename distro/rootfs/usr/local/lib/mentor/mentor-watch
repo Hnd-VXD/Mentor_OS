@@ -86,6 +86,21 @@ def findings():
     for key, level, title, text, request in mentor_security.checks():
         yield ("security:" + key, level, title, text, request)
 
+    # The weekly check of the system's program files, offered, not done: it runs when the user presses Check now
+    # (the user's wish, 2026-10-20). One reminder a week; a green card.
+    try:
+        import mentor_guard
+        if mentor_guard.check_due():
+            yield ("filecheck:" + time.strftime("%Y-%W"), "idea", "Time for the weekly check of this system's programs",
+                   "Mentor compares every installed program with what was installed, to see that none was replaced. "
+                   "It takes a few minutes, and you can go on working.",
+                   "Run the weekly check of the system's program files now: run_command `mentor check-files` (it takes "
+                   "a few minutes; give it a timeout of 1800 seconds). Then tell me the result in one or two plain "
+                   "sentences. If files CHANGED, follow /etc/mentor/SECURITY.md, \"Unusual programs\", to find out "
+                   "why, and change nothing before I agree.")
+    except Exception:
+        pass
+
     usage = shutil.disk_usage("/")
     percent = round(100 * usage.used / usage.total)
     if percent >= 90:
@@ -107,9 +122,19 @@ def group(key):
     kind = key.split(":")[0]
     if kind in ("verify", "doctor", "doctor-minor"):
         return "self"
+    if kind == "filecheck":
+        return "security"
     if kind == "security":
         return "refused" if key.startswith("security:refused") else "security"
     return kind
+
+
+def guard_findings():
+    """Only what the watch for unusual programs found (mentor-watch --guard, started as soon as it finds
+    something: mentor-guard-notice.path)."""
+    import mentor_guard
+    for key, level, title, text, request in mentor_guard.findings():
+        yield ("security:" + key, level, title, text, request)
 
 
 def main():
@@ -122,14 +147,24 @@ def main():
     off = set(mentor_settings.get("watch_off") or [])
     if mentor_settings.get("auto_review"):
         off.add("refused")  # the agent looks at those itself as they happen (mentor-firewall-watch)
-    for key, level, title, text, request in findings():
+    for key, level, title, text, request in (guard_findings() if "--guard" in sys.argv else findings()):
         if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue
         raised[key] = now
         os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
         with open(STATE_PATH, "w") as f:
             json.dump(raised, f)
-        mentor_tools.leave_notice(level, title, text, request)
+        # Something that looks like a harmful program: with "Let Mentor look by itself" on, the assistant looks
+        # at once and says in a few words what it is (the user's wish, 2026-10-19), as for refused connections.
+        if key.startswith("security:guard-") and mentor_settings.get("auto_review"):
+            mentor_tools.leave_notice(level, title, text + " Mentor is having a look.", request
+                                      + " This was noticed just now, by itself, and I did not ask: answer in three or "
+                                      "four short sentences, in simple words, what it is and what you would do.",
+                                      auto=True)
+        elif key.startswith("filecheck:"):
+            mentor_tools.leave_notice(level, title, text, request, action="Check now", quiet=True)
+        else:
+            mentor_tools.leave_notice(level, title, text, request)
         # The assistant shows it, and says so with a notification when it is covered. When it
         # is not running at all, that is the first thing the user has to know.
         if not output("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip():

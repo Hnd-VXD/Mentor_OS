@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+"""Mentor's record of every program started (SECURITY.md, "Unusual programs"; the user's wish, 2026-10-20).
+
+The kernel says, through its process events connector (netlink, NETLINK_CONNECTOR, CN_IDX_PROC), each time a
+program is started (exec). This writes down which, as one line of JSON in /var/log/mentor/exec.log (root's alone):
+the time, the process, its parent, the user, the program file, the name it gives itself, its command line and its
+control group. mentor_guard reads the lines since its last look, so that a program that ran for half a minute
+between two looks is seen too, and Mentor's assistant can tell when and from what something was started.
+
+The file is renamed to exec.log.1 at 20 MB (the one before is dropped): a few days of an ordinary desktop.
+A process gone before it can be read is written with what is known (its number). Runs as root
+(mentor-execlog.service): only root may listen to these events and read every process.
+"""
+import json
+import os
+import pwd
+import socket
+import struct
+import sys
+import time
+
+LOG = "/var/log/mentor/exec.log"
+MOST = 20 << 20
+NETLINK_CONNECTOR = 11
+CN_IDX_PROC = 1
+CN_VAL_PROC = 1
+PROC_CN_MCAST_LISTEN = 1
+PROC_EVENT_EXEC = 0x00000002
+NLMSG_HDR = struct.Struct("=IHHII")        # length, type, flags, sequence, port
+CN_MSG = struct.Struct("=IIIIHH")          # idx, val, seq, ack, length, flags
+PROC_EVENT = struct.Struct("=IIQ")         # what, cpu, timestamp
+EXEC_DATA = struct.Struct("=II")           # pid, tgid
+NLMSG_DONE = 3
+
+
+def listen():
+    s = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, NETLINK_CONNECTOR)
+    s.bind((os.getpid(), CN_IDX_PROC))
+    op = struct.pack("=I", PROC_CN_MCAST_LISTEN)
+    cn = CN_MSG.pack(CN_IDX_PROC, CN_VAL_PROC, 0, 0, len(op), 0) + op
+    s.send(NLMSG_HDR.pack(NLMSG_HDR.size + len(cn), NLMSG_DONE, 0, 0, os.getpid()) + cn)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+    return s
+
+
+def read(path, most=4096):
+    try:
+        with open(path, "rb") as f:
+            return f.read(most)
+    except OSError:
+        return b""
+
+
+def describe(pid):
+    entry = {"time": round(time.time(), 3), "pid": pid}
+    base = f"/proc/{pid}"
+    try:
+        entry["exe"] = os.readlink(base + "/exe")
+    except OSError:
+        entry["exe"] = ""
+    raw = read(base + "/cmdline")
+    entry["argv0"] = raw.split(b"\0")[0].decode("utf-8", "replace")
+    entry["cmdline"] = raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:400]
+    stat = read(base + "/stat").decode("utf-8", "replace")
+    if ")" in stat:
+        entry["name"] = stat[stat.find("(") + 1:stat.rfind(")")]
+        try:
+            entry["ppid"] = int(stat[stat.rfind(")") + 2:].split()[1])
+        except (IndexError, ValueError):
+            pass
+    try:
+        entry["user"] = pwd.getpwuid(os.stat(base).st_uid).pw_name
+    except (OSError, KeyError):
+        entry["user"] = "?"
+    entry["cgroup"] = read(base + "/cgroup").decode("utf-8", "replace").strip().split("::")[-1]
+    return entry
+
+
+def main():
+    os.makedirs(os.path.dirname(LOG), mode=0o750, exist_ok=True)
+    s = listen()
+    out = open(os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", buffering=1)
+    me = os.getpid()
+    while True:
+        try:
+            data = s.recv(1 << 16)
+        except OSError as e:  # the buffer ran over under a storm of starts: go on with what comes next
+            print(f"mentor-execlog: {e}", file=sys.stderr)
+            continue
+        offset = 0
+        while offset + NLMSG_HDR.size <= len(data):
+            length = NLMSG_HDR.unpack_from(data, offset)[0]
+            if length < NLMSG_HDR.size:
+                break
+            body = offset + NLMSG_HDR.size + CN_MSG.size
+            if body + PROC_EVENT.size + EXEC_DATA.size <= offset + length:
+                what = PROC_EVENT.unpack_from(data, body)[0]
+                if what == PROC_EVENT_EXEC:
+                    pid, tgid = EXEC_DATA.unpack_from(data, body + PROC_EVENT.size)
+                    if tgid != me:
+                        out.write(json.dumps(describe(tgid), ensure_ascii=False) + "\n")
+            offset += (length + 3) & ~3
+        try:
+            if os.fstat(out.fileno()).st_size > MOST:
+                out.close()
+                os.replace(LOG, LOG + ".1")
+                out = open(os.open(LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", buffering=1)
+        except OSError as e:
+            print(f"mentor-execlog: {e}", file=sys.stderr)
+
+
+sys.exit(main())

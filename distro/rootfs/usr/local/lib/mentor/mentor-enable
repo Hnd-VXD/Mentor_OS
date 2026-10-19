@@ -10,6 +10,16 @@ systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mento
     mentor-taskbar-quiet.service
 # A card in the chat when a program crashes (etc/mentor/FREEZES.md).
 systemctl --global enable mentor-crash-watch.service
+# The watch for unusual programs (a miner, a program hiding under a system name, something new that starts by
+# itself): it looks as root every ten minutes, and the user's session makes cards of it (etc/mentor/SECURITY.md).
+systemctl enable mentor-guard.timer
+systemctl --global enable mentor-guard-notice.path
+# No programs from temporary folders; the record of every program started; the guard on programs going online,
+# which is OpenSnitch's daemon with Mentor as its interface (package opensnitch; etc/mentor/SECURITY.md).
+systemctl enable mentor-noexec.service mentor-execlog.service
+if [ -e /usr/lib/systemd/system/opensnitchd.service ]; then
+    systemctl enable mentor-netguard.service opensnitchd.service
+fi
 # GNOME asks after a change of language whether to rename Desktop, Documents, Downloads... into it; the
 # folders keep their names: Mentor's recipes live in ~/Documents/Mentor recipes (DESKTOP.md, "Folders").
 systemctl --global mask user-dirs-update-gtk.service

@@ -1,0 +1,11 @@
+#!/usr/bin/python3
+"""Mentor's watch for unusual programs, one look (as root, from mentor-guard.timer). See mentor_guard.py and
+/etc/mentor/SECURITY.md, "Unusual programs"."""
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_guard
+
+found = mentor_guard.scan()
+for f in found:
+    print(f"{f['level']}: {f['title']}: {f['text']}")
