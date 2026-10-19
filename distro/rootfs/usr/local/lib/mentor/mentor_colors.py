@@ -192,7 +192,36 @@ def apply(name):
     # one the note names, and would otherwise undo this change (2026-10-19).
     subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme",
                     "prefer-light" if palette[1] else "prefer-dark"], check=False)
+    prefer_dark(not palette[1])
     return palette
+
+
+def prefer_dark(dark=None):
+    """Say light or dark to GTK 3 too, in ~/.config/gtk-3.0/settings.ini (gtk-application-prefer-dark-theme),
+    as GNOME's style is when DARK is not given. Electron programs (Bitwarden, VS Code, Discord) read it when
+    they start: they learn GNOME's style from the desktop portal only a moment later, and most of them take
+    their light or dark from that first moment and never look again, so in a dark set they came up light
+    (the user, 2026-10-19). Only that one line is Mentor's; the rest of the file stays as it is."""
+    if dark is None:
+        import subprocess
+        dark = "dark" in subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                                        capture_output=True, text=True).stdout
+    path = os.path.expanduser("~/.config/gtk-3.0/settings.ini")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    key, value = "gtk-application-prefer-dark-theme", "1" if dark else "0"
+    if f"{key}={value}" in (line.replace(" ", "") for line in lines):
+        return
+    lines = [line for line in lines if line.replace(" ", "").split("=")[0] != key]
+    if not any(line.strip() == "[Settings]" for line in lines):
+        lines.insert(0, "[Settings]")
+    lines.insert(next(i for i, line in enumerate(lines) if line.strip() == "[Settings]") + 1, f"{key}={value}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 # The window buttons as round lights, as on a Mac but at the right and in GNOME's order: minimize
@@ -251,8 +280,10 @@ BUTTONS_GTK3 = "\n".join([
 
 def buttons():
     """Put the round window buttons into the user's two stylesheets when they are not there as now (at
-    every login, by the assistant; and with each set of colors). Programs show them when opened again."""
+    every login, by the assistant; and with each set of colors). Programs show them when opened again.
+    At login also GTK 3's light or dark, after GNOME's style (prefer_dark)."""
     home = os.path.expanduser("~/.config")
+    prefer_dark()
     for folder, rules in (("gtk-4.0", BUTTONS_GTK4), ("gtk-3.0", BUTTONS_GTK3)):
         path = os.path.join(home, folder, "gtk.css")
         block = "\n".join([BUTTONS_BEGIN, rules, BUTTONS_END])
