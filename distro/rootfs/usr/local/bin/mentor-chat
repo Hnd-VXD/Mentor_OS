@@ -203,6 +203,9 @@ PROVIDERS = {
                "Mentor's assistant can run on models that NVIDIA hosts free of charge. Sign in on NVIDIA's "
                "page, open a model, choose \u201cGet API Key\u201d, and paste the key here. It stays on this computer."),
 }
+# What a provider's key looks like, whole: copied while its page is open, it brings the desktop and the key
+# card back by itself, and the card takes it from the clipboard (show_connect, the extension's AwaitCopy).
+KEY_SHAPES = {"nvidia": r"nvapi-[A-Za-z0-9_-]{20,}"}
 KEYS_DIR = os.path.join(GLib.get_user_config_dir(), "mentor", "keys")
 SETTINGS_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "chat.json")
 PASTED_DIR = os.path.join(GLib.get_user_cache_dir(), "mentor", "attachments")
@@ -4421,6 +4424,28 @@ class DesktopWindow(Adw.ApplicationWindow):
         dialog.present(self)
         entry.grab_focus()
 
+    def take_copied_key(self):
+        """Back in front after "Open NVIDIA's page": a key on the clipboard goes into the key card's box,
+        and Save has the focus. Nothing is saved before the user presses it."""
+        shape, entry, save = getattr(self, "awaiting_key", None) or (None, None, None)
+        if not shape or not self.is_active():
+            return
+        if entry.get_root() is None or self.stack.get_visible_child_name() != "sign-in":  # the card is gone
+            self.awaiting_key = None
+            return
+
+        def read(clipboard, result):
+            try:
+                text = (clipboard.read_text_finish(result) or "").strip()
+            except GLib.Error:
+                return
+            if re.fullmatch(shape, text) and not entry.get_text().strip() and entry.get_root() is not None:
+                entry.set_text(text)
+                save.grab_focus()
+                self.awaiting_key = None
+
+        self.get_clipboard().read_text_async(None, read)
+
     def show_connect(self, rejected=False, change=None):
         """The card that connects the engine of the chosen model: a key for the hosted models,
         an account for Claude or ChatGPT. From it one can also turn to another engine.
@@ -4473,10 +4498,21 @@ class DesktopWindow(Adw.ApplicationWindow):
             get = Gtk.Button(label=f"Open {name}\u2019s page", halign=Gtk.Align.CENTER)
             get.add_css_class("suggested-action")
             get.add_css_class("pill")
-            get.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(page, None))
             entry = Gtk.PasswordEntry(show_peek_icon=True, hexpand=True, placeholder_text="Paste the key here")
             save = Gtk.Button(label="Save")
             save.add_css_class("pill")
+
+            # The page opens over the desktop and hides this card (the user, 2026-10-19). The shell watches for
+            # the key to be copied there and brings the desktop back; in front again, the card puts the key in.
+            def open_page(*_):
+                Gio.AppInfo.launch_default_for_uri(page, None)
+                if provider in KEY_SHAPES:
+                    self.awaiting_key = (KEY_SHAPES[provider], entry, save)
+                    self.get_application().shell("AwaitCopy", KEY_SHAPES[provider])
+                    if not getattr(self, "key_watch", None):
+                        self.key_watch = self.connect("notify::is-active", lambda *_: self.take_copied_key())
+
+            get.connect("clicked", open_page)
 
             # A key is kept for the model it was pasted for. The first one is also the one the
             # provider's other models fall back on, so that one key is enough where one key serves
@@ -4703,12 +4739,13 @@ class AssistantApp(Adw.Application):
                 pass
         self.colors_style.connect("changed::accent-color", pointer)
 
-    def shell(self, method):
+    def shell(self, method, *texts):
         """Ask the shell (the mentor extension) for Show, which clears the windows away so
-        the desktop can be seen, or Restore, which puts them back."""
+        the desktop can be seen, or Restore, which puts them back; AwaitCopy takes a text."""
         self.get_dbus_connection().call(
             "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", method,
-            None, None, Gio.DBusCallFlags.NONE, -1, None, None)
+            GLib.Variant("(" + "s" * len(texts) + ")", texts) if texts else None,
+            None, Gio.DBusCallFlags.NONE, -1, None, None)
 
     def do_command_line(self, command_line):
         arguments = command_line.get_arguments()[1:]

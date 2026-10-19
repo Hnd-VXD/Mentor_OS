@@ -540,6 +540,9 @@ const SERVICE = `
       <arg type="s" direction="in" name="text"/>
     </method>
     <method name="NextInputSource"/>
+    <method name="AwaitCopy">
+      <arg type="s" direction="in" name="pattern"/>
+    </method>
   </interface>
 </node>`;
 
@@ -735,7 +738,46 @@ class ShellService {
             manager._modifiersSwitcher();
     }
 
+    // The key card's "Open NVIDIA's page" (mentor-chat, show_connect): the page opens over the desktop and
+    // hides the card (the user, 2026-10-19). Until text that matches PATTERN (a JavaScript regular
+    // expression, the whole of it) is copied, or for 15 minutes, the clipboard is watched here, where a copy
+    // in any program is seen (a window not in front hears of none on Wayland); then the desktop comes to
+    // the front as with Super+A, and the card, in front again, takes the key from the clipboard itself.
+    // The text is only compared here, never kept or sent on. A second call replaces the first.
+    AwaitCopy(pattern) {
+        this._stopAwaiting?.();
+        let match;
+        try {
+            match = new RegExp(`^(?:${pattern})$`);
+        } catch (e) {
+            return;
+        }
+        const selection = global.display.get_selection();
+        const stop = () => {
+            selection.disconnect(watch);
+            GLib.source_remove(timeout);
+            this._stopAwaiting = null;
+        };
+        const watch = selection.connect('owner-changed', (_selection, type) => {
+            if (type !== Meta.SelectionType.SELECTION_CLIPBOARD)
+                return;
+            St.Clipboard.get_default().get_text(St.ClipboardType.CLIPBOARD, (_clipboard, text) => {
+                if (this._stopAwaiting === stop && text && match.test(text.trim())) {
+                    stop();
+                    this.Show();
+                }
+            });
+        });
+        const timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 15 * 60, () => {
+            selection.disconnect(watch);
+            this._stopAwaiting = null;
+            return GLib.SOURCE_REMOVE;
+        });
+        this._stopAwaiting = stop;
+    }
+
     destroy() {
+        this._stopAwaiting?.();
         this._object.unexport();
     }
 }
@@ -1235,7 +1277,19 @@ export default class MentorExtension extends Extension {
                     return own ? unpinned(this, () => original.call(this, ...args)) : original.call(this, ...args);
                 });
             }
-            wrap(Object.getPrototypeOf(grid._folderIcons?.[0]?.view ?? {}));  // FolderView, not exported
+            // A folder's picture (its first four apps, drawn when the folder's own settings change) could
+            // stay without the pinned apps while the folder itself listed them all: the user's new folder showed
+            // only Gradia of Bitwarden, Chromium and Gradia (2026-10-19; not reproduced, so whatever the cause).
+            // Each time a folder lists its apps again, its picture is drawn again from that list.
+            const folderView = Object.getPrototypeOf(grid._folderIcons?.[0]?.view ?? {});
+            if (folderView?._redisplay && folderView !== appDisplay) {
+                injections.overrideMethod(folderView, '_redisplay', original => function (...args) {
+                    const result = original.call(this, ...args);
+                    grid._folderIcons?.find(icon => icon.view === this)?.icon?.update?.();
+                    return result;
+                });
+            }
+            wrap(folderView);  // FolderView, not exported
             grid._redisplay();
             // a folder view made after this (the first folder of a new layout) is a FolderView too
             if (!wrapped.size || wrapped.size < 2) {
