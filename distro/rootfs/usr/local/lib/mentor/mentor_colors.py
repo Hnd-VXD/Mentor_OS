@@ -13,6 +13,8 @@ little lighter in dark sets and a little deeper in light ones. Text is chosen fo
 7:1 against every background of its set.
 """
 import os
+import shutil
+import subprocess
 
 BEGIN = "/* BEGIN Mentor window colors (Mentor Settings, Window colors; changed there, not here) */"
 END = "/* END Mentor window colors */"
@@ -294,6 +296,29 @@ def buttons():
         except OSError:
             pass
         _write(path, block, BUTTONS_BEGIN, BUTTONS_END)
+    flatpak_style()
+
+
+# Flatpak programs are sealed off from ~/.config: they saw neither the colored window buttons nor the window
+# colors (Google Chrome from Flathub had GNOME's plain buttons, 2026-10-20). Both stylesheets, read only.
+FLATPAK_STYLE = ("xdg-config/gtk-3.0:ro", "xdg-config/gtk-4.0:ro")
+
+
+def flatpak_style():
+    """Let the user's Flatpak programs read the two stylesheets (Flatpak's own setting for all of the user's
+    programs, ~/.local/share/flatpak/overrides/global; for programs installed for everyone mentor-enable sets
+    the same in /var/lib/flatpak/overrides/global). Programs show it when opened again."""
+    if not shutil.which("flatpak"):
+        return
+    try:
+        with open(os.path.expanduser("~/.local/share/flatpak/overrides/global"), encoding="utf-8") as f:
+            have = f.read()
+    except OSError:
+        have = ""
+    missing = [f"--filesystem={place}" for place in FLATPAK_STYLE if place not in have]
+    if missing:
+        subprocess.run(["flatpak", "override", "--user", *missing], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
 def current():

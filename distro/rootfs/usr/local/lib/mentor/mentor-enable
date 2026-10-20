@@ -56,5 +56,10 @@ done
 if [ -n "$changed" ]; then
     locale-gen >/dev/null
 fi
+# Flatpak programs installed for everyone read the user's two stylesheets, so they get Mentor's window
+# colors and buttons (the user's own Flatpak programs: mentor_colors.flatpak_style; DESKTOP.md, "Window buttons").
+if command -v flatpak >/dev/null; then
+    flatpak override --system --filesystem=xdg-config/gtk-3.0:ro --filesystem=xdg-config/gtk-4.0:ro
+fi
 install -d -m 755 /var/log/mentor
 gtk-update-icon-cache -q -f /usr/share/icons/hicolor

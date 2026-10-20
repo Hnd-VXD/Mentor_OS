@@ -370,5 +370,11 @@
     "name": "20.10.26.05",
     "summary": "Two pictures in a row no longer leave two menus open.",
     "published": "2026-10-20 10:30"
+  },
+  {
+    "version": 202610200744,
+    "name": "20.10.26.06",
+    "summary": "Programs from Flathub, such as Google Chrome, get Mentor's colored window buttons and window colors.",
+    "published": "2026-10-20 10:44"
   }
 ]
