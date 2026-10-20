@@ -140,7 +140,6 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/etc/chromium/policies/managed/mentor.json` | Chromium comes with uBlock Origin Lite | yes | next start of Chromium | DESKTOP.md |
 | `/etc/chromium-flags.conf` | `--no-first-run`: no blank "Additional Terms of Service" window at Chromium's first start | yes | next start of Chromium | DESKTOP.md |
 | `/etc/chromium/policies/recommended/mentor.json` | Chromium's Memory Saver on (`HighEfficiencyModeEnabled`, `MemorySaverModeSavings` 1): tabs not looked at for a while sleep; recommended, so the user can turn it off | yes | next start of Chromium | DESKTOP.md |
-| `/usr/local/lib/mentor/mentor-noexec`, `/etc/systemd/system/mentor-noexec.service` | no programs from temporary folders (`/tmp`, `/var/tmp`, `/dev/shm` noexec) | yes | next start | SECURITY.md |
 | `/usr/local/lib/mentor/mentor-execlog`, `/etc/systemd/system/mentor-execlog.service` | the record of every program started, `/var/log/mentor/exec.log` | yes | `systemctl restart mentor-execlog` | SECURITY.md |
 | `/usr/local/share/applications/opensnitch_ui.desktop` | OpenSnitch's own window kept out of Show Apps and the search (Mentor is its interface) | yes | at once | SECURITY.md |
 | `/usr/local/lib/mentor/mentor-netguard`, `/etc/systemd/system/mentor-netguard.service`, `/etc/systemd/system/opensnitchd.service.d/mentor.conf` | the guard on programs going online: OpenSnitch's daemon (package `opensnitch`) with Mentor as its interface | yes | `systemctl restart mentor-netguard opensnitchd` | SECURITY.md |

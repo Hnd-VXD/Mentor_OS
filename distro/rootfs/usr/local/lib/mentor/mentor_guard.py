@@ -600,8 +600,7 @@ def summary():
     for unit, what in (("mentor-guard.timer", "the watch for unusual programs"),
                        ("mentor-execlog.service", "the record of programs started"),
                        ("opensnitchd.service", "the guard on programs going online (OpenSnitch's daemon)"),
-                       ("mentor-netguard.service", "the guard on programs going online (Mentor's side)"),
-                       ("mentor-noexec.service", "no programs from temporary folders")):
+                       ("mentor-netguard.service", "the guard on programs going online (Mentor's side)")):
         if _out("systemctl", "is-active", unit).strip() != "active":
             lines.append(f"NOT WORKING: {what} ({unit}; SECURITY.md)")
     if data.get("new"):

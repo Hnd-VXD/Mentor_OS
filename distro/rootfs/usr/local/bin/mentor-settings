@@ -511,13 +511,6 @@ class SettingsWindow(Adw.ApplicationWindow):
         except Exception as e:
             add(self.watch_group, Adw.ActionRow(title="The watch for unusual programs could not be read",
                                                 subtitle=GLib.markup_escape_text(str(e))))
-        noexec = subprocess.run(["findmnt", "-no", "OPTIONS", "--target", "/tmp"], capture_output=True,
-                                text=True).stdout
-        add(self.watch_group, Adw.ActionRow(
-            title="Programs cannot start from temporary folders" if "noexec" in noexec
-            else "Programs can start from temporary folders",
-            subtitle="/tmp, /var/tmp and /dev/shm hold files, not programs" if "noexec" in noexec
-            else "The protection is off: SECURITY.md, \u201cNo programs from temporary folders\u201d"))
         return False
 
     def netguard(self, what, program):

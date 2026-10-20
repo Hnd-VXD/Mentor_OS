@@ -346,5 +346,11 @@
     "name": "20.10.26.00",
     "summary": "Show Apps and the search take the tones of your window colors, light or dark. OpenSnitch's own window is no longer listed among the apps.",
     "published": "2026-10-20 07:28"
+  },
+  {
+    "version": 202610200438,
+    "name": "20.10.26.01",
+    "summary": "OpenCode and other programs that unpack a part of themselves into a temporary folder start again.",
+    "published": "2026-10-20 07:41"
   }
 ]

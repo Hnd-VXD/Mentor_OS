@@ -14,9 +14,12 @@ systemctl --global enable mentor-crash-watch.service
 # itself): it looks as root every ten minutes, and the user's session makes cards of it (etc/mentor/SECURITY.md).
 systemctl enable mentor-guard.timer
 systemctl --global enable mentor-guard-notice.path
-# No programs from temporary folders; the record of every program started; the guard on programs going online,
-# which is OpenSnitch's daemon with Mentor as its interface (package opensnitch; etc/mentor/SECURITY.md).
-systemctl enable mentor-noexec.service mentor-execlog.service
+# The record of every program started; the guard on programs going online, which is OpenSnitch's daemon with
+# Mentor as its interface (package opensnitch; etc/mentor/SECURITY.md).
+systemctl enable mentor-execlog.service
+# "No programs from temporary folders" (19.10.26.13) was taken back on 2026-10-20: it broke OpenCode and others
+# that unpack a library into /tmp. Its switch-on link goes with the unit the update removes.
+rm -f /etc/systemd/system/sysinit.target.wants/mentor-noexec.service
 if [ -e /usr/lib/systemd/system/opensnitchd.service ]; then
     systemctl enable mentor-netguard.service opensnitchd.service
 fi

@@ -35,7 +35,6 @@ RUNTIME = [
     "/etc/kernel/mentor-boot.conf",   # written only for a kernel other than the stock one (BOOT.md)
     "/usr/local/libexec/mentor",      # where the agent puts a changed engine program (ENGINES.md)
     "/etc/mentor-test",               # the file a check in TOOLS.md makes in the sandbox
-    "/etc/mentor/allow-exec-in-tmp",  # made by hand to switch off "no programs from temporary folders" (SECURITY.md)
     "/etc/opensnitchd/rules",         # OpenSnitch's rules; Mentor's blocks are made there at run time (SECURITY.md)
 ]
 # Words that stand for a name in a path (/etc/mentor/source/rootfs/PATH, mentor-webapp-NAME.desktop).
