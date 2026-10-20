@@ -575,7 +575,11 @@ function bytesText(n) {
 // 2026-10-20): copy it, a smaller copy (75%, 50%, 30%: what makes a paste into a web page smaller, for Chromium
 // takes only PNG from the clipboard and makes every pasted picture PNG anyway; tested), save it as JPG next to it,
 // save it elsewhere (mentor save-picture: a dialog), edit it (Gradia), show it in its folder. DESKTOP.md, "Screenshots".
+// The picture menu open now: a newer picture closes it (two Print Screens in a row left two menus, 2026-10-20).
+let shownPictureMenu = null;
+
 function pictureMenu(path, fromWindows = false) {
+    shownPictureMenu?.close();
     const file = Gio.File.new_for_path(path);
     const picture = GdkPixbuf.Pixbuf.new_from_file(path);
     const [width, height] = [picture.get_width(), picture.get_height()];
@@ -735,6 +739,8 @@ function pictureMenu(path, fromWindows = false) {
     }
     menu.connect('open-state-changed', (_menu, open) => {
         if (!open) {
+            if (shownPictureMenu === menu)
+                shownPictureMenu = null;
             if (closing)
                 GLib.source_remove(closing);
             closing = 0;
@@ -745,6 +751,7 @@ function pictureMenu(path, fromWindows = false) {
             });
         }
     });
+    shownPictureMenu = menu;
     menu.open(true);
 }
 

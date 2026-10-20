@@ -364,5 +364,11 @@
     "name": "20.10.26.04",
     "summary": "A menu after each picture: a smaller copy, a copy as PNG, JPG or WebP, the text in it, save, edit.",
     "published": "2026-10-20 10:17"
+  },
+  {
+    "version": 202610200729,
+    "name": "20.10.26.05",
+    "summary": "Two pictures in a row no longer leave two menus open.",
+    "published": "2026-10-20 10:30"
   }
 ]
