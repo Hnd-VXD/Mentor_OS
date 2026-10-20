@@ -1642,6 +1642,35 @@ export default class MentorExtension extends Extension {
                     });
                 }
             };
+            // The overview too (Show Apps, the search, the folders): its background in the set's window tone, the
+            // folders, the search box and the results a little off it, the names in the set's text color. GNOME
+            // keeps it black in every style; with a light set it stood dark under a light taskbar (the user,
+            // 2026-10-20). Only colors: GNOME's sizes and shapes stay.
+            const overview = (window, ink, light) => {
+                const raised = `st-mix(${ink}, ${window}, ${light ? 7 : 9}%)`;
+                const hover = `st-mix(${ink}, ${window}, ${light ? 12 : 15}%)`;
+                return `
+#overviewGroup { background-color: ${window}; }
+.overview-tile, .grid-search-result, .app-folder-dialog .overview-tile { color: ${ink}; }
+.overview-tile:hover, .grid-search-result:hover, .overview-tile:focus, .grid-search-result:focus,
+.overview-tile:selected, .grid-search-result:selected, .overview-tile:highlighted, .grid-search-result:highlighted,
+.overview-tile:checked, .grid-search-result:checked, .overview-tile:active, .grid-search-result:active { background-color: ${hover}; color: ${ink}; }
+.list-search-result .list-search-result-title, .search-provider-icon .list-search-provider-content,
+.search-provider-icon StLabel, .list-search-provider-details, .list-search-provider-details StLabel { color: ${ink}; }
+.list-search-result:selected, .list-search-result:highlighted, .search-provider-icon:selected { background-color: ${hover}; color: ${ink}; }
+.app-folder { background-color: ${raised}; color: ${ink}; box-shadow: none; }
+.app-folder:hover, .app-folder:focus { background-color: ${hover}; color: ${ink}; }
+.app-folder-dialog { background-color: ${raised}; color: ${ink}; }
+.app-folder-dialog .folder-name-label, .app-folder-dialog .folder-name-entry { color: ${ink}; }
+.search-entry { background-color: ${raised}; color: ${ink}; border-color: transparent; }
+.search-entry:focus { background-color: ${hover}; }
+.search-entry .search-entry-icon, .search-entry StLabel.hint-text { color: st-transparentize(${ink}, 0.4); }
+.search-section-content { background-color: ${raised}; color: ${ink}; border-color: transparent; }
+.list-search-result:hover, .list-search-result:focus, .search-provider-icon:hover, .search-provider-icon:focus { background-color: ${hover}; }
+.list-search-result .list-search-result-description { color: st-transparentize(${ink}, 0.3); }
+.page-indicator .page-indicator-icon { background-color: ${ink}; }
+`;
+            };
             const paint = () => {
                 unload();
                 let tones;
@@ -1673,7 +1702,7 @@ export default class MentorExtension extends Extension {
 .quick-toggle:checked:hover, .calendar .calendar-day.calendar-today:hover { background-color: ${light ? 'st-darken' : 'st-lighten'}(-st-accent-color, 4%); }
 .quick-toggle-has-menu .quick-toggle-menu-button:checked { color: -st-accent-fg-color; background-color: st-mix(-st-accent-color, ${light ? '#ffffff, 85%' : '#222226, 92%'}); }
 .quick-toggle-has-menu .quick-toggle-menu-button:checked:hover { background-color: ${light ? 'st-lighten' : 'st-darken'}(st-mix(-st-accent-color, ${light ? '#ffffff, 85%' : '#222226, 92%'}), 4%); }
-`;
+${overview(window, ink, light)}`;
                 try {
                     sheet = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_user_runtime_dir(),
                         `mentor-menu-colors-${++count}.css`]));

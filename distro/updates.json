@@ -340,5 +340,11 @@
     "name": "19.10.26.13",
     "summary": "A guard against harmful programs: a watch for unusual programs, a card when an unknown program goes online (Mentor Settings, Security), no programs from temporary folders, and a weekly check of this system's programs.",
     "published": "2026-10-20 01:07"
+  },
+  {
+    "version": 202610200427,
+    "name": "20.10.26.00",
+    "summary": "Show Apps and the search take the tones of your window colors, light or dark. OpenSnitch's own window is no longer listed among the apps.",
+    "published": "2026-10-20 07:28"
   }
 ]

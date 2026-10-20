@@ -1,0 +1,9 @@
+[Desktop Entry]
+# Mentor: OpenSnitch's own window is not shown. Mentor is its interface (mentor-netguard): the window would take
+# the same socket and ask about every program in pop-ups. This copy, ahead of the package's in XDG_DATA_DIRS
+# (/usr/local/share before /usr/share), hides it from Show Apps and the search. etc/mentor/SECURITY.md.
+Type=Application
+Name=OpenSnitch
+Exec=opensnitch-ui
+NoDisplay=true
+Hidden=true
