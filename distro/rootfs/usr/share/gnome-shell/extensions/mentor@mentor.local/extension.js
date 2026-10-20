@@ -1871,6 +1871,10 @@ export default class MentorExtension extends Extension {
             const overview = (window, ink, light) => {
                 const raised = `st-mix(${ink}, ${window}, ${light ? 7 : 9}%)`;
                 const hover = `st-mix(${ink}, ${window}, ${light ? 12 : 15}%)`;
+                // The dock of the overview (Super, without the taskbar) stands out from it: dark in a light set,
+                // light in a dark one (the user's wish, 2026-10-20). Its symbolic icons (Show Apps) and dots follow.
+                const dock = light ? '#2a2a2e' : '#ebebef';
+                const dockInk = light ? '#ffffff' : '#222226';
                 return `
 #overviewGroup { background-color: ${window}; }
 .overview-tile, .grid-search-result, .app-folder-dialog .overview-tile { color: ${ink}; }
@@ -1891,6 +1895,20 @@ export default class MentorExtension extends Extension {
 .list-search-result:hover, .list-search-result:focus, .search-provider-icon:hover, .search-provider-icon:focus { background-color: ${hover}; }
 .list-search-result .list-search-result-description { color: st-transparentize(${ink}, 0.3); }
 .page-indicator .page-indicator-icon { background-color: ${ink}; }
+#dash .dash-background { background-color: ${dock}; }
+#dash .dash-item-container .show-apps .overview-icon, #dash .dash-item-container .overview-tile .overview-icon {
+    color: ${dockInk}; background-color: ${dock}; }
+#dash .dash-item-container .show-apps:hover .overview-icon, #dash .dash-item-container .overview-tile:hover .overview-icon,
+#dash .dash-item-container .show-apps:active .overview-icon, #dash .dash-item-container .overview-tile:active .overview-icon,
+#dash .dash-item-container .show-apps:checked .overview-icon, #dash .dash-item-container .overview-tile:checked .overview-icon,
+#dash .dash-item-container .show-apps:focus .overview-icon, #dash .dash-item-container .overview-tile:focus .overview-icon {
+    color: ${dockInk}; background-color: st-mix(${dockInk}, ${dock}, 14%); }
+#dash .dash-item-container .overview-tile, #dash .dash-item-container .overview-tile:hover,
+#dash .dash-item-container .overview-tile:focus, #dash .dash-item-container .overview-tile:active,
+#dash .dash-item-container .overview-tile:checked, #dash .dash-item-container .overview-tile:selected,
+#dash .dash-item-container .overview-tile:highlighted { background: none; }
+#dash .dash-separator { background-color: st-transparentize(${dockInk}, 0.75); }
+#dash .app-well-app-running-dot, #dash .app-grid-running-dot { background-color: ${dockInk}; }
 `;
             };
             const paint = () => {

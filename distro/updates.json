@@ -382,5 +382,11 @@
     "name": "20.10.26.07",
     "summary": "History opens in a window of its own: minimize, maximize and close, like any program.",
     "published": "2026-10-20 11:01"
+  },
+  {
+    "version": 202610200815,
+    "name": "20.10.26.08",
+    "summary": "The overview's dock stands out: dark with light window colors, light with dark ones.",
+    "published": "2026-10-20 11:15"
   }
 ]
