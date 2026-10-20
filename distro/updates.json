@@ -376,5 +376,11 @@
     "name": "20.10.26.06",
     "summary": "Programs from Flathub, such as Google Chrome, get Mentor's colored window buttons and window colors.",
     "published": "2026-10-20 10:44"
+  },
+  {
+    "version": 202610200801,
+    "name": "20.10.26.07",
+    "summary": "History opens in a window of its own: minimize, maximize and close, like any program.",
+    "published": "2026-10-20 11:01"
   }
 ]

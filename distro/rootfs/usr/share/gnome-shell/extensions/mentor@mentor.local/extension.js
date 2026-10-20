@@ -33,6 +33,9 @@ const ASSISTANT = 'org.mentor.Chat';
 const ASSISTANT_COMMAND = '/usr/local/bin/mentor-chat';
 // The title of the assistant's text box over the windows (mentor-chat, toggle_ask); its desktop window is "Mentor".
 const ASK_TITLE = 'Ask Mentor';
+// The assistant's windows that are windows like any program's (minimize, maximize, the taskbar), never the
+// desktop: History (mentor-chat show_history). Taken for the desktop, it replaced it (2026-10-20).
+const PLAIN_TITLES = ['History'];
 
 function ask(...args) {
     Gio.Subprocess.new([ASSISTANT_COMMAND, ...args], Gio.SubprocessFlags.NONE);
@@ -303,6 +306,8 @@ class DesktopLayer {
             this._float(window);
             return true;
         }
+        if (type === Meta.WindowType.NORMAL && PLAIN_TITLES.includes(window.get_title()))
+            return true;
         if (!window.get_title() && this._window && type === Meta.WindowType.NORMAL) {
             // No title yet: which of the two it is shows a moment later (notify::title, _watch).
             return false;

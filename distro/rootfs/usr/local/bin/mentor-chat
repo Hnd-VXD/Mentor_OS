@@ -2835,6 +2835,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         # not speak up by itself: what it holds is read when the user opens it.
         # The text box lifted out over the windows (toggle_ask): its window, whose it is, the picture taken.
         self.ask_window = self.ask_of = self.ask_shot = None
+        self.history_window = None  # History, a window of its own (show_history)
         self.advice_count = Gtk.Label()
         bell = Gtk.Box(spacing=6)
         bell.append(Gtk.Image(icon_name="preferences-system-notifications-symbolic"))
@@ -3260,8 +3261,21 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.save_conversations()
 
     def show_history(self):
-        dialog = Adw.Dialog(title="History", content_width=760, content_height=680)
-        dialog.add_css_class("advice-details")
+        """History in a window of its own, with minimize, maximize and close as any program's (the user's wish,
+        2026-10-20; an Adw.Dialog inside the desktop window had only close). One at a time: asked again, the
+        open one comes to the front. Its title is how the shell tells it from the desktop window (the
+        extension's PLAIN_TITLES): keep the two the same."""
+        if self.history_window is not None:
+            self.history_window.present()
+            return
+        dialog = Adw.Window(application=self.get_application(), title="History", default_width=760,
+                            default_height=680)
+        self.history_window = dialog
+
+        def gone(*_):
+            self.history_window = None
+            return False
+        dialog.connect("close-request", gone)
         rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=6, margin_bottom=18,
                        margin_start=24, margin_end=24)
         scroller = Gtk.ScrolledWindow(child=rows, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -3304,12 +3318,17 @@ class DesktopWindow(Adw.ApplicationWindow):
         scroller.connect("edge-reached", lambda _s, edge: edge == Gtk.PositionType.BOTTOM and more())
         search.connect("search-changed", again)
         view = Adw.ToolbarView(content=scroller)
-        view.add_top_bar(dialog_header(dialog))
-        keep_still(view)
+        view.add_top_bar(Adw.HeaderBar())  # a real title bar: drag, double click, the window's own buttons
         view.add_top_bar(search)
-        dialog.set_child(view)
+        dialog.set_content(view)
         dialog.set_focus(search)
-        dialog.present(self)
+        close = Gtk.ShortcutController()
+        close.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("Escape"),
+                                        action=Gtk.CallbackAction.new(lambda *_: dialog.close() or True)))
+        dialog.add_controller(close)
+        # Esc in the search box (it takes the key): clears what is typed, then closes.
+        search.connect("stop-search", lambda *_: search.set_text("") if search.get_text() else dialog.close())
+        dialog.present()
         more()
 
     def on_selected(self, *_):
