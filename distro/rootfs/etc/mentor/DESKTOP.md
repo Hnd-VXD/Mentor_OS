@@ -78,7 +78,7 @@ Do not get around the checks: no upgrade with run_root_command, no switching off
 
 ## Mending one part, step by step
 
-For a small model: do exactly this, one part at a time.
+For a small model: do exactly this, one part at a time. **If, after one careful attempt, the check below still fails, or a step here no longer matches the system** (a class, a file, a function or a command GNOME changed): stop, tell the user in one sentence that the instructions for this part are out of date, and offer to report it (problem_report, AGENT.md): an update will bring instructions that fit. The part stays as GNOME draws it meanwhile.
 
 **1. Find the part that is broken.**
 

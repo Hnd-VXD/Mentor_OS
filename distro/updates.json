@@ -352,5 +352,11 @@
     "name": "20.10.26.01",
     "summary": "OpenCode and other programs that unpack a part of themselves into a temporary folder start again.",
     "published": "2026-10-20 07:41"
+  },
+  {
+    "version": 202610200630,
+    "name": "20.10.26.03",
+    "summary": "When a part of Mentor stays broken, Mentor offers to tell its maker (Report a problem), so that an update can fix it.",
+    "published": "2026-10-20 09:31"
   }
 ]

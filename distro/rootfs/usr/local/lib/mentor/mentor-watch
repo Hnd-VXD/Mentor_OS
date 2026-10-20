@@ -122,6 +122,8 @@ def group(key):
     kind = key.split(":")[0]
     if kind in ("verify", "doctor", "doctor-minor"):
         return "self"
+    if kind == "report":
+        return "self"  # a part of Mentor's that stays broken: the "Mentor itself" warnings
     if kind == "filecheck":
         return "security"
     if kind == "security":
@@ -137,6 +139,44 @@ def guard_findings():
         yield ("security:" + key, level, title, text, request)
 
 
+SINCE_PATH = os.path.join(os.path.dirname(STATE_PATH), "watch-since.json")
+REPORT_AFTER = 24 * 3600  # a part of Mentor's that stays broken this long is offered to the maker
+
+
+def still_broken(found, now):
+    """A part of Mentor's desktop that stays broken a day, mended or not: the instructions it is mended from are what
+    is out of date (a new GNOME renamed something, say), and only an update can fix that for everyone. A card offers
+    to tell the maker (problem_report; the user's wish, 2026-10-20). Once per part, as any card."""
+    try:
+        with open(SINCE_PATH) as f:
+            since = json.load(f)
+    except (OSError, ValueError):
+        since = {}
+    now_broken = {}
+    for key, _level, _title, text, _request in found:
+        if key.split(":")[0] in ("doctor", "doctor-minor"):
+            for line in text.splitlines():
+                part = line.split(":")[0].strip()
+                if part:
+                    now_broken[part] = since.get(part, now)
+    os.makedirs(os.path.dirname(SINCE_PATH), exist_ok=True)
+    with open(SINCE_PATH, "w") as f:
+        json.dump(now_broken, f)
+    long = sorted(part for part, first in now_broken.items() if now - first >= REPORT_AFTER)
+    if not long:
+        return []
+    listed = "\n".join(long[:8])
+    return [("report:" + ",".join(long[:6]), "warning", "A part of Mentor still does not work",
+             listed + "\n\nIt has not worked for a day. Telling Mentor's maker lets an update fix it, for you and "
+             "for everyone.",
+             f"These parts of Mentor's desktop have been broken for more than a day:\n\n{listed}\n\nThe instructions "
+             "they are mended from (/etc/mentor/DESKTOP.md) did not bring them back, or were not followed yet. If you "
+             "have not tried yet, follow them once, in the sandbox first. If they still do not work, or the "
+             "instructions no longer match this system, use problem_report: title what does not work, `part` the "
+             "part and the instruction file, `found` what the instructions say, what you did and what the check "
+             "shows now. Show me the report as it is and send it only after my yes.")]
+
+
 def main():
     try:
         with open(STATE_PATH) as f:
@@ -147,7 +187,10 @@ def main():
     off = set(mentor_settings.get("watch_off") or [])
     if mentor_settings.get("auto_review"):
         off.add("refused")  # the agent looks at those itself as they happen (mentor-firewall-watch)
-    for key, level, title, text, request in (guard_findings() if "--guard" in sys.argv else findings()):
+    found = list(guard_findings() if "--guard" in sys.argv else findings())
+    if "--guard" not in sys.argv:
+        found += still_broken(found, now)
+    for key, level, title, text, request in found:
         if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue
         raised[key] = now
@@ -163,6 +206,8 @@ def main():
                                       auto=True)
         elif key.startswith("filecheck:"):
             mentor_tools.leave_notice(level, title, text, request, action="Check now", quiet=True)
+        elif key.startswith("report:"):
+            mentor_tools.leave_notice(level, title, text, request, action="Report a problem")
         else:
             mentor_tools.leave_notice(level, title, text, request)
         # The assistant shows it, and says so with a notification when it is covered. When it
