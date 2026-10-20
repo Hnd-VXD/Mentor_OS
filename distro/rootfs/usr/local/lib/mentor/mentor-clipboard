@@ -25,6 +25,7 @@ import os
 import select
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -174,6 +175,21 @@ class Bridge:
     # --- from the host -------------------------------------------------------------
 
     @staticmethod
+    def picture_menu(path):
+        """The menu of what to do with a picture from Windows, where the pointer is (a smaller copy, save as JPG…;
+        the user's wish, 2026-10-20), unless the user switched it off (mentor_settings picture_menu). Not waited for."""
+        try:
+            sys.path.insert(0, "/usr/local/lib/mentor")
+            import mentor_settings
+            if not mentor_settings.get("picture_menu"):
+                return
+            Gio.bus_get_sync(Gio.BusType.SESSION, None).call(
+                "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "HostPictureMenu",
+                GLib.Variant("(s)", (path,)), None, Gio.DBusCallFlags.NONE, 5000, None, None, None)
+        except Exception as e:
+            print(f"mentor-clipboard: picture menu: {e}", file=sys.stderr)
+
+    @staticmethod
     def shell_picture(path):
         """The PNG at PATH onto the clipboard by the shell (the mentor extension's SetClipboardImage)."""
         try:
@@ -236,6 +252,7 @@ class Bridge:
                     if not self.shell_picture(HOST_PICTURE):
                         self.clipboard.set_image(picture)
                         self.clipboard.store()
+                    self.picture_menu(HOST_PICTURE)
             return
         if "text" in message:
             text = message["text"]

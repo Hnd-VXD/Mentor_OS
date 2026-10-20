@@ -358,5 +358,11 @@
     "name": "20.10.26.03",
     "summary": "When a part of Mentor stays broken, Mentor offers to tell its maker (Report a problem), so that an update can fix it.",
     "published": "2026-10-20 09:31"
+  },
+  {
+    "version": 202610200716,
+    "name": "20.10.26.04",
+    "summary": "A menu after each picture: a smaller copy, a copy as PNG, JPG or WebP, the text in it, save, edit.",
+    "published": "2026-10-20 10:17"
   }
 ]

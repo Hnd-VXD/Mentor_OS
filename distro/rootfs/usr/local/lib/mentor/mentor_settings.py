@@ -11,6 +11,9 @@ import os
 
 PATH = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "mentor", "settings.json")
 DEFAULTS = {
+    # A menu where the pointer is when a picture comes from Windows' Print Screen (a smaller copy, save as JPG…;
+    # mentor-clipboard, the extension's HostPictureMenu; DESKTOP.md, "Screenshots").
+    "picture_menu": True,
     # Say in plain words what is about to happen before the password is asked. The warning
     # after outside reading is not part of this choice: it is always shown.
     "explain": True,

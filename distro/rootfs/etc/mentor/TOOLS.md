@@ -181,8 +181,9 @@ Every engine has them, whatever its own tools (Gemini had none: asked how to mak
 | `mentor layout taskbar`, `normal` | a taskbar always there, or GNOME as it comes (tool `desktop_layout`) | DESKTOP.md |
 | `mentor desktop` | goes to the assistant on the desktop, or back to the windows (the extension's `Toggle`, as Super+A) | DESKTOP.md |
 | `mentor ask` | the assistant's text box over the program in front (`mentor-chat --ask`, as Alt+Space) | ASKBAR.md |
-| `mentor screenshot [--area\|--window] [--no-open]` | a picture of the screen, opened in Gradia | DESKTOP.md "Outside the extension" |
-| `mentor capture-text` | Shift+Super+T: the text in an area the user drags out, put on the clipboard | DESKTOP.md "Copy text from the screen" |
+| `mentor screenshot [--area\|--window] [--no-open]` | a picture of the screen, then the menu of what to do with it (Gradia when the menu cannot show) | DESKTOP.md "Outside the extension", "The menu after a picture" |
+| `mentor save-picture [--folder F] PATH` | the menu's "Save as…": a dialog; .jpg/.jpeg saves JPG (quality 90), anything else PNG | DESKTOP.md "The menu after a picture" |
+| `mentor capture-text [--file PATH]` | Shift+Super+T: the text in an area the user drags out, put on the clipboard; with --file, the text in that picture (the picture menu's Copy text) | DESKTOP.md "Copy text from the screen" |
 | `mentor scale [--keep]` | the desktop scaled as the Windows screen is | DESKTOP.md |
 | `mentor colors [NAME]` | the window colors: lists the sets, or uses one | DESKTOP.md "Window colors" |
 | `mentor pointer [black\|white\|accent] [--size N]` | the mouse pointer: says its color and size, or sets them (sizes 24, 30, 36, 48, 72, 96; the nearest is used) | DESKTOP.md "Pointer" |

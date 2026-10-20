@@ -171,6 +171,9 @@ class SettingsWindow(Adw.ApplicationWindow):
         fold.add_row(switch("Offer to write down what I built",
                             "A green card after something worked, to keep how it was done and share it",
                             bool(mentor_settings.get("offer_recipes")), lambda on: mentor_settings.put("offer_recipes", on)))
+        fold.add_row(switch("A menu after Print Screen", "To make a smaller copy of a picture from Windows, or save it",
+                            bool(mentor_settings.get("picture_menu")),
+                            lambda on: mentor_settings.put("picture_menu", on)))
         fold.add_row(switch("Show the exact command when my password is asked",
                             "For those who read commands. Mentor's own short explanation is shown either way",
                             bool(mentor_settings.get("exact")), lambda on: mentor_settings.put("exact", on)))

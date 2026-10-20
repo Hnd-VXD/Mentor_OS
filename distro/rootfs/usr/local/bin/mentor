@@ -405,8 +405,9 @@ def differing():
 
 
 def cmd_screenshot(args):
-    """The shell takes the picture at once (no overlay, no permission asked), into Pictures/Screenshots,
-    and Gradia opens it to crop, draw on, copy or save. GNOME's own screenshot keys are off (00-mentor)."""
+    """The shell takes the picture at once (no overlay, no permission asked), into Pictures/Screenshots, and shows a
+    menu where the pointer is: copy, a smaller copy, save as JPG, save as…, edit (Gradia), show in folder (the
+    extension's PictureMenu; DESKTOP.md, "Screenshots"). GNOME's own screenshot keys are off (00-mentor)."""
     import time
     folder = os.path.join(subprocess.run(["xdg-user-dir", "PICTURES"], capture_output=True, text=True).stdout.strip()
                           or os.path.expanduser("~/Pictures"), "Screenshots")
@@ -422,15 +423,81 @@ def cmd_screenshot(args):
     if args.no_open:
         print(path)
         return
-    # In a scope of its own, as GNOME starts apps: not ended with the key's command.
+    shown = subprocess.run(["gdbus", "call", "--session", "--dest", "org.gnome.Shell", "--object-path", "/org/mentor/Shell",
+                            "--method", "org.mentor.Shell.PictureMenu", path], capture_output=True, text=True)
+    if shown.returncode == 0:
+        return
+    # No menu (an older extension): Gradia, in a scope of its own, as GNOME starts apps.
     subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "gradia", path],
                      start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def cmd_save_picture(args):
+    """The screenshot menu's "Save as…": a dialog for the folder and the name; a name ending in .jpg or .jpeg saves
+    a JPG (quality 90), anything else a PNG. DESKTOP.md, "Screenshots"."""
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf, Gio, GLib, Gtk
+    source = os.path.abspath(args.path)
+    picture = GdkPixbuf.Pixbuf.new_from_file(source)
+    folder = args.folder or os.path.dirname(source)
+    os.makedirs(folder, exist_ok=True)
+    app = Gtk.Application(application_id="org.mentor.SavePicture", flags=Gio.ApplicationFlags.NON_UNIQUE)
+    result = {"code": 1}
+
+    def saved(dialog, outcome, window):
+        try:
+            target = dialog.save_finish(outcome).get_path()
+        except GLib.Error:
+            target = None  # cancelled
+        if target:
+            kind = "jpeg" if target.lower().endswith((".jpg", ".jpeg")) else "png"
+            if kind == "png" and not target.lower().endswith(".png"):
+                target += ".png"
+            picture.savev(target, kind, ["quality"] if kind == "jpeg" else [], ["90"] if kind == "jpeg" else [])
+            subprocess.run(["notify-send", "--app-name=Mentor", "Saved", f"{os.path.basename(target)}, "
+                            f"{os.path.getsize(target) // 1024} KB"], check=False)
+            result["code"] = 0
+        window.destroy()
+        app.quit()
+
+    def activate(app):
+        window = Gtk.ApplicationWindow(application=app)  # never shown: only the dialog's parent
+        name = os.path.splitext(os.path.basename(source))[0]
+        if name == "host-picture":  # the picture from Windows, kept in the cache while it is on the clipboard
+            name = time.strftime("Picture from Windows %Y-%m-%d %H-%M-%S")
+        dialog = Gtk.FileDialog(title="Save the picture", modal=True, initial_name=name + ".jpg")
+        dialog.set_initial_folder(Gio.File.new_for_path(folder))
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        for name, patterns in (("JPG, smaller", ["*.jpg", "*.jpeg"]), ("PNG, sharpest", ["*.png"])):
+            f = Gtk.FileFilter(name=name)
+            for pattern in patterns:
+                f.add_pattern(pattern)
+            filters.append(f)
+        dialog.set_filters(filters)
+        dialog.save(window, None, saved, window)
+
+    app.connect("activate", activate)
+    app.run([])
+    return result["code"]
+
+
 def cmd_capture_text(args):
     """Shift+Super+T: the text in an area the user drags out, onto the clipboard, with a short notification
-    (as Omarchy's omarchy-capture-text, MIT; DESKTOP.md, Copy text from the screen)."""
-    found = mentor_tools.capture_text("pick")
+    (as Omarchy's omarchy-capture-text, MIT; DESKTOP.md, Copy text from the screen). With --file, the text in that
+    picture (the picture menu's "Copy as" > "Text"), kept as the last picture read, so screen_text area "last" sees it."""
+    if args.file:
+        import shutil
+        try:
+            if not (os.path.exists(mentor_tools.LAST_TEXT_PICTURE) and
+                    os.path.samefile(args.file, mentor_tools.LAST_TEXT_PICTURE)):
+                shutil.copyfile(args.file, mentor_tools.LAST_TEXT_PICTURE)
+        except OSError as e:
+            sys.exit(f"the picture could not be read: {e}")
+        found = mentor_tools.capture_text(path=mentor_tools.LAST_TEXT_PICTURE)
+    else:
+        found = mentor_tools.capture_text("pick")
 
     def say(title, body=""):
         subprocess.run(["notify-send", "--app-name=Mentor", "--icon=edit-copy-symbolic", "--expire-time=4000",
@@ -441,7 +508,7 @@ def cmd_capture_text(args):
         first = " ".join(found["text"].split())
         say("Text copied", first if len(first) <= 90 else first[:89] + "…")
     elif found["state"] == "none":
-        say("No text found", "Try a bigger area around the words.")
+        say("No text found", "There are no words in this picture." if args.file else "Try a bigger area around the words.")
     else:
         say("The text could not be copied", "Ask Mentor what went wrong.")
         sys.exit(found.get("error") or "not copied")
@@ -647,12 +714,17 @@ p.add_argument("--days", type=int, default=14, help="how far back to look (defau
 p.add_argument("--json", action="store_true", help="as data")
 p.set_defaults(func=lambda args: print(json.dumps(__import__("mentor_report").report(args.days), indent=2, ensure_ascii=False)
                                        if args.json else __import__("mentor_report").text(__import__("mentor_report").report(args.days))))
-p = sub.add_parser("screenshot", help="take a picture of the screen (or of the window in front) and open it in Gradia")
+p = sub.add_parser("screenshot", help="take a picture of the screen (or of the window in front) and show what to do with it")
 p.add_argument("--window", action="store_true", help="only the window in front")
 p.add_argument("--area", action="store_true", help="drag out an area first (Esc cancels; a click is the whole screen)")
 p.add_argument("--no-open", action="store_true", help="only save it, and print where")
 p.set_defaults(func=cmd_screenshot)
+p = sub.add_parser("save-picture", help="save a picture under a name and folder chosen in a dialog, as PNG or JPG")
+p.add_argument("path")
+p.add_argument("--folder", help="the folder the dialog opens in (the picture's own when not given)")
+p.set_defaults(func=cmd_save_picture)
 p = sub.add_parser("capture-text", help="drag over text on the screen: it is read (OCR) and put on the clipboard")
+p.add_argument("--file", help="read the text in this picture instead")
 p.set_defaults(func=cmd_capture_text)
 p = sub.add_parser("reminders", help="the reminders that are set; --cancel ID (or all)")
 p.add_argument("--cancel", metavar="ID")

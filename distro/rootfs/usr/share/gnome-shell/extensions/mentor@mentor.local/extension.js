@@ -11,6 +11,7 @@
 //  - switches in the system menu: full screen and the taskbar
 //  - a way for the agent to see the screen
 import Clutter from 'gi://Clutter';
+import GdkPixbuf from 'gi://GdkPixbuf';
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
@@ -20,6 +21,7 @@ import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {AppMenu} from 'resource:///org/gnome/shell/ui/appMenu.js';
 import {Spinner} from 'resource:///org/gnome/shell/ui/animation.js';
 import {getInputSourceManager} from 'resource:///org/gnome/shell/ui/status/keyboard.js';
@@ -544,6 +546,12 @@ const SERVICE = `
       <arg type="s" direction="in" name="path"/>
       <arg type="b" direction="out" name="done"/>
     </method>
+    <method name="PictureMenu">
+      <arg type="s" direction="in" name="path"/>
+    </method>
+    <method name="HostPictureMenu">
+      <arg type="s" direction="in" name="path"/>
+    </method>
     <method name="AwaitCopy">
       <arg type="s" direction="in" name="pattern"/>
     </method>
@@ -556,6 +564,188 @@ function userWindows() {
         window && !window.skip_taskbar &&
         [Meta.WindowType.NORMAL, Meta.WindowType.DIALOG, Meta.WindowType.MODAL_DIALOG].includes(window.get_window_type()) &&
         window.get_wm_class() !== ASSISTANT && window.get_gtk_application_id() !== ASSISTANT);
+}
+
+// A size in words: 240 KB, 1.8 MB.
+function bytesText(n) {
+    return n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+// What to do with a screenshot, in a menu where the pointer is, as soon as it is taken (the user's wish,
+// 2026-10-20): copy it, a smaller copy (75%, 50%, 30%: what makes a paste into a web page smaller, for Chromium
+// takes only PNG from the clipboard and makes every pasted picture PNG anyway; tested), save it as JPG next to it,
+// save it elsewhere (mentor save-picture: a dialog), edit it (Gradia), show it in its folder. DESKTOP.md, "Screenshots".
+function pictureMenu(path, fromWindows = false) {
+    const file = Gio.File.new_for_path(path);
+    const picture = GdkPixbuf.Pixbuf.new_from_file(path);
+    const [width, height] = [picture.get_width(), picture.get_height()];
+    const size = file.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+    const [x, y] = global.get_pointer();
+    const anchor = new St.Widget({x, y, width: 1, height: 1, reactive: false});
+    Main.uiGroup.add_child(anchor);
+    const menu = new PopupMenu.PopupMenu(anchor, 0, St.Side.TOP);
+    const manager = new PopupMenu.PopupMenuManager(anchor);
+    manager.addMenu(menu);
+    Main.uiGroup.add_child(menu.actor);
+    const told = (title, text) => Main.notify(title, text);
+    const copy = (bytes, what) => {
+        St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'image/png', bytes);
+        told('Copied', what);
+    };
+    const run = argv => {
+        try {
+            Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            told('That could not be opened', e.message);
+        }
+    };
+    // A picture from Windows (Print Screen, the Snipping Tool) is on the clipboard already and kept only while it
+    // is: saving it puts it in Pictures/Screenshots, as Mentor's own screenshots.
+    const folder = GLib.build_filenamev([GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES) ??
+        GLib.build_filenamev([GLib.get_home_dir(), 'Pictures']), 'Screenshots']);
+    const stem = fromWindows
+        ? GLib.build_filenamev([folder, GLib.DateTime.new_now_local().format('Picture from Windows %Y-%m-%d %H-%M-%S')])
+        : path.replace(/\.png$/i, '');
+    const keep = () => {  // the picture as a PNG file of its own, for Edit and Save as…
+        if (!fromWindows)
+            return path;
+        GLib.mkdir_with_parents(folder, 0o755);
+        if (!GLib.file_test(`${stem}.png`, GLib.FileTest.EXISTS))
+            file.copy(Gio.File.new_for_path(`${stem}.png`), Gio.FileCopyFlags.NONE, null, null);
+        return `${stem}.png`;
+    };
+    const heading = new PopupMenu.PopupMenuItem(
+        `${fromWindows ? 'Picture from Windows' : 'Screenshot'} · ${width} × ${height} · ${bytesText(size)}`,
+        {reactive: false});
+    menu.addMenuItem(heading);
+    menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    if (!fromWindows)  // a picture from Windows is on the clipboard already
+        menu.addAction('Copy', () => copy(file.load_bytes(null)[0], `${width} × ${height}, ${bytesText(size)}`));
+    const smaller = new PopupMenu.PopupSubMenuMenuItem('Copy smaller');
+    for (const percent of [75, 50, 30]) {
+        const w = Math.max(1, Math.round(width * percent / 100)), h = Math.max(1, Math.round(height * percent / 100));
+        smaller.menu.addAction(`${percent}% · ${w} × ${h}`, () => {
+            const [, data] = picture.scale_simple(w, h, GdkPixbuf.InterpType.HYPER).save_to_bufferv('png', [], []);
+            copy(new GLib.Bytes(data), `${w} × ${h}, ${bytesText(data.length)}`);
+        });
+    }
+    menu.addMenuItem(smaller);
+    // Copy in format: PNG, JPG or WebP (the user's wish, 2026-10-20). PNG: the picture itself. JPG and WebP go on the clipboard
+    // as a file (in ~/.cache/mentor/copied, text/uri-list), the way web pages and Files take them: as a picture
+    // (image/jpeg) Chromium pastes nothing; as a file it gets a real .jpg / .webp (tested). Only the newest is kept.
+    // WebP by Pillow (python-pillow), quality 85: GdkPixbuf's WebP (glycin) is always lossless, as big as the PNG.
+    // A 1280 x 800 screenshot: PNG 1.2 MB, JPG 135 KB, WebP 64 KB.
+    const as = new PopupMenu.PopupSubMenuMenuItem('Copy in format');
+    as.menu.addAction(`PNG \u00b7 sharpest \u00b7 ${bytesText(size)}`,
+        () => copy(file.load_bytes(null)[0], `PNG, ${width} \u00d7 ${height}, ${bytesText(size)}`));
+    const copyFile = (name, ext, make) => {
+        try {
+            const copied = GLib.build_filenamev([GLib.get_user_cache_dir(), 'mentor', 'copied']);
+            GLib.mkdir_with_parents(copied, 0o700);
+            const old = Gio.File.new_for_path(copied).enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+            for (let info; (info = old.next_file(null));)
+                Gio.File.new_for_path(GLib.build_filenamev([copied, info.get_name()])).delete(null);
+            const made = GLib.build_filenamev([copied, `${GLib.path_get_basename(stem)}.${ext}`]);
+            make(made, () => {
+                const bytes = Gio.File.new_for_path(made).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+                St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'text/uri-list',
+                    new GLib.Bytes(new TextEncoder().encode(`${GLib.filename_to_uri(made, null)}\r\n`)));
+                told(`Copied as ${name}`, `${width} \u00d7 ${height}, ${bytesText(bytes)}`);
+            });
+        } catch (e) {
+            told(`It could not be copied as ${name}`, e.message);
+        }
+    };
+    as.menu.addAction('JPG \u00b7 smaller', () => copyFile('JPG', 'jpg', (made, done) => {
+        picture.savev(made, 'jpeg', ['quality'], ['90']);
+        done();
+    }));
+    as.menu.addAction('WebP \u00b7 smallest', () => copyFile('WebP', 'webp', (made, done) => {
+        let source = path;
+        if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
+            source = made.replace(/\.webp$/, '.png');
+            picture.savev(source, 'png', [], []);
+        }
+        const pillow = Gio.Subprocess.new(['python3', '-I', '-c',
+            'import sys; from PIL import Image\n' +
+            'im = Image.open(sys.argv[1])\n' +
+            'if im.mode != "RGB" and not (im.mode == "RGBA" and im.getchannel("A").getextrema() != (255, 255)):\n' +
+            '    im = im.convert("RGB")\n' +
+            'im.save(sys.argv[2], "WEBP", quality=85, method=4)', source, made], Gio.SubprocessFlags.STDERR_PIPE);
+        pillow.communicate_utf8_async(null, null, (_p, result) => {
+            try {
+                const [, , err] = pillow.communicate_utf8_finish(result);
+                if (!pillow.get_successful())
+                    throw new Error(err?.trim().split('\n').pop() || 'Pillow failed');
+                done();
+            } catch (e) {
+                told('It could not be copied as WebP', e.message);
+            }
+        });
+    }));
+    menu.addMenuItem(as);
+    // The words in the picture, read (OCR) and put on the clipboard as text, as Shift+Super+T does for an area
+    // (mentor capture-text --file; the user's wish, 2026-10-20). It tells how it went in a notification.
+    menu.addAction('Copy text', () => {
+        let source = path;
+        if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
+            source = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'mentor-picture-text.png']);
+            picture.savev(source, 'png', [], []);
+        }
+        run(['/usr/local/bin/mentor', 'capture-text', '--file', source]);
+    });
+    menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    // A JPG (quality 90): a screenshot's beside its PNG, a picture from Windows' in Pictures/Screenshots. For a picture
+    // from Windows it is the plain "Save" (the user's wish, 2026-10-20: one Save, and a JPG); "Save as…" gives PNG too.
+    menu.addAction(fromWindows ? 'Save' : 'Save as JPG', () => {
+        const jpg = `${stem}.jpg`;
+        try {
+            GLib.mkdir_with_parents(folder, 0o755);
+            picture.savev(jpg, 'jpeg', ['quality'], ['90']);
+            const made = Gio.File.new_for_path(jpg).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+            told(fromWindows ? 'Saved' : 'Saved as JPG', fromWindows
+                ? `${GLib.path_get_basename(jpg)}, ${bytesText(made)}, in Pictures/Screenshots`
+                : `${GLib.path_get_basename(jpg)}, ${bytesText(made)} (the PNG was ${bytesText(size)})`);
+        } catch (e) {
+            told('It could not be saved', e.message);
+        }
+    });
+    menu.addAction('Save as…', () => run(['/usr/local/bin/mentor', 'save-picture', '--folder', folder, path]));
+    menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    menu.addAction('Edit', () => run(['systemd-run', '--user', '--scope', '--quiet', '--collect', '--', 'gradia', keep()]));
+    if (!fromWindows) {
+        menu.addAction('Show in folder', () => run(['nautilus', '--select', path]));
+    } else {
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        // Off and on again in Mentor Settings, More choices ("A menu after Print Screen").
+        menu.addAction('Don’t show this after Print Screen', () => {
+            run(['python3', '-c', 'import sys; sys.path.insert(0, "/usr/local/lib/mentor"); import mentor_settings; ' +
+                'mentor_settings.put("picture_menu", False)']);
+            told('No more menu after Print Screen', 'Mentor Settings, More choices, brings it back.');
+        });
+    }
+    // Snipped while working in Windows, the menu would wait unseen in Mentor's window: it closes by itself.
+    let closing = 0;
+    if (fromWindows) {
+        closing = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 20, () => {
+            closing = 0;
+            menu.close();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+    menu.connect('open-state-changed', (_menu, open) => {
+        if (!open) {
+            if (closing)
+                GLib.source_remove(closing);
+            closing = 0;
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                menu.destroy();
+                anchor.destroy();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+    });
+    menu.open(true);
 }
 
 // Mentor's own area picker, in place of GNOME's screenshot overlay: the screen dims a little, the
@@ -759,6 +949,26 @@ class ShellService {
         const manager = getInputSourceManager();
         if (Object.keys(manager.inputSources).length > 1)
             manager._modifiersSwitcher();
+    }
+
+    // A screenshot just taken: the menu of what to do with it, where the pointer is (mentor screenshot).
+    PictureMenu(path) {
+        try {
+            pictureMenu(path);
+        } catch (e) {
+            console.error(`mentor: PictureMenu: ${e.message}`);
+            Gio.Subprocess.new(['systemd-run', '--user', '--scope', '--quiet', '--collect', '--', 'gradia', path],
+                Gio.SubprocessFlags.NONE);
+        }
+    }
+
+    // A picture that came from Windows (Print Screen): the same menu (mentor-clipboard, when picture_menu is on).
+    HostPictureMenu(path) {
+        try {
+            pictureMenu(path, true);
+        } catch (e) {
+            console.error(`mentor: HostPictureMenu: ${e.message}`);
+        }
     }
 
     // The key card's "Open NVIDIA's page" (mentor-chat, show_connect): the page opens over the desktop and
