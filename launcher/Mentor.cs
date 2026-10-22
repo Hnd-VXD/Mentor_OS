@@ -1655,17 +1655,19 @@ class StartSplash : Form
         var heading = Words("Keys worth knowing", 9.5f, Theme.Text, Theme.Back);
         Place(heading, 32, 156, 300, 22);
         parts.Add(heading);
-        string[,] keys = { { "Ctrl+Alt+F", "Full screen, and back" }, { "Ctrl+Alt+G", "Mouse and keyboard back to Windows" } };
+        // The same keys as the start-up picture inside had (BOOT.md, hint.svg), and Ctrl+Alt+G (the user's wish, 2026-10-22).
+        string[,] keys = { { "Ctrl+Alt+F", "Full screen, and back" }, { "Ctrl+Alt+G", "Mouse and keyboard back to Windows" },
+                           { "Ctrl+Alt+Backspace", "Help, if Mentor gets stuck" } };
         for (int i = 0; i < keys.GetLength(0); i++)
         {
             Label key = Words(keys[i, 0], 9f, Theme.AccentHot, Theme.Back), what = Words(keys[i, 1], 9f, Theme.Dim, Theme.Back);
-            Place(key, 32, 182 + i * 24, 110, 22);
-            Place(what, 150, 182 + i * 24, 378, 22);
+            Place(key, 32, 180 + i * 23, 136, 22);
+            Place(what, 172, 180 + i * 23, 356, 22);
             parts.Add(key);
             parts.Add(what);
         }
         later = Words("Mentor opens by itself when it is ready.", 8.5f, Theme.Dim, Theme.Back);
-        Place(later, 32, 250, 496, 20);
+        Place(later, 32, 254, 496, 20);
 
         var stop = new PillButton { Text = "Back", Font = Theme.Font(11f, FontStyle.Regular) };
         Rectangle bottom = LauncherWindow.BottomButton;

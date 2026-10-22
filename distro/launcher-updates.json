@@ -64,5 +64,11 @@
     "sha256": "643f72146435dcb1fed0e4d664125d326662ace0768338d1967d4b9842d93471",
     "summary": "A loading window until Mentor's desktop is ready, and a wider, simpler Mentor window.",
     "published": "2026-10-22 13:11"
+  },
+  {
+    "version": 202610221031,
+    "sha256": "d1dde4640e5ff4bd0bf30ab6bf1838cfc3ba3c3261f1714f4233c1d442d05572",
+    "summary": "The loading window also shows Ctrl+Alt+Backspace: help, if Mentor gets stuck.",
+    "published": "2026-10-22 13:31"
   }
 ]
