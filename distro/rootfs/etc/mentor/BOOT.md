@@ -34,7 +34,7 @@ The program is `/usr/local/lib/mentor/mentor_boot.py`, run as `/usr/local/lib/me
 
 **"The desktop is up"** means the file `/run/mentor/desktop-ok` exists. The shell extension writes it when the assistant's window has drawn itself and the taskbar's panels exist (DESKTOP.md). `/run/mentor` is made by `/etc/tmpfiles.d/mentor.conf` (`d /run/mentor 1777 root root -`). On a system without automatic login, the login screen counts after 30 seconds.
 
-**What is told to the launcher on Windows**: one JSON line on the virtio port named `org.mentor.control`: `{"boot": "starting"}`, `"trial"`, `"restoring"`, `"ok"`. On a real computer there is no such port and nothing is sent.
+**What is told to the launcher on Windows**: one JSON line on the virtio port named `org.mentor.control`: `{"boot": "starting"}`, `"trial"`, `"restoring"`, `"ok"`. On a real computer there is no such port and nothing is sent. Since 2026-10-22 the user's window on Windows waits hidden behind a loading window until `"ok"` (WINDOWS.md, "The loading window"): when `/run/mentor/desktop-ok` is late, the user looks at that window longer (2 minutes at most), so a slow desktop start is worth finding (`systemd-analyze blame`, `journalctl -b -o short-monotonic --user | head -100`). `"starting"` is when the launcher gives the hidden window its final size.
 
 **After a restore**, `/var/lib/mentor/boot/restored.json` says when, why, what was undone, what could not be, and whether a kernel is being held back. The assistant reads it and tells the user once (`tell_restore` in mentor-chat).
 

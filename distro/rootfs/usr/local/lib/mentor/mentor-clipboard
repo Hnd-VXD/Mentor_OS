@@ -176,17 +176,19 @@ class Bridge:
     # --- from the host -------------------------------------------------------------
 
     @staticmethod
-    def picture_menu(path):
+    def picture_menu(path, method="HostPictureMenu"):
         """The menu of what to do with a picture from Windows, where the pointer is (a smaller copy, save as JPG…;
-        the user's wish, 2026-10-20), unless the user switched it off (mentor_settings picture_menu). Not waited for."""
+        the user's wish, 2026-10-20), unless the user switched it off (mentor_settings picture_menu). Not waited for.
+        HostPictureComing (no PATH): the launcher's word that one is coming, the menu up at once with its items
+        waiting for it (the user's wish, 2026-10-22); HostPictureGone: none came, that menu closes."""
         try:
             sys.path.insert(0, "/usr/local/lib/mentor")
             import mentor_settings
             if not mentor_settings.get("picture_menu"):
                 return
             Gio.bus_get_sync(Gio.BusType.SESSION, None).call(
-                "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "HostPictureMenu",
-                GLib.Variant("(s)", (path,)), None, Gio.DBusCallFlags.NONE, 5000, None, None, None)
+                "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", method,
+                GLib.Variant("(s)", (path,)) if path else None, None, Gio.DBusCallFlags.NONE, 5000, None, None, None)
         except Exception as e:
             print(f"mentor-clipboard: picture menu: {e}", file=sys.stderr)
 
@@ -241,6 +243,12 @@ class Bridge:
         return False
 
     def on_message(self, message):
+        if "image-coming" in message:
+            self.picture_menu(None, "HostPictureComing")
+            return
+        if "image-none" in message:
+            self.picture_menu(None, "HostPictureGone")
+            return
         if "image" in message:
             # A picture copied on the host (Windows' PrtScr / Snipping Tool): on this clipboard as
             # a picture, so that Ctrl+V pastes it anywhere (the chat attaches it). Not sent back.

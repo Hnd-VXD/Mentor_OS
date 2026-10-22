@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 
+import mentor_apps
 import mentor_journal
 import mentor_hub
 import mentor_recipes
@@ -248,6 +249,12 @@ def package_install(a):
 
 
 def package_remove(a):
+    # Before any password: what came with Mentor is never uninstalled (the root side refuses it too).
+    blocked = sorted(mentor_apps.protected_packages().intersection(a["packages"]))
+    if blocked:
+        _noted["declined"] = True
+        return 1, (f"{', '.join(blocked)} came with Mentor and cannot be uninstalled: Mentor needs it. Tell the user "
+                   "so in one plain sentence; do not try another way (UNINSTALL.md).")
     stop = _explained("manage", a, f"Mentor wants to take these programs off your system: {', '.join(a['packages'])}.")
     if stop:
         return stop

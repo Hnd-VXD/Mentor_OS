@@ -6,7 +6,7 @@
 //  - the assistant's surface is made a desktop-type window, sized to the work area
 //  - a click on the desktop, or Super+A, clears the windows away to reveal it;
 //    Escape, or Super+A again, brings them back
-//  - "Ask Mentor" in the right-click menu of every app icon
+//  - "Ask Mentor" in the right-click menu of every app icon, and "Uninstall" on the apps the user added
 //  - the assistant as a result of the overview search
 //  - switches in the system menu: full screen and the taskbar
 //  - a way for the agent to see the screen
@@ -150,7 +150,8 @@ class DesktopLayer {
         if (!wanted)
             return;  // no launcher said anything
         wanted = read(GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'scale'])) || wanted;
-        const call = (method, args, type) => Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig',
+        this._defaultScale(wanted);
+        const call =(method, args, type) => Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig',
             '/org/gnome/Mutter/DisplayConfig', 'org.gnome.Mutter.DisplayConfig', method, args,
             type ? new GLib.VariantType(type) : null, Gio.DBusCallFlags.NONE, 5000, null);
         const [serial, monitors, logical] = (await call('GetCurrentState', null,
@@ -177,6 +178,23 @@ class DesktopLayer {
         GLib.file_set_contents('/run/mentor/scale-kept', '');  // _keepScale answers the question
         await call('ApplyMonitorsConfig', new GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', [serial, 2,
             [[x, y, chosen, transform, true, [[connector, target[0], {}]]]], {}]), null);
+    }
+
+    // A size the shell has not seen yet (the window maximized or made full screen for the first time)
+    // comes up at its default scale, 100%, until _applyScale sets it: about 0.2 s of a small desktop
+    // (the user saw it, 2026-10-22). Mutter takes `scaling-factor` as the default for every new size,
+    // so with a whole scale (200%) the new size comes up right at once. It holds only whole numbers:
+    // with 150% it stays 0 (mutter's own choice) and _applyScale does it as before. Changing it moves
+    // nothing on the screen, and apps scale as before (tested, GTK on Wayland and X11).
+    _defaultScale(wanted) {
+        const whole = Math.abs(wanted - Math.round(wanted)) < 0.01 ? Math.round(wanted) : 0;
+        try {
+            const settings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            if (settings.get_uint('scaling-factor') !== whole)
+                settings.set_uint('scaling-factor', whole);
+        } catch (e) {
+            console.warn(`mentor: could not set the default scale: ${e.message}`);
+        }
     }
 
     // A display setting that is to last makes the shell ask the user to confirm it within
@@ -557,6 +575,8 @@ const SERVICE = `
     <method name="HostPictureMenu">
       <arg type="s" direction="in" name="path"/>
     </method>
+    <method name="HostPictureComing"/>
+    <method name="HostPictureGone"/>
     <method name="AwaitCopy">
       <arg type="s" direction="in" name="pattern"/>
     </method>
@@ -582,27 +602,40 @@ function bytesText(n) {
 // save it elsewhere (mentor save-picture: a dialog), edit it (Gradia), show it in its folder. DESKTOP.md, "Screenshots".
 // The picture menu open now: a newer picture closes it (two Print Screens in a row left two menus, 2026-10-20).
 let shownPictureMenu = null;
+// When the user closed a menu that was still waiting for its picture: the picture, when it comes, opens none.
+let pictureMenuDeclined = 0;
 
+// PATH null: a picture from Windows that is on its way (the launcher's word, HostPictureComing). The menu opens at
+// once with its items greyed out, "getting it…" in the heading, and fills in when the picture comes (shown.fill,
+// HostPictureMenu), the user's wish, 2026-10-22: Windows takes up to a second to hand a snip over. It closes by
+// itself when none comes within 10 s, or at the launcher's word that none will (HostPictureGone).
 function pictureMenu(path, fromWindows = false) {
-    shownPictureMenu?.close();
-    const file = Gio.File.new_for_path(path);
+    if (shownPictureMenu) {
+        shownPictureMenu._mentorReplaced = true;  // closed by a newer picture, not by the user
+        shownPictureMenu.close();
+    }
+    let file, bytes, size, width, height;
+    let decoded = null;
+    const picture = () => (decoded ??= GdkPixbuf.Pixbuf.new_from_stream(Gio.MemoryInputStream.new_from_bytes(bytes), null));
     // Only the size is read before the menu opens, from the PNG's header: decoding the whole picture here, on the
     // shell's thread, held the menu (and the desktop) back the longer the bigger the picture (2026-10-22), and with
     // glycin even GdkPixbuf's get_file_info decodes it all. The file's bytes are kept (a picture from Windows' file
     // goes with a later copy) and decoded only by the actions that need the pixels (not while the menu is up:
     // new_from_stream_async held the main loop as long as a plain decode, tested).
-    const bytes = file.load_bytes(null)[0];
-    const size = bytes.get_size();
-    const start = bytes.toArray();
-    const head = new DataView(start.buffer, start.byteOffset, Math.min(size, 24));
-    const png = size >= 24 && head.getUint32(0) === 0x89504e47 && head.getUint32(12) === 0x49484452;  // \x89PNG, IHDR
-    const [format, width, height] = png
-        ? ['png', head.getUint32(16), head.getUint32(20)]
-        : GdkPixbuf.Pixbuf.get_file_info(path);
-    if (!format)
-        throw new Error(`not a picture: ${path}`);
-    let decoded = null;
-    const picture = () => (decoded ??= GdkPixbuf.Pixbuf.new_from_stream(Gio.MemoryInputStream.new_from_bytes(bytes), null));
+    const load = p => {
+        const f = Gio.File.new_for_path(p);
+        const b = f.load_bytes(null)[0];
+        const n = b.get_size();
+        const start = b.toArray();
+        const head = new DataView(start.buffer, start.byteOffset, Math.min(n, 24));
+        const png = n >= 24 && head.getUint32(0) === 0x89504e47 && head.getUint32(12) === 0x49484452;  // \x89PNG, IHDR
+        const [format, w, h] = png ? ['png', head.getUint32(16), head.getUint32(20)] : GdkPixbuf.Pixbuf.get_file_info(p);
+        if (!format)
+            throw new Error(`not a picture: ${p}`);
+        [path, file, bytes, size, width, height] = [p, f, b, n, w, h];
+    };
+    if (path)
+        load(path);
     const [x, y] = global.get_pointer();
     const anchor = new St.Widget({x, y, width: 1, height: 1, reactive: false});
     Main.uiGroup.add_child(anchor);
@@ -611,8 +644,8 @@ function pictureMenu(path, fromWindows = false) {
     manager.addMenu(menu);
     Main.uiGroup.add_child(menu.actor);
     const told = (title, text) => Main.notify(title, text);
-    const copy = (bytes, what) => {
-        St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'image/png', bytes);
+    const copy = (data, what) => {
+        St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'image/png', data);
         told('Copied', what);
     };
     const run = argv => {
@@ -637,30 +670,32 @@ function pictureMenu(path, fromWindows = false) {
             GLib.file_set_contents(`${stem}.png`, bytes.toArray());
         return `${stem}.png`;
     };
-    const heading = new PopupMenu.PopupMenuItem(
-        `${fromWindows ? 'Picture from Windows' : 'Screenshot'} · ${width} × ${height} · ${bytesText(size)}`,
-        {reactive: false});
+    const waiting = [];  // the items greyed out until the picture is there
+    const heading = new PopupMenu.PopupMenuItem('', {reactive: false});
     menu.addMenuItem(heading);
     menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
     if (!fromWindows)  // a picture from Windows is on the clipboard already
-        menu.addAction('Copy', () => copy(bytes, `${width} × ${height}, ${bytesText(size)}`));
+        waiting.push(menu.addAction('Copy', () => copy(bytes, `${width} × ${height}, ${bytesText(size)}`)));
     const smaller = new PopupMenu.PopupSubMenuMenuItem('Copy smaller');
-    for (const percent of [75, 50, 30]) {
-        const w = Math.max(1, Math.round(width * percent / 100)), h = Math.max(1, Math.round(height * percent / 100));
-        smaller.menu.addAction(`${percent}% · ${w} × ${h}`, () => {
+    const sizes = [75, 50, 30].map(percent => {
+        const scaled = () => [Math.max(1, Math.round(width * percent / 100)), Math.max(1, Math.round(height * percent / 100))];
+        const item = smaller.menu.addAction('', () => {
+            const [w, h] = scaled();
             const [, data] = picture().scale_simple(w, h, GdkPixbuf.InterpType.HYPER).save_to_bufferv('png', [], []);
             copy(new GLib.Bytes(data), `${w} × ${h}, ${bytesText(data.length)}`);
         });
-    }
+        return () => item.label.set_text(`${percent}% · ${scaled().join(' × ')}`);
+    });
     menu.addMenuItem(smaller);
+    waiting.push(smaller);
     // Copy in format: PNG, JPG or WebP (the user's wish, 2026-10-20). PNG: the picture itself. JPG and WebP go on the clipboard
     // as a file (in ~/.cache/mentor/copied, text/uri-list), the way web pages and Files take them: as a picture
     // (image/jpeg) Chromium pastes nothing; as a file it gets a real .jpg / .webp (tested). Only the newest is kept.
     // WebP by Pillow (python-pillow), quality 85: GdkPixbuf's WebP (glycin) is always lossless, as big as the PNG.
     // A 1280 x 800 screenshot: PNG 1.2 MB, JPG 135 KB, WebP 64 KB.
     const as = new PopupMenu.PopupSubMenuMenuItem('Copy in format');
-    as.menu.addAction(`PNG \u00b7 sharpest \u00b7 ${bytesText(size)}`,
-        () => copy(bytes, `PNG, ${width} \u00d7 ${height}, ${bytesText(size)}`));
+    const asPng = as.menu.addAction('PNG · sharpest',
+        () => copy(bytes, `PNG, ${width} × ${height}, ${bytesText(size)}`));
     const copyFile = (name, ext, make) => {
         try {
             const copied = GLib.build_filenamev([GLib.get_user_cache_dir(), 'mentor', 'copied']);
@@ -670,20 +705,20 @@ function pictureMenu(path, fromWindows = false) {
                 Gio.File.new_for_path(GLib.build_filenamev([copied, info.get_name()])).delete(null);
             const made = GLib.build_filenamev([copied, `${GLib.path_get_basename(stem)}.${ext}`]);
             make(made, () => {
-                const bytes = Gio.File.new_for_path(made).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+                const n = Gio.File.new_for_path(made).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
                 St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'text/uri-list',
                     new GLib.Bytes(new TextEncoder().encode(`${GLib.filename_to_uri(made, null)}\r\n`)));
-                told(`Copied as ${name}`, `${width} \u00d7 ${height}, ${bytesText(bytes)}`);
+                told(`Copied as ${name}`, `${width} × ${height}, ${bytesText(n)}`);
             });
         } catch (e) {
             told(`It could not be copied as ${name}`, e.message);
         }
     };
-    as.menu.addAction('JPG \u00b7 smaller', () => copyFile('JPG', 'jpg', (made, done) => {
+    as.menu.addAction('JPG · smaller', () => copyFile('JPG', 'jpg', (made, done) => {
         picture().savev(made, 'jpeg', ['quality'], ['90']);
         done();
     }));
-    as.menu.addAction('WebP \u00b7 smallest', () => copyFile('WebP', 'webp', (made, done) => {
+    as.menu.addAction('WebP · smallest', () => copyFile('WebP', 'webp', (made, done) => {
         let source = path;
         if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
             source = made.replace(/\.webp$/, '.png');
@@ -707,20 +742,21 @@ function pictureMenu(path, fromWindows = false) {
         });
     }));
     menu.addMenuItem(as);
+    waiting.push(as);
     // The words in the picture, read (OCR) and put on the clipboard as text, as Shift+Super+T does for an area
     // (mentor capture-text --file; the user's wish, 2026-10-20). It tells how it went in a notification.
-    menu.addAction('Copy text', () => {
+    waiting.push(menu.addAction('Copy text', () => {
         let source = path;
         if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
             source = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'mentor-picture-text.png']);
             GLib.file_set_contents(source, bytes.toArray());
         }
         run(['/usr/local/bin/mentor', 'capture-text', '--file', source]);
-    });
+    }));
     menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
     // A JPG (quality 90): a screenshot's beside its PNG, a picture from Windows' in Pictures/Screenshots. For a picture
     // from Windows it is the plain "Save" (the user's wish, 2026-10-20: one Save, and a JPG); "Save as…" gives PNG too.
-    menu.addAction(fromWindows ? 'Save' : 'Save as JPG', () => {
+    waiting.push(menu.addAction(fromWindows ? 'Save' : 'Save as JPG', () => {
         const jpg = `${stem}.jpg`;
         try {
             GLib.mkdir_with_parents(folder, 0o755);
@@ -732,34 +768,57 @@ function pictureMenu(path, fromWindows = false) {
         } catch (e) {
             told('It could not be saved', e.message);
         }
-    });
-    menu.addAction('Save as…', () => run(['/usr/local/bin/mentor', 'save-picture', '--folder', folder, path]));
+    }));
+    waiting.push(menu.addAction('Save as…', () => run(['/usr/local/bin/mentor', 'save-picture', '--folder', folder, path])));
     menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-    menu.addAction('Edit', () => run(['systemd-run', '--user', '--scope', '--quiet', '--collect', '--', 'gradia', keep()]));
+    waiting.push(menu.addAction('Edit', () => run(['systemd-run', '--user', '--scope', '--quiet', '--collect', '--', 'gradia', keep()])));
     if (!fromWindows) {
-        menu.addAction('Show in folder', () => run(['nautilus', '--select', path]));
+        waiting.push(menu.addAction('Show in folder', () => run(['nautilus', '--select', path])));
     } else {
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        // Off and on again in Mentor Settings, More choices ("A menu after Print Screen").
+        // Off and on again in Mentor Settings, More choices ("A menu after Print Screen"). Usable while it waits.
         menu.addAction('Don’t show this after Print Screen', () => {
             run(['python3', '-c', 'import sys; sys.path.insert(0, "/usr/local/lib/mentor"); import mentor_settings; ' +
                 'mentor_settings.put("picture_menu", False)']);
             told('No more menu after Print Screen', 'Mentor Settings, More choices, brings it back.');
         });
     }
-    // Snipped while working in Windows, the menu would wait unseen in Mentor's window: it closes by itself.
+    // Snipped while working in Windows, the menu would wait unseen in Mentor's window: it closes by itself, after
+    // 20 s, or 10 s while no picture came.
     let closing = 0;
-    if (fromWindows) {
-        closing = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 20, () => {
+    const closeIn = seconds => {
+        if (closing)
+            GLib.source_remove(closing);
+        closing = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, seconds, () => {
             closing = 0;
+            menu._mentorReplaced = true;  // not the user's choice: a picture that comes later opens a menu
             menu.close();
             return GLib.SOURCE_REMOVE;
         });
+    };
+    // The picture is there: the sizes in the heading and items, and every item usable.
+    const ready = () => {
+        heading.label.set_text(`${fromWindows ? 'Picture from Windows' : 'Screenshot'} · ${width} × ${height} · ${bytesText(size)}`);
+        asPng.label.set_text(`PNG · sharpest · ${bytesText(size)}`);
+        sizes.forEach(label => label());
+        waiting.forEach(item => item.setSensitive(true));
+        if (fromWindows)
+            closeIn(20);
+    };
+    let filled = Boolean(path);
+    if (filled) {
+        ready();
+    } else {
+        heading.label.set_text('Picture from Windows · getting it…');
+        waiting.forEach(item => item.setSensitive(false));
+        closeIn(10);
     }
     menu.connect('open-state-changed', (_menu, open) => {
         if (!open) {
             if (shownPictureMenu === menu)
                 shownPictureMenu = null;
+            if (!filled && !menu._mentorReplaced)
+                pictureMenuDeclined = GLib.get_monotonic_time();
             if (closing)
                 GLib.source_remove(closing);
             closing = 0;
@@ -770,8 +829,31 @@ function pictureMenu(path, fromWindows = false) {
             });
         }
     });
+    // For HostPictureMenu and HostPictureGone: is it waiting, its picture, closing because none comes.
+    menu._mentorWaiting = () => !filled;
+    menu._mentorFill = p => {
+        load(p);
+        filled = true;
+        ready();
+    };
+    menu._mentorGone = () => {
+        menu._mentorReplaced = true;  // not the user's choice: the next picture opens a menu again
+        menu.close();
+    };
     shownPictureMenu = menu;
     menu.open(true);
+}
+
+// A picture from Windows: into the menu that waits for it, or a menu of its own (none when the user closed the
+// waiting one within the last 10 s).
+function hostPicture(path) {
+    if (shownPictureMenu?._mentorWaiting()) {
+        shownPictureMenu._mentorFill(path);
+        return;
+    }
+    if (GLib.get_monotonic_time() - pictureMenuDeclined < 10000000)
+        return;
+    pictureMenu(path, true);
 }
 
 // Mentor's own area picker, in place of GNOME's screenshot overlay: the screen dims a little, the
@@ -991,10 +1073,29 @@ class ShellService {
     // A picture that came from Windows (Print Screen): the same menu (mentor-clipboard, when picture_menu is on).
     HostPictureMenu(path) {
         try {
-            pictureMenu(path, true);
+            hostPicture(path);
         } catch (e) {
             console.error(`mentor: HostPictureMenu: ${e.message}`);
+            if (shownPictureMenu?._mentorWaiting())
+                shownPictureMenu._mentorGone();
         }
+    }
+
+    // The launcher's word that a picture from Windows is on its way (Windows takes up to a second to hand a
+    // snip over): its menu at once, the items greyed out until HostPictureMenu brings the picture.
+    HostPictureComing() {
+        try {
+            pictureMenuDeclined = 0;
+            pictureMenu(null, true);
+        } catch (e) {
+            console.error(`mentor: HostPictureComing: ${e.message}`);
+        }
+    }
+
+    // ...and that none is coming after all: the menu waiting for it closes (one that has its picture stays).
+    HostPictureGone() {
+        if (shownPictureMenu?._mentorWaiting())
+            shownPictureMenu._mentorGone();
     }
 
     // The key card's "Open NVIDIA's page" (mentor-chat, show_connect): the page opens over the desktop and
@@ -1657,20 +1758,44 @@ export default class MentorExtension extends Extension {
         });
 
         // AppMenu is the menu behind app icons in the dash, the app grid and the
-        // taskbar. Each one gets the item the first time it opens.
+        // taskbar. Each one gets the items the first time it opens.
+        // "Uninstall" only on the apps the user added: not on those that came with Mentor, whose desktop ids
+        // mentor-apps writes into BUNDLED_APPS (at the image build, every update, and pacman's hook), nor on
+        // Mentor's own. No list (a Mentor from before it): no Uninstall at all. It starts a conversation
+        // that asks the agent, which takes the app away (etc/mentor/UNINSTALL.md).
         this._part('app menus', () => {
             const items = new Set();
             const injections = new InjectionManager();
+            const BUNDLED_APPS = '/usr/share/mentor/bundled-apps';
+            const userAdded = app => {
+                if (!app || app.get_id().startsWith('org.mentor.'))
+                    return false;
+                try {
+                    const list = new TextDecoder().decode(GLib.file_get_contents(BUNDLED_APPS)[1]).split('\n');
+                    return !list.includes(app.get_id());
+                } catch (e) {
+                    return false;
+                }
+            };
+            const add = (menu, label, activate) => {
+                const item = menu.addAction(label, activate);
+                item.connect('destroy', () => items.delete(item));
+                items.add(item);
+                return item;
+            };
             injections.overrideMethod(AppMenu.prototype, 'open', original => function (...args) {
                 if (!this._mentorItem) {
-                    this._mentorItem = this.addAction('Ask Mentor…', () => {
+                    this._mentorItem = add(this, 'Ask Mentor…', () => {
                         Main.overview.hide();
                         ask('--app', this._app.get_id());
                     });
-                    this._mentorItem.connect('destroy', () => items.delete(this._mentorItem));
-                    items.add(this._mentorItem);
+                    this._mentorUninstall = add(this, 'Uninstall', () => {
+                        Main.overview.hide();
+                        ask('--uninstall', this._app.get_id());
+                    });
                 }
                 this._mentorItem.visible = this._app !== null;
+                this._mentorUninstall.visible = userAdded(this._app);
                 return original.call(this, ...args);
             });
             return () => {

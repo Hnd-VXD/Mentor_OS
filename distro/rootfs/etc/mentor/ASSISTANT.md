@@ -36,6 +36,7 @@ This is for the agent, written so that a small model can follow it. The assistan
 |---|---|
 | `mentor-chat "a request"` | sent in the open conversation if nothing was asked in it yet, otherwise in a new one |
 | `mentor-chat --app chromium.desktop` | the next message is about that application |
+| `mentor-chat --uninstall chromium.desktop` | "Uninstall NAME" sent at once, in a new conversation (the icon menu's Uninstall; UNINSTALL.md) |
 | `mentor-chat --file PATH…` | attaches the files |
 | `mentor-chat --workspace N` | the shell says workspace N is in front |
 | `mentor-chat` | goes to the desktop |

@@ -29,4 +29,6 @@ deny_patterns = [
     '>\s*/dev/(sd|vd|nvme)',
     # The agent may not rewrite the rules it runs under.
     '/etc/mentor|/usr/local/(lib|bin)/mentor|polkit-1|/etc/sudoers|/etc/shadow',
+    # Mentor's own apps and its desktop, never removed by the agent (etc/mentor/UNINSTALL.md).
+    'applications/org\.mentor\.|mentor@mentor\.local',
 ]

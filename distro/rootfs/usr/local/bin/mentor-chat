@@ -18,6 +18,8 @@ Started at login. Later invocations hand their request to the running one:
     mentor-chat "a request"                ask it
     mentor-chat --app chromium.desktop     ask about one application (from its right-click menu)
     mentor-chat --file PATH...             attach files or folders (from Files' right-click menu)
+    mentor-chat --uninstall chromium.desktop
+                                           ask to uninstall one application (from its right-click menu)
     mentor-chat --ask                      bring the text box up over whatever is in front
                                            (Alt+Space, Super+Z), or put it back
 """
@@ -4800,6 +4802,11 @@ class AssistantApp(Adw.Application):
             # working in it (then a new one, as any request from outside).
             current = window.current
             (current if current and not current.busy else window.for_request()).set_subject(app_id=arguments[1])
+        elif arguments[:1] == ["--uninstall"] and len(arguments) == 2:
+            # "Uninstall" on an app's icon: sent at once, in a conversation of its own, as if the user had typed it.
+            request = uninstall_request(arguments[1])
+            if request:
+                window.for_request().send(request[1], shown=request[0])
         elif arguments[:1] == ["--file"] and len(arguments) > 1:
             conversation = window.for_request()
             for path in arguments[1:]:
@@ -4811,6 +4818,22 @@ class AssistantApp(Adw.Application):
             window.for_request().send(" ".join(arguments))
         self.shell("Show")
         return 0
+
+
+def uninstall_request(app_id):
+    """(what the user sees, what the agent is told) for "Uninstall" on an app's icon, or None for no such app.
+    The agent finds how it was installed and takes it away; what came with Mentor it refuses (UNINSTALL.md)."""
+    try:
+        info = Gio.DesktopAppInfo.new(app_id)
+    except TypeError:
+        info = None
+    if info is None:
+        return None
+    name = info.get_display_name()
+    return (f"Uninstall {name}",
+            f"Uninstall {name}. (The user picked \"Uninstall\" on its icon in the app grid: the app {app_id}, "
+            f"started from {info.get_filename()}. Follow /etc/mentor/UNINSTALL.md: find how it was installed, "
+            "take it away with the tool for that, and say so in one short sentence.)")
 
 
 AssistantApp().run(sys.argv)

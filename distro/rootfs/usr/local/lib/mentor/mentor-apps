@@ -1,0 +1,28 @@
+#!/usr/bin/python3
+"""What came with Mentor (mentor_apps.py; etc/mentor/UNINSTALL.md).
+
+    mentor-apps refresh        write /usr/share/mentor/bundled-apps (root: mentor-enable, the pacman hook)
+    mentor-apps bundled        the desktop ids of the apps that came with Mentor
+    mentor-apps packages       the packages that are part of Mentor
+    mentor-apps check NAME...  for each package or desktop id: "mentor" or "user"
+"""
+import os
+import sys
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_apps
+
+command, names = (sys.argv[1:2] or ["bundled"])[0], sys.argv[2:]
+if command == "refresh":
+    print("changed" if mentor_apps.refresh() else "unchanged")
+elif command == "bundled":
+    print("\n".join(mentor_apps.bundled_apps()))
+elif command == "packages":
+    print("\n".join(sorted(mentor_apps.protected_packages())))
+elif command == "check" and names:
+    packages, apps = mentor_apps.protected_packages(), set(mentor_apps.bundled_apps())
+    for name in names:
+        print(f"{name}: {'mentor' if name in packages or name in apps or os.path.basename(name).startswith('org.mentor.') else 'user'}")
+else:
+    print(__doc__.strip(), file=sys.stderr)
+    sys.exit(2)

@@ -35,7 +35,8 @@ RUNTIME = [
     "/etc/kernel/mentor-boot.conf",   # written only for a kernel other than the stock one (BOOT.md)
     "/usr/local/libexec/mentor",      # where the agent puts a changed engine program (ENGINES.md)
     "/etc/mentor-test",               # the file a check in TOOLS.md makes in the sandbox
-    "/etc/opensnitchd/rules",         # OpenSnitch's rules; Mentor's blocks are made there at run time (SECURITY.md)
+    "/etc/opensnitchd/rules",
+    "/usr/share/mentor/bundled-apps",  # written by mentor-apps refresh, at the build and after (UNINSTALL.md)         # OpenSnitch's rules; Mentor's blocks are made there at run time (SECURITY.md)
 ]
 # Words that stand for a name in a path (/etc/mentor/source/rootfs/PATH, mentor-webapp-NAME.desktop).
 PLACEHOLDER = re.compile(r"\b(PATH|NAME|USER|ID|N|VERSION|DOC|FILE|PART)\b")

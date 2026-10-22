@@ -22,6 +22,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `REPAIR.md` | repair mode: you on a text screen when the desktop does not come up; what to do there |
 | `RECIPES.md` | recipes: writing down what was built so another Mentor can build it; following one |
 | `FREEZES.md` | when the desktop freezes: its processor share, the watch from outside it, the record of each stall; when a program crashes: the card and how to look at it |
+| `UNINSTALL.md` | Uninstall on app icons: only apps the user added; what came with Mentor is never removed |
 | `UPDATES.md` | updates of Mentor itself: the daily look, the signature, the card, how one is installed and tried |
 | `ASKBAR.md` | the assistant's text box lifted over the program in front (Alt+Space, Super+Z), with a picture of the screen for the agent |
 | `SETTINGS.md` | Mentor Settings: one short page of the user's choices in plain words; where each is kept |
@@ -198,6 +199,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/lib/mentor/mentor_boot.py`, `mentor-boot` | trial start, going back after a failed one | user | next start | BOOT.md |
 | `/usr/local/lib/systemd/system/mentor-boot-*.service`, `.path` | when each step runs | user | `systemctl daemon-reload` | BOOT.md |
 | `/etc/pacman.d/hooks/zz-mentor-boot.hook` | after every package change: note what the next start has to prove | user | next pacman run | BOOT.md |
+| `/usr/local/lib/mentor/mentor_apps.py`, `/usr/local/lib/mentor/mentor-apps`, `/etc/pacman.d/hooks/mentor-apps.hook` | what came with Mentor: never uninstalled; the list of its apps, `/usr/share/mentor/bundled-apps` | user | next call; the list at the next package change, or `mentor-apps refresh` | UNINSTALL.md |
 | `/etc/tmpfiles.d/mentor.conf` | makes `/run/mentor`, where the desktop says it is up | user | `systemd-tmpfiles --create` | BOOT.md |
 | `/etc/plymouth/plymouthd.conf` | chooses the start-up picture `mentor` | yes | `mkinitcpio -P`, next start | BOOT.md |
 

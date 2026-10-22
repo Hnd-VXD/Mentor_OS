@@ -63,3 +63,6 @@ if command -v flatpak >/dev/null; then
 fi
 install -d -m 755 /var/log/mentor
 gtk-update-icon-cache -q -f /usr/share/icons/hicolor
+# Which apps came with Mentor: the app grid's "Uninstall" is not shown on them, and the root side never
+# removes them (etc/mentor/UNINSTALL.md). Every update brings the package list, so it is made again here.
+/usr/local/lib/mentor/mentor-apps refresh >/dev/null

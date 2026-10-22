@@ -109,6 +109,11 @@ class Choice : Painted
     }
 }
 
+// The Mentor window is wide and low, the shape of the loading window that follows it (StartSplash), and in
+// the same place: Start turns it over to that page, Back turns it back (the user's wish, 2026-10-22, after
+// Try Omarchy's). The owl and the name at the top left of both; the settings in rows below, label on the
+// left and what is chosen on the right; the rarer things (restore points, repair, backups, moving, starting
+// over) on a second tab, "More"; Start the whole width at the bottom, where the loading page has Back.
 class LauncherWindow : Form
 {
     readonly Settings settings;
@@ -116,31 +121,52 @@ class LauncherWindow : Form
     readonly Toggle gpu = new Toggle(), fullscreen = new Toggle(), vulkan = new Toggle();
     readonly Slider memory = new Slider(), cpus = new Slider();
     readonly Choice speed = new Choice { Items = new[] { "Balanced", "Maximum", "Manual" } };
+    readonly Choice tabs = new Choice { Items = new[] { "Settings", "More" } };
     readonly Label speedWords, memoryValue, cpuValue, moreWords, gpuWord, vulkanWord, fullWord;
-    readonly Card card = new Card();
-    readonly Unfold unfold = new Unfold { Text = "More options" };
-    readonly List<Control> folded = new List<Control>();
-    readonly Dictionary<Control, Rectangle> places = new Dictionary<Control, Rectangle>();
+    readonly List<Control> settingsPage = new List<Control>(), morePage = new List<Control>();
     readonly string[] profiles = { Resources.Balanced, Resources.Maximum, Resources.Manual };
     readonly Control[] manualRow;
     readonly float factor;
     int[] maximum;  // what "Maximum" would give, measured in the background
 
+    // The size both pages have, in the units of a screen that is not scaled (StartSplash takes it too).
+    public const int PageWidth = 560, PageHeight = 352;
+    // Where the button at the bottom is on both pages: Start here, Back on the loading page.
+    public static readonly Rectangle BottomButton = new Rectangle(32, 296, 496, 40);
+
     public bool Fullscreen { get { return fullscreen.Checked; } }
     public bool Repair { get; private set; }
 
-    static Label Words(string text, float size, Color colour, bool onCard)
+    static Label Words(string text, float size, Color colour)
     {
-        return new Label { Text = text, ForeColor = colour, BackColor = onCard ? Theme.Card : Theme.Back,
+        return new Label { Text = text, ForeColor = colour, BackColor = Theme.Back,
                            Font = Theme.Font(size, FontStyle.Regular), AutoEllipsis = true };
     }
 
     // Where a control goes, in the units of a screen that is not scaled.
     void Place(Control control, int left, int top, int width, int height)
     {
-        places[control] = new Rectangle(left, top, width, height);
         control.SetBounds((int)Math.Round(left * factor), (int)Math.Round(top * factor),
                           (int)Math.Round(width * factor), (int)Math.Round(height * factor));
+    }
+
+    // The owl, the name and the line under it, as on the loading page (StartSplash uses this too).
+    public static Label Header(Form form, Action<Control, int, int, int, int> place, string line)
+    {
+        var emblem = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Back };
+        try { emblem.Image = Image.FromStream(typeof(LauncherWindow).Assembly.GetManifestResourceStream("emblem.png")); }
+        catch (Exception) { }
+        var name = Words("Mentor", 16f, Theme.Text);
+        name.Font = Theme.Font(16f, FontStyle.Bold);
+        var subtitle = Words(line, 9f, Theme.Dim);
+        var rule = new Label { BackColor = Theme.Line };
+        // Name and line end before the tabs (from 360): a label's solid background covered them.
+        place(emblem, 30, 18, 56, 56);
+        place(name, 96, 20, 250, 32);
+        place(subtitle, 98, 51, 250, 20);
+        place(rule, 32, 88, 496, 1);
+        form.Controls.AddRange(new Control[] { emblem, name, subtitle, rule });
+        return subtitle;
     }
 
     public LauncherWindow(Settings settings, bool own, bool startFullscreen, RestorePoints points, BootWatch watch,
@@ -153,6 +179,12 @@ class LauncherWindow : Form
         AutoScaleMode = AutoScaleMode.None;  // laid out by Place, below
         FormBorderStyle = FormBorderStyle.FixedSingle;
         StartPosition = FormStartPosition.CenterScreen;
+        // Back from the loading window: where it was, as it is the same window turning back a page.
+        if (!running && !Program.WindowPlace.IsEmpty)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = Program.WindowPlace.Location;
+        }
         MaximizeBox = false;
         BackColor = Theme.Back;
         ForeColor = Theme.Text;
@@ -160,19 +192,9 @@ class LauncherWindow : Form
         KeyPreview = true;
         Theme.Dress(this);
         using (Graphics g = CreateGraphics()) factor = g.DpiX / 96f;
+        ClientSize = new Size((int)Math.Round(PageWidth * factor), (int)Math.Round(PageHeight * factor));
 
-        var emblem = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Theme.Back };
-        try { emblem.Image = Image.FromStream(typeof(LauncherWindow).Assembly.GetManifestResourceStream("emblem.png")); }
-        catch (Exception) { }
-        var subtitle = new Label { Text = running ? "Settings for the next start" : "Agentic Linux", TextAlign = ContentAlignment.MiddleCenter,
-                                   ForeColor = Theme.Dim, BackColor = Theme.Back };
-        var start = new PillButton { Text = running ? "Save" : "Start Mentor", Primary = true, Result = DialogResult.OK,
-                                     Font = Theme.Font(12f, FontStyle.Bold) };
-        // The owl above, large and in the middle, then Start the card's width, then the short line: once
-        // the switches shared one row the window had room for it again (the user's wish, 2026-10-18;
-        // before, owl and Start side by side). The name is in the owl and in the title bar.
-        Place(emblem, 155, 14, 130, 130);
-        Place(subtitle, 28, 214, 384, 20);
+        Label subtitle = Header(this, Place, running ? "Settings for the next start" : "Agentic Linux");
         // News of the launcher's own update, in the subtitle's place (SelfUpdate.Note): at once when it
         // is known, or when the check in the background finds one while the window is open.
         Action showNote = () => {
@@ -188,12 +210,18 @@ class LauncherWindow : Form
         SelfUpdate.NoteChanged += noteChanged;
         Shown += (s, e) => showNote();
         FormClosed += (s, e) => SelfUpdate.NoteChanged -= noteChanged;
-        Place(start, 28, 156, 384, 52);
+        var start = new PillButton { Text = running ? "Save" : "Start Mentor", Primary = true, Result = DialogResult.OK,
+                                     Font = Theme.Font(11f, FontStyle.Bold) };
+        Place(start, BottomButton.X, BottomButton.Y, BottomButton.Width, BottomButton.Height);
+        // The two tabs, in the header's right half; while Mentor runs there is only the one page.
+        Place(tabs, 360, 32, 168, 26);
+        tabs.Font = speed.Font = Theme.Font(9f, FontStyle.Regular);
+        tabs.Visible = !running;
+        tabs.Changed += (s, e) => Arrange();
 
         gpu.Checked = settings.gpu;
         vulkan.Checked = settings.vulkan && own;
         fullscreen.Checked = startFullscreen;
-        foreach (Painted control in new Painted[] { gpu, vulkan, fullscreen, memory, cpus, speed }) control.BackColor = Theme.Card;
         vulkan.Visible = own;
         vulkan.Enabled = gpu.Checked;  // it is drawn by the graphics card or not at all
         gpu.CheckedChanged += (s, e) => vulkan.Enabled = gpu.Checked;
@@ -208,11 +236,11 @@ class LauncherWindow : Form
         int[] balanced = Resources.Plan(Resources.Balanced, 0, 0);
         memory.Value = settings.memory > 0 ? settings.memory : balanced[0];
         cpus.Value = settings.cpus > 0 ? settings.cpus : balanced[1];
-        memoryValue = Words("", 9.5f, Theme.Text, true);
-        cpuValue = Words("", 9.5f, Theme.Text, true);
+        memoryValue = Words("", 8.5f, Theme.Text);
+        cpuValue = Words("", 8.5f, Theme.Text);
         memoryValue.TextAlign = cpuValue.TextAlign = ContentAlignment.TopRight;
-        speedWords = Words("", 8.5f, Theme.Dim, true);
-        moreWords = Words("", 8.5f, Theme.Dim, true);
+        speedWords = Words("", 8.5f, Theme.Dim);
+        moreWords = Words("", 8.5f, Theme.Dim);
         speed.Selected = Math.Max(0, Array.IndexOf(profiles, settings.profile));
         EventHandler show = (s, e) => {
             memoryValue.Text = memory.Value + " GB";
@@ -237,20 +265,16 @@ class LauncherWindow : Form
         show(null, EventArgs.Empty);
         ShowMore();
 
-        var change = new PillButton { Text = "Change…", BackColor = Theme.Card };
+        var change = new PillButton { Text = "Change…", Font = Theme.Font(9f, FontStyle.Regular) };
         change.Click += (s, e) => {
             using (var dialog = new SettingsDialog(qemuDir, settings, running))
                 if (dialog.ShowDialog(this) == DialogResult.OK) ShowMore();
         };
-        manualRow = new Control[] { Words("Memory", 10.5f, Theme.Text, true), memoryValue, memory,
-                                    Words("Processors", 10.5f, Theme.Text, true), cpuValue, cpus };
-        var lines = new Label[4];
-        for (int i = 0; i < lines.Length; i++) lines[i] = new Label { BackColor = Theme.Line };
-        // Graphics card, Vulkan and Full screen share one row, "Screen", each a switch with its name beside
-        // it (the user found three rows of their own too tall, 2026-10-18); what each does is in its tooltip.
+        // Graphics card, Vulkan and Full screen side by side, each a switch with its name beside it; what
+        // each does is in its tooltip.
         var tips = new ToolTip();
         Func<Toggle, string, string, Label> named = (toggle, name, tip) => {
-            Label word = Words(name, 9.5f, Theme.Text, true);
+            Label word = Words(name, 9f, Theme.Text);
             word.TextAlign = ContentAlignment.MiddleLeft;
             word.Cursor = Cursors.Hand;
             word.Click += (s, e) => { if (toggle.Enabled) toggle.Checked = !toggle.Checked; };
@@ -264,20 +288,45 @@ class LauncherWindow : Form
         vulkanWord.Visible = own;
         vulkanWord.ForeColor = gpu.Checked ? Theme.Text : Theme.Dim;
         gpu.CheckedChanged += (s, e) => vulkanWord.ForeColor = gpu.Checked ? Theme.Text : Theme.Dim;
-        // The card's rows, top to bottom; each Place()d by Arrange().
-        rows = new List<Control[]> {
-            new Control[] { Words("Screen", 10.5f, Theme.Text, true),
-                            Words("Ctrl+Alt+F switches full screen at any time.", 8.5f, Theme.Dim, true),
-                            gpu, lines[0], gpuWord, vulkan, vulkanWord, fullscreen, fullWord },
-            new Control[] { Words("Speed", 10.5f, Theme.Text, true), speedWords, speed, lines[3] },
-            new Control[] { Words("Sound, USB and sign-in", 10.5f, Theme.Text, true), moreWords, change },
-        };
-        foreach (Control[] row in rows) if (row != null) card.Controls.AddRange(row);
-        card.Controls.AddRange(manualRow);
 
-        // The rarer choices start folded away under one quiet line (2026-10-15): the window is about
-        // starting Mentor, and these are for when something went wrong or something is to be kept.
-        var restore = new PillButton { Text = "Restore points" };
+        var lines = new Label[2];
+        for (int i = 0; i < lines.Length; i++) lines[i] = new Label { BackColor = Theme.Line };
+        Label screenName = Words("Screen", 9.5f, Theme.Text), speedName = Words("Speed", 9.5f, Theme.Text),
+              moreName = Words("Sound, USB and sign-in", 9.5f, Theme.Text);
+        manualRow = new Control[] { Words("Memory", 8.5f, Theme.Text), memoryValue, memory,
+                                    Words("Processors", 8.5f, Theme.Text), cpuValue, cpus };
+        // The rows, top to bottom, label on the left, at 32; what is chosen from 150.
+        Place(screenName, 32, 101, 110, 22);
+        int x = 150;
+        foreach (Control[] pair in new[] { new Control[] { gpu, gpuWord }, own ? new Control[] { vulkan, vulkanWord } : null,
+                                            new Control[] { fullscreen, fullWord } })
+        {
+            if (pair == null) continue;
+            int words = pair[1] == gpuWord ? 84 : pair[1] == vulkanWord ? 52 : 68;
+            Place(pair[0], x, 103, 32, 18);
+            Place(pair[1], x + 36, 100, words, 24);
+            x += 36 + words + (own ? 16 : 60);
+        }
+        Place(lines[0], 32, 134, 496, 1);
+        Place(speedName, 32, 147, 110, 22);
+        Place(speed, 150, 144, 378, 26);
+        Place(speedWords, 150, 178, 378, 18);
+        Place(manualRow[0], 150, 176, 90, 18);
+        Place(manualRow[1], 240, 176, 86, 18);
+        Place(manualRow[2], 148, 194, 180, 22);
+        Place(manualRow[3], 350, 176, 90, 18);
+        Place(manualRow[4], 442, 176, 86, 18);
+        Place(manualRow[5], 348, 194, 182, 22);
+        Place(lines[1], 32, 226, 496, 1);
+        Place(moreName, 32, 238, 300, 22);
+        Place(moreWords, 32, 260, 380, 18);
+        Place(change, 428, 240, 100, 32);
+        settingsPage.AddRange(new Control[] { screenName, gpu, gpuWord, vulkan, vulkanWord, fullscreen, fullWord, lines[0],
+                                              speedName, speed, speedWords, lines[1], moreName, moreWords, change });
+        settingsPage.AddRange(manualRow);
+
+        // "More": the rarer choices, which all want Mentor stopped (so not while it runs).
+        var restore = new PillButton { Text = "Restore points" };  // the six in 9 point, as Change…
         var mend = new PillButton { Text = "Repair" };
         var backUp = new PillButton { Text = "Back up…" };
         var fromBackup = new PillButton { Text = "Restore a backup…" };
@@ -285,17 +334,21 @@ class LauncherWindow : Form
         // One button for starting from nothing; whether the newest Mentor is downloaded too is a choice
         // inside it (StartOverDialog). It was two, Reinstall and Start over, which the user found the same.
         var fresh = new PillButton { Text = "Start over…" };
-        folded.AddRange(new Control[] { restore, mend, backUp, fromBackup, move, fresh });
-        foreach (Control button in folded) button.Visible = false;
-        Controls.AddRange(new Control[] { emblem, subtitle, start, card, unfold });
-        Controls.AddRange(folded.ToArray());
-        unfold.Visible = !running;  // all of these want Mentor stopped
-        unfold.Click += (s, e) => {
-            unfold.Open = !unfold.Open;
-            foreach (Control button in folded) button.Visible = unfold.Open;
-            Arrange();
-            unfold.Invalidate();
-        };
+        Control[] buttons = { restore, mend, backUp, fromBackup, move, fresh };
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            buttons[i].Font = Theme.Font(9f, FontStyle.Regular);
+            Place(buttons[i], i % 2 == 0 ? 32 : 284, 102 + i / 2 * 42, 244, 34);
+        }
+        var moreNote = Words("For when something went wrong, or something is to be kept or moved.", 8.5f, Theme.Dim);
+        Place(moreNote, 32, 236, 496, 20);
+        morePage.AddRange(buttons);
+        morePage.Add(moreNote);
+
+        Controls.Add(tabs);
+        Controls.Add(start);
+        Controls.AddRange(settingsPage.ToArray());
+        Controls.AddRange(morePage.ToArray());
         Arrange();
 
         mend.Click += (s, e) => {
@@ -373,6 +426,7 @@ class LauncherWindow : Form
         };
         FormClosing += (s, e) => {
             if (DialogResult != DialogResult.OK) return;
+            if (!running) Program.WindowPlace = Bounds;  // for StartSplash, which takes this place
             settings.gpu = gpu.Checked;
             if (own) settings.vulkan = vulkan.Checked && gpu.Checked;
             settings.profile = profiles[speed.Selected];
@@ -380,8 +434,6 @@ class LauncherWindow : Form
             settings.cpus = cpus.Value;
         };
     }
-
-    readonly List<Control[]> rows;
 
     static string Sizes(int[] plan) { return plan[0] + " GB and " + plan[1] + (plan[1] == 1 ? " processor" : " processors"); }
 
@@ -396,74 +448,16 @@ class LauncherWindow : Form
         moreWords.Text = string.Join(", ", parts) + ".";
     }
 
-    // Puts everything where it goes for what is shown now (Manual's sliders, the folded buttons).
-    const int CardTop = 246;  // under the owl, Start and its line
-
+    // Shows the page of the tab chosen, and on Settings Manual's sliders in place of Speed's line.
     void Arrange()
     {
-        int y = 0;
-        foreach (Control[] row in rows)
-        {
-            if (row == null) continue;
-            if (Array.IndexOf(row, gpu) >= 0)
-            {
-                // "Screen": its name, then the switches side by side, each with its name, then one line.
-                Place(row[0], 18, y + 14, 200, 24);
-                int x = 18;
-                foreach (Control[] pair in new[] { new Control[] { gpu, gpuWord, null }, own ? new Control[] { vulkan, vulkanWord, null } : null,
-                                                    new Control[] { fullscreen, fullWord, null } })
-                {
-                    if (pair == null) continue;
-                    int words = pair[1] == gpuWord ? 88 : pair[1] == vulkanWord ? 56 : 70;
-                    Place(pair[0], x, y + 47, 36, 20);
-                    Place(pair[1], x + 40, y + 44, words, 26);
-                    x += 40 + words + (own ? 7 : 40);  // the three fill the card's 348 exactly
-                }
-                Place(row[1], 18, y + 76, 348, 20);
-                y += 100;
-                Place(row[3], 18, y + 6, 348, 1);
-                y += 8;
-                continue;
-            }
-            bool isSpeed = Array.IndexOf(row, speed) >= 0;
-            // Labels have a solid background and lie above what is placed after them: kept clear of the
-            // Speed choice (from 120) and of a button (from 262), which they covered.
-            Place(row[0], 18, y + 14, isSpeed ? 96 : 200, 24);
-            // Speed's line goes lower: its choice reaches further down than a switch (the user found it too close).
-            Place(row[1], 18, isSpeed ? y + 45 : y + 37, isSpeed ? 348 : row[2] is Toggle ? 296 : 236, 20);
-            if (row[2] is Toggle) Place(row[2], 322, y + 22, 44, 24);
-            else if (isSpeed) Place(row[2], 120, y + 10, 246, 28);
-            else Place(row[2], 262, y + 16, 104, 32);
-            y += isSpeed ? 70 : 62;
-            if (isSpeed)
-            {
-                bool manual = profiles[speed.Selected] == Resources.Manual;
-                foreach (Control control in manualRow) control.Visible = manual;
-                if (manual)
-                {
-                    Place(manualRow[0], 18, y + 6, 200, 24);
-                    Place(manualRow[1], 266, y + 6, 100, 24);
-                    Place(manualRow[2], 16, y + 30, 352, 26);
-                    Place(manualRow[3], 18, y + 66, 200, 24);
-                    Place(manualRow[4], 266, y + 66, 100, 24);
-                    Place(manualRow[5], 16, y + 90, 352, 26);
-                    y += 124;
-                }
-            }
-            if (row.Length > 3) Place(row[3], 18, y + 6, 348, 1);
-            y += row.Length > 3 ? 8 : 4;
-        }
-        Place(card, 28, CardTop, 384, y);
-        int bottom = CardTop + y + 16;
-        Place(unfold, 28, bottom, 384, 28);
-        bottom += running ? 0 : 40;
-        if (unfold.Open && !running)
-        {
-            for (int i = 0; i < folded.Count; i++)
-                Place(folded[i], i % 2 == 0 ? 28 : 226, bottom + i / 2 * 46, 186, 38);
-            bottom += (folded.Count + 1) / 2 * 46;
-        }
-        ClientSize = new Size((int)Math.Round(440 * factor), (int)Math.Round((bottom + 8) * factor));
-        card.Invalidate();
+        bool more = tabs.Selected == 1 && !running;
+        foreach (Control control in settingsPage) control.Visible = !more;
+        foreach (Control control in morePage) control.Visible = more;
+        if (more) return;
+        bool manual = profiles[speed.Selected] == Resources.Manual;
+        foreach (Control control in manualRow) control.Visible = manual;
+        speedWords.Visible = !manual;
+        vulkan.Visible = vulkanWord.Visible = own;
     }
 }

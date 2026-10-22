@@ -13,6 +13,7 @@ import sys
 import time
 import tomllib
 
+import mentor_apps
 import mentor_boot
 import mentor_sandbox
 
@@ -96,12 +97,23 @@ def pkg_install(args, policy):
     return ["pacman", "-S", "--noconfirm", "--needed", "--", *packages(args)]
 
 
+# Said whenever something of Mentor's would go: the agent passes it on, and does not look for another way.
+PART_OF_MENTOR = ("{} came with Mentor and cannot be uninstalled: Mentor needs it (etc/mentor/UNINSTALL.md). "
+                  "Tell the user so in one plain sentence; do not try another way.")
+
+
 def pkg_remove(args, policy):
     names = packages(args)
     protected = set(policy.get("packages", {}).get("protected", []))
     blocked = sorted(protected.intersection(names))
     if blocked:
         raise Denied(f"protected packages cannot be removed: {', '.join(blocked)}")
+    # Everything pacman would take with them (-s), checked against Mentor's packages and all they need.
+    went = subprocess.run(["pacman", "-Rnsp", "--print-format", "%n", "--", *names], capture_output=True, text=True,
+                          env={**os.environ, "LC_ALL": "C"})
+    blocked = sorted(mentor_apps.protected_packages().intersection(went.stdout.split() if went.returncode == 0 else names))
+    if blocked:
+        raise Denied(PART_OF_MENTOR.format(", ".join(blocked)))
     return ["pacman", "-Rns", "--noconfirm", "--", *names]
 
 
@@ -176,6 +188,15 @@ def run_root(args, policy):
     for pattern in shell.get("deny_patterns", []):
         if re.search(pattern, command):
             raise Denied(f"command matches deny pattern {pattern!r}")
+    # A package of Mentor's taken away by hand (pacman -R, -Rdd...): a net, as the patterns are; the
+    # sandbox's check (sandbox_apply) is the one that holds.
+    removals = [m.group(1) for m in re.finditer(r"\bpacman\b([^;&|\n]*)", command)
+                if re.search(r"\s(-R\w*|--remove)\b", m.group(1))]
+    if removals:
+        words = {w for part in removals for w in part.split() if not w.startswith("-")}
+        blocked = sorted(mentor_apps.protected_packages().intersection(words))
+        if blocked:
+            raise Denied(PART_OF_MENTOR.format(", ".join(blocked)))
     return ["bash", "-c", command]
 
 
@@ -272,8 +293,36 @@ def sandbox_discard(args, policy):
     return 0
 
 
+def _takes_mentor_away():
+    """What of Mentor's the sandbox's changes would remove: its packages (their pacman database folders
+    deleted) and its own files (MANIFEST.sha256). Mentor's updates apply their own sandbox, not this way."""
+    gone = [rel for rel, kind in mentor_sandbox.scan() if kind in ("deleted", "replaced")]
+    if not gone:
+        return []
+    keep, files = mentor_apps.protected_packages(), mentor_apps.mentor_files()
+    found = set()
+    for rel in gone:
+        package = mentor_apps.package_of_dir(rel)
+        if package in keep:
+            found.add(package)
+        path = "/" + rel.rstrip("/")
+        if rel.endswith("/") or os.path.isdir(path):
+            # a directory deleted or swapped for another: the files of Mentor's in it went with it, or may have
+            changed = [f for f in files if f.startswith(path + "/") and
+                       not os.path.lexists(os.path.join(mentor_sandbox.MERGED, f.lstrip("/")))]
+            found.update(changed)
+        elif path in files:
+            found.add(path)
+    return sorted(found)
+
+
 def sandbox_apply(args, policy):
     mentor_sandbox.use(args.get("sandbox", "default"))
+    gone = _takes_mentor_away()
+    if gone:
+        more = f" and {len(gone) - 8} more" if len(gone) > 8 else ""
+        raise Denied(PART_OF_MENTOR.format(", ".join(gone[:8]) + more) +
+                     " Put them back in the sandbox (or sandbox_discard) and apply only the rest.")
     manifest = mentor_sandbox.apply(str(args.get("summary", "")), protected_paths(policy))
     print(f"applied change {manifest['id']}: {len(manifest['entries'])} paths")
     if manifest["skipped"]:

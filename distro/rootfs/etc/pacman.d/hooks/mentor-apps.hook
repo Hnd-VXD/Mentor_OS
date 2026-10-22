@@ -1,0 +1,14 @@
+# After apps come, go or are upgraded: the list of the apps that came with Mentor, which the app
+# grid's "Uninstall" is not shown on (usr/local/lib/mentor/mentor_apps.py; etc/mentor/UNINSTALL.md).
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/share/applications/*.desktop
+Target = usr/local/share/applications/*.desktop
+
+[Action]
+Description = Noting which apps came with Mentor...
+When = PostTransaction
+Exec = /usr/local/lib/mentor/mentor-apps refresh

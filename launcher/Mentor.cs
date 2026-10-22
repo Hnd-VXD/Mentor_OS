@@ -83,6 +83,17 @@ static class Program
     // Where this installation is, for the tray icon's commands and the diagnostics file.
     public static string Root, VmDir, Image, QemuDir, SettingsFile;
     public static bool Own;
+    // The loading window's Back: Run again, from the Mentor window. And where that window was, for the
+    // loading window to take its place (StartSplash).
+    public static bool BackToSettings;
+    static StartSplash earlySplash;  // opened by Run at once, for HostBridge to take over
+    public static StartSplash TakeSplash()
+    {
+        StartSplash taken = earlySplash;
+        earlySplash = null;
+        return taken;
+    }
+    public static Rectangle WindowPlace;
     public static RestorePoints Points;
     public static BootWatch Watch;
     public static bool HelloOn;  // Windows Hello is switched on and set up (Hello.cs)
@@ -148,7 +159,13 @@ static class Program
         Application.EnableVisualStyles();
         try
         {
-            return Run(args);
+            int code;
+            do
+            {
+                BackToSettings = false;
+                code = Run(args);
+            } while (BackToSettings && args.Length == 0);
+            return code;
         }
         catch (LauncherException e)
         {
@@ -220,8 +237,8 @@ static class Program
 
         bool job = backupTo != null || restoreFrom != null || moveTo != null;
         // A newer Mentor.exe that was downloaded last time is put in place now, and this one makes way for it.
-        if (update && !job && SelfUpdate.AtStart(root, args, Running(vmDir) != null)) return 0;
-        if (update && !job) SelfUpdate.CheckInBackground();
+        if (update && !job && WindowPlace.IsEmpty && SelfUpdate.AtStart(root, args, Running(vmDir) != null)) return 0;
+        if (update && !job && WindowPlace.IsEmpty) SelfUpdate.CheckInBackground();  // not again after Back
         if (!job && AlreadyRunning(vmDir, args.Length == 0)) return 0;
         string qemuDir = FindQemu(root);
         Root = root; VmDir = vmDir; Image = image; QemuDir = qemuDir;
@@ -265,6 +282,16 @@ static class Program
                 repair = window.Repair;
             }
             settings.Save();
+            // The loading window, in the Mentor window's place at once: there is still a moment of work
+            // before QEMU starts (the sizes, the disk), and without it the window was gone for that moment.
+            // HostBridge takes it over, or closes it when the start is not hidden.
+            if (!repair)
+            {
+                earlySplash = new StartSplash(fullscreen == true, Path.Combine(vmDir, "start-seconds"));
+                earlySplash.StopStart = null;
+                earlySplash.Show();
+                earlySplash.Update();
+            }
         }
         // These come from the settings however Mentor is started (also with options, as from a shortcut).
         Speaker = settings.speaker;
@@ -353,7 +380,7 @@ static class Program
             SelfUpdate.RunEnded();
             repair = false;  // a restart from the repair screen is an ordinary start
         }
-        if (tray != null) tray.Dispose();
+        if (tray != null) { tray.Dispose(); tray = null; }  // Run comes again after Back
         return 0;
     }
 
@@ -440,10 +467,9 @@ static class Program
         // Only with the graphics card: without it the picture is drawn the slow way until the
         // system's own driver takes over, and at this size that made the start minutes long.
         // There the window is given its size when the system says it has started (OnBoot).
-        // Mentor's own QEMU shows its window from the start, so there the window gets its size
-        // when the system says it has started, as without the graphics card.
+        // Mentor's own QEMU waits hidden as well now (see waitMinimized below), and starts in that size too.
         string firstMode = "";
-        if (gpu && !own)
+        if (gpu)
         {
             float dpi;
             using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) dpi = g.DpiX / 96f;
@@ -522,8 +548,12 @@ static class Program
 
         // With the graphics card drawing, the window waits minimized (see HostBridge.Reveal).
         // Not for someone who chose the display themselves.
-        // Nor with Mentor's own QEMU, whose window does not freeze when it is there from the start.
-        bool waitMinimized = gpu && !own && !extra.Contains("-display");
+        // Mentor's own QEMU waits so too, for another reason (the user's wish, 2026-10-22, after Try Omarchy):
+        // the firmware's logo, the start-up picture in a small window, the window growing and the desktop
+        // changing its scale were all on screen. Now a loading window (StartSplash) is, until the desktop is
+        // up, and the window comes up as it stays. Not when no desktop is waited for (repair, an ISO, a
+        // system that failed twice): there the user is to see what happens.
+        bool waitMinimized = (gpu || own) && bootTimeout > 0 && !extra.Contains("-display");
         if (gpu && !own && !waitMinimized && File.Exists(modeFile)) q.Add("-full-screen");
         if (!extra.Contains("-audiodev")) q.AddRange(Sound(own));
         var stderr = new StringBuilder();
@@ -795,12 +825,17 @@ class HostBridge : Form
     DateTime revealedAt;
     readonly bool sharp;
     readonly bool late;  // the window is made full screen when the system has started, not from the firmware on
+    readonly bool own;  // Mentor's own QEMU: its window waits hidden for another reason than freezing
     bool sized;  // a sharp window has been given its size
+    bool parked;  // the hidden window was brought up out of sight, to take its size (Park)
     StartSplash splash;
+    readonly string startFile;  // how long the last start took, for the loading window's bar
     int frozenFor;  // looks in a row at which QEMU's window did not answer
     bool gameMouse;  // the system inside asked for the game mouse (a game is in front)
     bool noGameMouse;  // this QEMU has none (an older Mentor.exe's command line, or one given by hand)
     const int RevealAnyway = 45;  // seconds, for a system that never reports its desktop
+    const int RevealAnywayOwn = 120;
+    DateTime startedAt = DateTime.UtcNow;
     public HostLink Link;  // the root-only link to the system inside (org.mentor.host)
     PowerWatch power;  // Windows going to sleep, waking, shutting down
 
@@ -810,6 +845,8 @@ class HostBridge : Form
     {
         this.sharp = sharp;
         this.late = late;
+        own = late;
+        startFile = Path.Combine(Path.GetDirectoryName(modeFile), "start-seconds");
         this.waitMinimized = waitMinimized;
         this.wantFullscreen = wantFullscreen;
         Revealed = !waitMinimized;
@@ -821,17 +858,28 @@ class HostBridge : Form
         if (waitMinimized)
         {
             // Something to look at meanwhile: the system's own boot screen is in that window.
-            splash = new StartSplash(wantFullscreen);
+            // The one Program.Run opened at once after Start Mentor, or a new one (a restart from inside).
+            splash = Program.TakeSplash() ?? new StartSplash(wantFullscreen, startFile);
+            splash.StopStart = CancelStart;
             splash.Show();
-            FormClosed += (s, e) => splash.Close();
+            FormClosed += (s, e) => splash.Dismiss();
             // The window sometimes comes up by itself when the guest changes the picture's
             // size, which is exactly when it must not be on screen: back down it goes.
-            var keepDown = new System.Windows.Forms.Timer { Interval = 150 };
+            // Mentor's own: nor is it on the taskbar meanwhile, where it showed as QEMU's icon (the user,
+            // 2026-10-22); the loading window is there instead. Taken off again at every look, as
+            // Windows puts it back when the window is shown (Park).
+            var keepDown = new System.Windows.Forms.Timer { Interval = own ? 50 : 150 };
             keepDown.Tick += (s, e) => {
-                if (Revealed || qemu.HasExited) keepDown.Stop();
-                else VmWindow.KeepMinimized(qemu);
+                if (Revealed || qemu.HasExited) { keepDown.Stop(); return; }
+                if (!parked) VmWindow.KeepMinimized(qemu);
+                if (own) VmWindow.OffTaskbar(qemu, true);
             };
             keepDown.Start();
+        }
+        else
+        {
+            StartSplash early = Program.TakeSplash();  // nothing is hidden: the window itself is the loading
+            if (early != null) early.Dismiss();
         }
         ShowInTaskbar = false;
         IntPtr unused = Handle;  // create the window before the threads post to it
@@ -873,9 +921,9 @@ class HostBridge : Form
             if (waitMinimized && !Froze && !qemu.HasExited &&
                 (!Revealed || (DateTime.UtcNow - revealedAt).TotalSeconds < 10))
             {
-                // A window that stops answering during the start does not come back.
+                // A window that stops answering during the start does not come back (the installer's QEMU).
                 qemu.Refresh();
-                frozenFor = qemu.MainWindowHandle != IntPtr.Zero && !qemu.Responding ? frozenFor + 1 : 0;
+                frozenFor = !own && qemu.MainWindowHandle != IntPtr.Zero && !qemu.Responding ? frozenFor + 1 : 0;
                 if (frozenFor >= 4)  // eight seconds
                 {
                     Froze = true;
@@ -883,7 +931,9 @@ class HostBridge : Form
                     catch (InvalidOperationException) { }
                     return;
                 }
-                if (!Revealed && (DateTime.UtcNow - started).TotalSeconds > RevealAnyway) Reveal();
+                // Mentor's own waits longer: a slow PC, or a trial start, is still on its way, and the loading
+                // window says so.
+                if (!Revealed && (DateTime.UtcNow - started).TotalSeconds > (own ? RevealAnywayOwn : RevealAnyway)) Reveal();
             }
             // Remember the mode for the next start, however it was changed.
             if (!Revealed) return;
@@ -908,7 +958,34 @@ class HostBridge : Form
     public void ShowVm()
     {
         if (qemu.HasExited) return;
+        if (!Revealed) { Reveal(); return; }  // asked for while still starting: as it is
         VmWindow.Restore(qemu);
+    }
+
+    // The loading window's Back (toSettings) or its X: the start is stopped, as Mentor.exe's "turn it off
+    // at once". Nothing inside has been opened yet, and a stop from here is not counted as a failed start
+    // (BootWatch.End). After Back the Mentor window comes again (Program.Main).
+    void CancelStart(bool toSettings)
+    {
+        if (Revealed || qemu.HasExited) return;
+        Program.Note("start stopped from the loading window" + (toSettings ? ", back to the settings" : ""));
+        Program.BackToSettings = toSettings;
+        if (qmp.Execute("quit", null, 3000) != null && !qemu.HasExited)
+        {
+            try { qemu.Kill(); }
+            catch (InvalidOperationException) { }
+        }
+    }
+
+    // Mentor's own QEMU, hidden: once the system is starting, its window is brought up where it cannot be
+    // seen and given the size it will have (or the screen's, for full screen), so that the desktop starts in
+    // that size. Without the graphics card the picture cannot be that large from the firmware on (it is drawn
+    // the slow way until the system's driver takes over), hence now and not at the start. Done with the
+    // graphics card too: there it is the size the picture already has, and nothing changes.
+    void Park()
+    {
+        if (!own || Revealed || parked) return;
+        parked = VmWindow.Park(qemu, wantFullscreen ? Screen.PrimaryScreen.Bounds.Size : VmWindow.Picture());
     }
 
     // The tray icon's "Shut down Mentor": its power button, as from its own menu.
@@ -926,9 +1003,30 @@ class HostBridge : Form
         if (Revealed) return;
         Revealed = true;
         revealedAt = DateTime.UtcNow;
-        if (splash != null) splash.Close();
-        VmWindow.Restore(qemu);
+        if (!own)
+        {
+            if (splash != null) splash.Dismiss();
+            VmWindow.Restore(qemu);
+            if (wantFullscreen) EnterFullscreen();
+            return;
+        }
+        // Mentor's own: the loading window stays above while the window comes into place (and into full
+        // screen), so that what is seen next is the desktop as it stays.
+        if (splash != null) splash.Finish();
+        VmWindow.OffTaskbar(qemu, false);
+        VmWindow.Show(qemu, wantFullscreen);
         if (wantFullscreen) EnterFullscreen();
+        DateTime shown = DateTime.UtcNow;
+        var settle = new System.Windows.Forms.Timer { Interval = 100 };
+        settle.Tick += (s, e) => {
+            double waited = (DateTime.UtcNow - shown).TotalMilliseconds;
+            if (qemu.HasExited || waited > 5000 || waited > 400 && (!wantFullscreen || VmWindow.IsFullscreen(qemu)))
+            {
+                settle.Stop();
+                if (splash != null) splash.Dismiss();
+            }
+        };
+        settle.Start();
     }
 
     void EnterFullscreen()
@@ -948,8 +1046,10 @@ class HostBridge : Form
 
     void OnBoot(string how)
     {
+        if (splash != null && !Revealed) splash.Phase(how);
         if (how == "starting")
         {
+            Park();
             // With real pixels the window opens half as large as it used to. It gets a proper
             // size now, before the desktop inside starts, so that the desktop starts in that
             // size rather than changing to it. Not earlier: a large window makes the firmware
@@ -960,6 +1060,12 @@ class HostBridge : Form
                 else if (sharp) sized = VmWindow.Resize(qemu);
             }
             return;
+        }
+        if (how == "ok" && waitMinimized && !Revealed)
+        {
+            // For the loading window's bar next time.
+            try { File.WriteAllText(startFile, ((int)(DateTime.UtcNow - startedAt).TotalSeconds).ToString()); }
+            catch (IOException) { }
         }
         if (how == "ok") { Reveal(); SelfUpdate.Commit(); }
         // For a test: the diagnostics file made by itself, into this folder, a while after the start.
@@ -1099,10 +1205,18 @@ class HostBridge : Form
     // A clipboard that could not be read yet is looked at again every 50 ms, for up to 2 s.
     System.Windows.Forms.Timer clipboardRetry;
     int clipboardTries;
+    DateTime pictureComing;  // when the guest was last told that a picture is coming
 
     void ClipboardAgain()
     {
-        if (++clipboardTries > 40) return;
+        if (++clipboardTries > 40)
+        {
+            // Given up: a menu waiting for a picture from this change waits no more (Mentor closes it
+            // only while it is still waiting).
+            if ((DateTime.UtcNow - pictureComing).TotalSeconds < 5)
+                WriteClipboard(Encoding.ASCII.GetBytes("{\"image-none\": true}\n"));
+            return;
+        }
         if (clipboardRetry == null)
         {
             clipboardRetry = new System.Windows.Forms.Timer { Interval = 50 };
@@ -1126,9 +1240,19 @@ class HostBridge : Form
                 return;
             }
             // A picture (Windows' own PrtScr / Snipping Tool, which Windows keeps even while Mentor is
-            // full screen) goes over as a PNG: a paste inside Mentor finds it. The bitmap, made a PNG here:
-            // 0.4 s for a 2880 x 1646 snip, where the Snipping Tool took 1 s to hand over its own PNG
-            // (2026-10-22). Its PNG only when there is no bitmap.
+            // full screen) goes over as a PNG: a paste inside Mentor finds it. Getting it takes a while (the
+            // Snipping Tool makes it only when asked), so Mentor is first told that one is coming, which
+            // needs only the formats: its menu is up at once, its items waiting for the picture (the user's
+            // wish, 2026-10-22). Not again within 3 s: the Snipping Tool puts each snip there twice.
+            bool coming = false;
+            if ((data.GetDataPresent(DataFormats.Bitmap) || data.GetDataPresent("PNG")) &&
+                (DateTime.UtcNow - pictureComing).TotalSeconds > 3)
+            {
+                pictureComing = DateTime.UtcNow;
+                coming = WriteClipboard(Encoding.ASCII.GetBytes("{\"image-coming\": true}\n"));
+            }
+            // The bitmap, made a PNG here: 0.4 s for a 2880 x 1646 snip, where the Snipping Tool took 1 s
+            // to hand over its own PNG (2026-10-22). Its PNG only when there is no bitmap.
             byte[] png = null;
             if (data.GetDataPresent(DataFormats.Bitmap))
             {
@@ -1140,11 +1264,10 @@ class HostBridge : Form
                 png = Bytes(data.GetData("PNG"));
                 if (png != null && !IsPng(png)) png = null;
             }
-            if (png != null)
-            {
-                SendImage(png);
-                return;
-            }
+            if (png != null && SendImage(png)) return;
+            // No picture after all (or the one sent last): the menu that waits for it closes.
+            if (coming) WriteClipboard(Encoding.ASCII.GetBytes("{\"image-none\": true}\n"));
+            if (png != null) return;
             string text = data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null;
             if (string.IsNullOrEmpty(text) || text == synced) return;
             byte[] line = Encoding.UTF8.GetBytes(json.Serialize(new Dictionary<string, string> { { "text", text } }) + "\n");
@@ -1441,39 +1564,208 @@ class ClipboardFiles
     }
 }
 
-// Shown while a graphics-card start waits with its window minimized: the emblem and a word,
-// in a small window of its own, or on a black screen when the system will open in full screen.
+// The loading window, while the system starts with its own window hidden (HostBridge): what is happening,
+// a bar, the few keys worth knowing, and Back. Made after Try Omarchy's (the user's wish, 2026-10-22): one
+// window from Start Mentor until the desktop is there as it stays. It is the Mentor window's next page: its
+// place, its size (LauncherWindow.PageWidth, PageHeight: the shape of this window, which the settings took,
+// the user's wish the same day), the same header, and Back where Start was; Back stops the start and
+// brings the settings back (Program.BackToSettings). Started without that window (a shortcut, a restart from inside), it is the
+// same, in the middle of the screen. For full screen it covers the screen once the desktop is up, so the
+// change to the full-screen desktop happens behind it.
 class StartSplash : Form
 {
-    public StartSplash(bool fullscreen)
+    readonly Label status, later;
+    readonly StartBar bar = new StartBar();
+    readonly List<Control> parts = new List<Control>();
+    readonly DateTime started = DateTime.UtcNow;
+    readonly double expected;  // seconds the last start took, or a guess
+    readonly bool fullscreen;
+    readonly float factor;
+    readonly System.Windows.Forms.Timer tick = new System.Windows.Forms.Timer { Interval = 30 };
+    DateTime finishedAt = DateTime.MinValue;
+    float finishedFrom;
+    bool dismissed;  // closed by HostBridge, not by the user
+
+    // Where a control goes, in the units of a screen that is not scaled (as LauncherWindow.Place).
+    void Place(Control control, int left, int top, int width, int height)
     {
-        Text = "Mentor";
-        FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.CenterScreen;
-        ShowInTaskbar = false;
-        BackColor = Color.Black;
-        AutoScaleMode = AutoScaleMode.None;
-        ClientSize = new Size(420, 420);
-        var content = new Panel { Left = 0, Top = 0, Width = 420, Height = 420, BackColor = Color.Black };
-        var emblem = new PictureBox { Left = 90, Top = 70, Width = 240, Height = 240, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-        try { emblem.Image = Image.FromStream(typeof(StartSplash).Assembly.GetManifestResourceStream("emblem.png")); }
-        catch (Exception) { }
-        var text = new Label { Text = "Starting\u2026", Left = 0, Top = 330, Width = 420, Height = 30, ForeColor = Theme.Dim,
-                               BackColor = Color.Black, TextAlign = ContentAlignment.MiddleCenter, Font = Theme.Font(11f, FontStyle.Regular) };
-        content.Controls.AddRange(new Control[] { emblem, text });
-        Controls.Add(content);
-        Theme.Fit(this);
-        if (fullscreen)
+        control.SetBounds((int)Math.Round(left * factor), (int)Math.Round(top * factor),
+                          (int)Math.Round(width * factor), (int)Math.Round(height * factor));
+    }
+
+    static Label Words(string text, float size, Color colour, Color back)
+    {
+        return new Label { Text = text, ForeColor = colour, BackColor = back, Font = Theme.Font(size, FontStyle.Regular), AutoEllipsis = true };
+    }
+
+    // What Back (true) and the X (false) do; set by HostBridge, which may take the window over from
+    // Program.Run. Pressed before that, it is done when it is set.
+    Action<bool> stopStart;
+    bool? stopAsked;
+    public Action<bool> StopStart
+    {
+        set
         {
-            Rectangle screen = Screen.PrimaryScreen.Bounds;
-            StartPosition = FormStartPosition.Manual;
-            Bounds = screen;
-            content.Location = new Point((screen.Width - content.Width) / 2, (screen.Height - content.Height) / 2);
+            stopStart = value;
+            if (stopAsked != null && value != null) value(stopAsked.Value);
         }
     }
 
-    // It is there to be seen, not to take the keyboard from whatever the user is doing.
-    protected override bool ShowWithoutActivation { get { return true; } }
+    void Stop(bool toSettings)
+    {
+        if (stopStart != null) stopStart(toSettings);
+        else stopAsked = toSettings;
+    }
+
+    // startFile: how long the last start took, in seconds (HostBridge writes it).
+    public StartSplash(bool fullscreen, string startFile)
+    {
+        this.fullscreen = fullscreen;
+        int lastSeconds = 0;
+        try { int.TryParse(File.ReadAllText(startFile).Trim(), out lastSeconds); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        expected = lastSeconds >= 5 && lastSeconds <= 600 ? lastSeconds : 35;
+        Text = "Mentor";
+        AutoScaleMode = AutoScaleMode.None;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        BackColor = Theme.Back;
+        ForeColor = Theme.Text;
+        Font = Theme.Font(9.5f, FontStyle.Regular);
+        Theme.Dress(this);
+        using (Graphics g = CreateGraphics()) factor = g.DpiX / 96f;
+
+        // The Mentor window's size and place: the same window, turned to its next page.
+        ClientSize = new Size((int)Math.Round(LauncherWindow.PageWidth * factor), (int)Math.Round(LauncherWindow.PageHeight * factor));
+        Rectangle was = Program.WindowPlace;
+        if (was.IsEmpty) StartPosition = FormStartPosition.CenterScreen;
+        else
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = was.Location;
+        }
+        int before = Controls.Count;
+        LauncherWindow.Header(this, Place, "Agentic Linux");
+        for (int i = before; i < Controls.Count; i++) parts.Add(Controls[i]);
+
+        status = Words("Starting Mentor…", 11f, Theme.Text, Theme.Back);
+        Place(status, 32, 100, 496, 24);
+        Place(bar, 32, 132, 496, 5);
+        var heading = Words("Keys worth knowing", 9.5f, Theme.Text, Theme.Back);
+        Place(heading, 32, 156, 300, 22);
+        parts.Add(heading);
+        string[,] keys = { { "Ctrl+Alt+F", "Full screen, and back" }, { "Ctrl+Alt+G", "Mouse and keyboard back to Windows" } };
+        for (int i = 0; i < keys.GetLength(0); i++)
+        {
+            Label key = Words(keys[i, 0], 9f, Theme.AccentHot, Theme.Back), what = Words(keys[i, 1], 9f, Theme.Dim, Theme.Back);
+            Place(key, 32, 182 + i * 24, 110, 22);
+            Place(what, 150, 182 + i * 24, 378, 22);
+            parts.Add(key);
+            parts.Add(what);
+        }
+        later = Words("Mentor opens by itself when it is ready.", 8.5f, Theme.Dim, Theme.Back);
+        Place(later, 32, 250, 496, 20);
+
+        var stop = new PillButton { Text = "Back", Font = Theme.Font(11f, FontStyle.Regular) };
+        Rectangle bottom = LauncherWindow.BottomButton;
+        Place(stop, bottom.X, bottom.Y, bottom.Width, bottom.Height);
+        stop.Click += (s, e) => {
+            stop.Enabled = false;
+            status.Text = "Stopping…";
+            Stop(true);
+        };
+        parts.AddRange(new Control[] { status, bar, later, stop });
+        foreach (Control part in parts) if (!Controls.Contains(part)) Controls.Add(part);
+
+        // The window's X stops the start too, and does not bring the settings back.
+        FormClosing += (s, e) => {
+            if (!dismissed && finishedAt == DateTime.MinValue && stop.Enabled)
+            {
+                stop.Enabled = false;
+                Stop(false);
+            }
+        };
+        tick.Tick += (s, e) => Advance();
+        tick.Start();
+        FormClosed += (s, e) => tick.Dispose();
+    }
+
+    public void Dismiss()
+    {
+        dismissed = true;
+        Close();
+    }
+
+    // What the system said of its start (HostBridge.OnBoot).
+    public void Phase(string how)
+    {
+        if (finishedAt != DateTime.MinValue) return;
+        if (how == "starting") status.Text = "Getting the desktop ready…";
+        else if (how == "trial") status.Text = "Trying the change from last time…";
+        else if (how == "restoring") status.Text = "That change did not work. Going back…";
+    }
+
+    // The desktop is up: the bar fills, and HostBridge closes the window a moment later, once Mentor's
+    // own is in place behind it. For full screen it first covers the screen.
+    public void Finish()
+    {
+        if (finishedAt != DateTime.MinValue) return;
+        finishedFrom = bar.Value;
+        finishedAt = DateTime.UtcNow;
+        status.Text = "Ready";
+        TopMost = true;
+        if (fullscreen)
+        {
+            foreach (Control part in parts) part.Visible = false;
+            FormBorderStyle = FormBorderStyle.None;
+            Bounds = Screen.PrimaryScreen.Bounds;
+        }
+    }
+
+    // The bar follows the time the last start took: quickly at first, then slower, never full until
+    // the desktop is there.
+    void Advance()
+    {
+        if (finishedAt != DateTime.MinValue)
+        {
+            double t = Math.Min(1, (DateTime.UtcNow - finishedAt).TotalMilliseconds / 200);
+            bar.Value = finishedFrom + (1 - finishedFrom) * (float)t;
+            return;
+        }
+        double seconds = (DateTime.UtcNow - started).TotalSeconds;
+        bar.Value = (float)Math.Min(0.95, 1 - Math.Exp(-2.2 * seconds / expected));
+    }
+}
+
+// The loading window's bar: a track and how far it has come.
+class StartBar : Painted
+{
+    float value;
+
+    public StartBar() { SetStyle(ControlStyles.Selectable, false); }
+
+    public float Value
+    {
+        get { return value; }
+        set
+        {
+            float v = Math.Max(0, Math.Min(1, value));
+            if (Math.Abs(v - this.value) < 0.0005f) return;
+            this.value = v;
+            Invalidate();
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = Begin(e);
+        using (GraphicsPath shape = Theme.Round(new RectangleF(0, 0, Width, Height), Height / 2f))
+        using (var fill = new SolidBrush(Theme.Track)) g.FillPath(fill, shape);
+        if (value <= 0) return;
+        using (GraphicsPath shape = Theme.Round(new RectangleF(0, 0, Math.Max(Height, Width * value), Height), Height / 2f))
+        using (var fill = new SolidBrush(Theme.Accent)) g.FillPath(fill, shape);
+    }
 }
 
 // QEMU's window. Full screen is QEMU's own (its Ctrl+Alt+F), so GTK lays the
@@ -1482,7 +1774,7 @@ static class VmWindow
 {
     const int GWL_STYLE = -16;
     const long WS_CAPTION = 0x00C00000;
-    const byte VK_CONTROL = 0x11, VK_MENU = 0x12, VK_F = 0x46;
+    const byte VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_F = 0x46;
     const uint KEYEVENTF_KEYUP = 2;
 
     [DllImport("user32.dll")] static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
@@ -1520,8 +1812,8 @@ static class VmWindow
     }
 
     // Gives the window that size, in the middle of the screen. The guest's resolution follows
-    // the window. False when there is no window yet.
-    public static bool Resize(Process qemu)
+    // the window. False when there is no window yet. `always`: moved to the middle even when it has the size.
+    public static bool Resize(Process qemu, bool always = false)
     {
         IntPtr hwnd = Find(qemu);
         Edges outer, inner;
@@ -1529,7 +1821,7 @@ static class VmWindow
         int frameWidth = (outer.Right - outer.Left) - inner.Right, frameHeight = (outer.Bottom - outer.Top) - inner.Bottom;
         Rectangle area = Screen.PrimaryScreen.WorkingArea;
         int width = Picture().Width, height = Picture().Height;
-        if (inner.Right == width && inner.Bottom == height) return true;  // it has it already
+        if (inner.Right == width && inner.Bottom == height && !always) return true;  // it has it already
         SetWindowPos(hwnd, IntPtr.Zero, area.Left + (area.Width - width - frameWidth) / 2,
                      area.Top + (area.Height - height - frameHeight) / 2, width + frameWidth, height + frameHeight, 0x0004);
         return true;
@@ -1544,6 +1836,93 @@ static class VmWindow
         if (inner.Right % 2 == 0 && inner.Bottom % 2 == 0) return;
         SetWindowPos(hwnd, IntPtr.Zero, 0, 0, (outer.Right - outer.Left) - inner.Right % 2,
                      (outer.Bottom - outer.Top) - inner.Bottom % 2, 0x0006);  // SWP_NOMOVE | SWP_NOZORDER
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct Placement { public int length, flags, showCmd; public Point minimized, maximized; public Edges normal; }
+    [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr hwnd, ref Placement placement);
+    [DllImport("user32.dll")] static extern bool SetWindowPlacement(IntPtr hwnd, ref Placement placement);
+    const uint SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010;
+
+    // The hidden window, brought up beyond the right edge of all screens (so not seen, and not activated),
+    // with its picture the given size. In one step from minimized: a plain restore would show it first.
+    public static bool Park(Process qemu, Size picture)
+    {
+        IntPtr hwnd = Find(qemu);
+        if (hwnd == IntPtr.Zero) return false;
+        Rectangle all = SystemInformation.VirtualScreen;
+        int left = all.Right + 200, top = all.Top;
+        var place = new Placement { length = Marshal.SizeOf(typeof(Placement)) };
+        if (!GetWindowPlacement(hwnd, ref place)) return false;
+        int width = place.normal.Right - place.normal.Left, height = place.normal.Bottom - place.normal.Top;
+        place.normal = new Edges { Left = left, Top = top, Right = left + width, Bottom = top + height };
+        place.showCmd = 4;  // SW_SHOWNOACTIVATE
+        place.flags = 0;
+        if (!SetWindowPlacement(hwnd, ref place)) return false;
+        Edges outer, inner;
+        if (!GetWindowRect(hwnd, out outer) || !GetClientRect(hwnd, out inner)) return false;
+        int frameWidth = (outer.Right - outer.Left) - inner.Right, frameHeight = (outer.Bottom - outer.Top) - inner.Bottom;
+        SetWindowPos(hwnd, IntPtr.Zero, left, top, picture.Width + frameWidth, picture.Height + frameHeight,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return true;
+    }
+
+    // The window that waited hidden, to the front: in the middle of the screen at its size, or at the
+    // primary screen's corner for full screen (which then goes on that screen, at the size it already has).
+    public static void Show(Process qemu, bool fullscreen)
+    {
+        IntPtr hwnd = Find(qemu);
+        if (hwnd == IntPtr.Zero) return;
+        Brand(hwnd);
+        if (IsIconic(hwnd)) ShowWindow(hwnd, 9);  // SW_RESTORE
+        if (!fullscreen) Resize(qemu, true);
+        else
+        {
+            Rectangle screen = Screen.PrimaryScreen.Bounds;
+            SetWindowPos(hwnd, IntPtr.Zero, screen.Left, screen.Top, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        }
+        // Windows lets only the process with the user's last input take the foreground: a key of no
+        // consequence first, should the user have clicked elsewhere while it started.
+        if (!SetForegroundWindow(hwnd))
+        {
+            Key(VK_SHIFT, true);
+            Key(VK_SHIFT, false);
+            SetForegroundWindow(hwnd);
+        }
+        Thread.Sleep(300);  // let it settle before any key is sent to it
+    }
+
+    // Windows' taskbar, for taking a window's button off it and putting it back (ITaskbarList).
+    [ComImport, Guid("56FDF342-FD6D-11d0-958A-006097C9A090"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ITaskbarList
+    {
+        void HrInit();
+        void AddTab(IntPtr hwnd);
+        void DeleteTab(IntPtr hwnd);
+        void ActivateTab(IntPtr hwnd);
+        void SetActiveAlt(IntPtr hwnd);
+    }
+    [ComImport, Guid("56FDF344-FD6D-11d0-958A-006097C9A090")] class TaskbarList { }
+    static ITaskbarList taskbar;
+    static IntPtr offTaskbar = IntPtr.Zero;
+
+    // Takes QEMU's window off the taskbar (off = true), or puts it back. Nothing when there is no taskbar.
+    public static void OffTaskbar(Process qemu, bool off)
+    {
+        IntPtr hwnd = Find(qemu);
+        if (hwnd == IntPtr.Zero) return;
+        try
+        {
+            if (taskbar == null)
+            {
+                taskbar = (ITaskbarList)new TaskbarList();
+                taskbar.HrInit();
+            }
+            if (off) { taskbar.DeleteTab(hwnd); offTaskbar = hwnd; }
+            else if (offTaskbar == hwnd) { taskbar.AddTab(hwnd); offTaskbar = IntPtr.Zero; }
+        }
+        catch (Exception) { }  // COMException, or no Explorer running
+        Brand(hwnd);  // QEMU's own icon and name never shown, should it be seen anyway
     }
 
     public static void Restore(Process qemu)
@@ -2266,42 +2645,6 @@ class Reinstall : Form
             try { if (File.Exists(partial)) File.Delete(partial); } catch (IOException) { }
             Finish("It did not work: " + e.Message + "\n\nIf this happened while downloading, nothing was changed. " +
                    "If Mentor is running, close it first.");
-        }
-    }
-}
-
-// A quiet line with a chevron that shows or hides what is under it (the launcher's rarer buttons).
-class Unfold : Painted
-{
-    public bool Open;
-    bool hot;
-
-    public Unfold() { Cursor = Cursors.Hand; }
-
-    protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { hot = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnMouseDown(MouseEventArgs e) { Focus(); base.OnMouseDown(e); }
-
-    protected override void OnKeyDown(KeyEventArgs e)
-    {
-        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) OnClick(EventArgs.Empty);
-        base.OnKeyDown(e);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        Graphics g = Begin(e);
-        Color colour = hot || Focused ? Theme.Text : Theme.Dim;
-        Size text = TextRenderer.MeasureText(g, Text, Font);
-        float side = Height * 0.18f, gap = Height * 0.3f;
-        float left = (Width - text.Width - gap - side * 2) / 2f;
-        TextRenderer.DrawText(g, Text, Font, new Point((int)left, (Height - text.Height) / 2), colour);
-        float x = left + text.Width + gap + side, y = Height / 2f;
-        using (var pen = new Pen(colour, Math.Max(1.5f, Height / 16f)))
-        {
-            pen.StartCap = pen.EndCap = LineCap.Round;
-            if (Open) g.DrawLines(pen, new[] { new PointF(x - side, y + side / 2), new PointF(x, y - side / 2), new PointF(x + side, y + side / 2) });
-            else g.DrawLines(pen, new[] { new PointF(x - side, y - side / 2), new PointF(x, y + side / 2), new PointF(x + side, y - side / 2) });
         }
     }
 }
