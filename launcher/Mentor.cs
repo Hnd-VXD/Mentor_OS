@@ -1065,7 +1065,7 @@ class HostBridge : Form
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_CLIPBOARDUPDATE) SendClipboard();
+        if (m.Msg == WM_CLIPBOARDUPDATE) { clipboardTries = 0; SendClipboard(); }
         if (power != null && power.Handle(ref m)) return;
         base.WndProc(ref m);
     }
@@ -1082,69 +1082,134 @@ class HostBridge : Form
         }
     }
 
-    void SendClipboard()
+    [DllImport("ole32.dll")]
+    static extern int OleGetClipboard(out System.Runtime.InteropServices.ComTypes.IDataObject data);
+
+    // The clipboard as it is now, opened once and without waiting: null while another program holds
+    // it open, as the Snipping Tool does just after a snip. WinForms' own Clipboard calls each wait up
+    // to a second for it on this window's thread and then give up: a snip's first change was lost so,
+    // and the picture went over only with the Snipping Tool's second change, 1.5 s later (2026-10-22).
+    static IDataObject ReadClipboard()
     {
-        // Files copied in Explorer go over as files; a paste inside finds copies of them.
-        StringCollection copied = null;
-        try { if (Clipboard.ContainsFileDropList()) copied = Clipboard.GetFileDropList(); }
-        catch (ExternalException) { return; }  // another program holds the clipboard open
-        if (copied != null && copied.Count > 0)
-        {
-            var paths = new string[copied.Count];
-            copied.CopyTo(paths, 0);
-            files.Send(paths);
-            return;
-        }
-        // A picture (Windows' own PrtScr / Snipping Tool, which Windows keeps even while Mentor is
-        // full screen) goes over as a PNG: a paste inside Mentor finds it.
-        Image picture = null;
-        try { if (Clipboard.ContainsImage()) picture = Clipboard.GetImage(); }
-        catch (ExternalException) { return; }
-        if (picture != null)
-        {
-            using (picture) SendImage(picture);
-            return;
-        }
-        string text;
-        try { text = Clipboard.ContainsText() ? Clipboard.GetText() : null; }
-        catch (ExternalException) { return; }  // another program holds the clipboard open
-        if (string.IsNullOrEmpty(text) || text == synced) return;
-        byte[] line = Encoding.UTF8.GetBytes(json.Serialize(new Dictionary<string, string> { { "text", text } }) + "\n");
-        if (line.Length > MaxBytes) return;
-        synced = text;
-        lock (sendLock)
-        {
-            if (clipboard == null) return;
-            try { clipboard.Write(line, 0, line.Length); }
-            catch (IOException) { }
-            catch (ObjectDisposedException) { }
-        }
+        System.Runtime.InteropServices.ComTypes.IDataObject com;
+        if (OleGetClipboard(out com) != 0 || com == null) return null;
+        return new DataObject(com);
     }
 
-    void SendImage(Image picture)
+    // A clipboard that could not be read yet is looked at again every 50 ms, for up to 2 s.
+    System.Windows.Forms.Timer clipboardRetry;
+    int clipboardTries;
+
+    void ClipboardAgain()
     {
-        byte[] png;
+        if (++clipboardTries > 40) return;
+        if (clipboardRetry == null)
+        {
+            clipboardRetry = new System.Windows.Forms.Timer { Interval = 50 };
+            clipboardRetry.Tick += (s, e) => { clipboardRetry.Stop(); SendClipboard(); };
+        }
+        clipboardRetry.Stop();
+        clipboardRetry.Start();
+    }
+
+    void SendClipboard()
+    {
+        try
+        {
+            IDataObject data = ReadClipboard();
+            if (data == null) { ClipboardAgain(); return; }  // another program holds the clipboard open
+            // Files copied in Explorer go over as files; a paste inside finds copies of them.
+            var paths = data.GetDataPresent(DataFormats.FileDrop) ? data.GetData(DataFormats.FileDrop) as string[] : null;
+            if (paths != null && paths.Length > 0)
+            {
+                files.Send(paths);
+                return;
+            }
+            // A picture (Windows' own PrtScr / Snipping Tool, which Windows keeps even while Mentor is
+            // full screen) goes over as a PNG: a paste inside Mentor finds it. The bitmap, made a PNG here:
+            // 0.4 s for a 2880 x 1646 snip, where the Snipping Tool took 1 s to hand over its own PNG
+            // (2026-10-22). Its PNG only when there is no bitmap.
+            byte[] png = null;
+            if (data.GetDataPresent(DataFormats.Bitmap))
+            {
+                using (var picture = data.GetData(DataFormats.Bitmap) as Image)
+                    if (picture != null) png = Png(picture);
+            }
+            if (png == null && data.GetDataPresent("PNG"))
+            {
+                png = Bytes(data.GetData("PNG"));
+                if (png != null && !IsPng(png)) png = null;
+            }
+            if (png != null)
+            {
+                SendImage(png);
+                return;
+            }
+            string text = data.GetDataPresent(DataFormats.UnicodeText) ? data.GetData(DataFormats.UnicodeText) as string : null;
+            if (string.IsNullOrEmpty(text) || text == synced) return;
+            byte[] line = Encoding.UTF8.GetBytes(json.Serialize(new Dictionary<string, string> { { "text", text } }) + "\n");
+            if (line.Length > MaxBytes) return;
+            synced = text;
+            WriteClipboard(line);
+        }
+        catch (ExternalException) { ClipboardAgain(); }  // the program that copied did not hand it over yet
+        catch (OutOfMemoryException) { }  // a picture GDI+ cannot read
+    }
+
+    static byte[] Bytes(object data)
+    {
+        var stream = data as MemoryStream;
+        if (stream != null) return stream.ToArray();
+        var other = data as Stream;
+        if (other == null) return null;
+        using (var copy = new MemoryStream()) { other.CopyTo(copy); return copy.ToArray(); }
+    }
+
+    static bool IsPng(byte[] b)
+    {
+        return b.Length > 33 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' &&
+               b[12] == 'I' && b[13] == 'H' && b[14] == 'D' && b[15] == 'R';
+    }
+
+    static byte[] Png(Image picture)
+    {
         using (var stream = new MemoryStream())
         {
             try { picture.Save(stream, ImageFormat.Png); }
-            catch (ExternalException) { return; }
-            png = stream.ToArray();
+            catch (ExternalException) { return null; }  // GDI+ could not: not a reason to try again
+            return stream.ToArray();
         }
-        if (png.Length == 0 || png.Length > MaxImageBytes) return;
-        string print;
+    }
+
+    // What makes a PNG the same picture: its header and its pixel data (IHDR and IDAT chunks), not the
+    // rest, which a program may write anew each time it hands the picture out.
+    static string Fingerprint(byte[] png)
+    {
         using (var sha = System.Security.Cryptography.SHA256.Create())
-            print = Convert.ToBase64String(sha.ComputeHash(png));
-        if (print == syncedImage) return;
+        {
+            int at = 8;
+            while (at + 12 <= png.Length)
+            {
+                int length = (png[at] << 24) | (png[at + 1] << 16) | (png[at + 2] << 8) | png[at + 3];
+                if (length < 0 || at + 12 + (long)length > png.Length) break;
+                string kind = Encoding.ASCII.GetString(png, at + 4, 4);
+                if (kind == "IHDR" || kind == "IDAT") sha.TransformBlock(png, at + 4, 4 + length, null, 0);
+                at += 12 + length;
+            }
+            sha.TransformFinalBlock(new byte[0], 0, 0);
+            return Convert.ToBase64String(sha.Hash);
+        }
+    }
+
+    // False when it was not sent: too big, or the picture last sent.
+    bool SendImage(byte[] png)
+    {
+        if (png.Length == 0 || png.Length > MaxImageBytes) return false;
+        string print = Fingerprint(png);
+        if (print == syncedImage) return false;
         syncedImage = print;
         // Written by hand: base64 needs no escaping, and the serializer has a length limit.
-        byte[] line = Encoding.ASCII.GetBytes("{\"image\": \"" + Convert.ToBase64String(png) + "\"}\n");
-        lock (sendLock)
-        {
-            if (clipboard == null) return;
-            try { clipboard.Write(line, 0, line.Length); }
-            catch (IOException) { }
-            catch (ObjectDisposedException) { }
-        }
+        return WriteClipboard(Encoding.ASCII.GetBytes("{\"image\": \"" + Convert.ToBase64String(png) + "\"}\n"));
     }
 
     void SetClipboard(string text)
@@ -1494,8 +1559,8 @@ static class VmWindow
 
     // QEMU's window, dressed as Mentor: the launcher's own icon (the owl, compiled into Mentor.exe from
     // Mentor.ico) at the sizes Windows asks for, and the title "Mentor" in place of "QEMU (Mentor-0)".
-    // QEMU sets its title again now and then (a hint while it holds the mouse), so this is done on every
-    // tick of the launcher's timer; the icon only once for each window.
+    // QEMU sets its title again now and then (a hint while it holds the mouse, left out here), so this is
+    // done on every tick of the launcher's timer; the icon only once for each window.
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int most);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetWindowText(IntPtr hwnd, string text);
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
@@ -1527,7 +1592,13 @@ static class VmWindow
         if (title.StartsWith("QEMU (", StringComparison.Ordinal))
         {
             int end = title.IndexOf(')');
-            SetWindowText(hwnd, "Mentor" + (end >= 0 ? title.Substring(end + 1) : ""));
+            string rest = end >= 0 ? title.Substring(end + 1) : "";
+            // QEMU's " - Press Ctrl-Alt-G to exit grab" goes: in a window it only means the keyboard is
+            // Mentor's, the pointer leaves at the edges; the agent tells a user with a caught pointer
+            // about Ctrl+Alt+G (DESKTOP.md, the game mouse).
+            int hint = rest.IndexOf(" - Press ", StringComparison.Ordinal);
+            if (hint >= 0) rest = rest.Substring(0, hint);
+            SetWindowText(hwnd, "Mentor" + rest);
         }
     }
 

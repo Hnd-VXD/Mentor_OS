@@ -93,8 +93,11 @@ class PowerWatch
             return;
         }
         string error = qmp.Execute("stop", null, 1500);
-        pausedForSleep = error == null;
-        Program.Note("Windows is going to sleep: " + (error == null ? "paused the system" : "could not pause it: " + error));
+        // Counted as paused even without an answer: QEMU, slowed by Windows going down, can pause
+        // after the wait is over (2026-10-21: no answer, paused anyway, and nothing went on at the
+        // wake). Waking looks at the real state before it continues anything.
+        pausedForSleep = true;
+        Program.Note("Windows is going to sleep: " + (error == null ? "paused the system" : "no answer to the pause (" + error + "), checked at the wake"));
     }
 
     void Waking()
@@ -103,6 +106,7 @@ class PowerWatch
         // back; the first one that arrives does it.
         if (!pausedForSleep || qemu.HasExited) { if (Woke != null) Woke(); return; }
         string status = Status();
+        if (status == null) { Program.Note("Windows woke up; the system is not answering yet"); return; }  // tried again at the next notice
         if (status == "paused")
         {
             string error = qmp.Execute("cont", null, 3000);

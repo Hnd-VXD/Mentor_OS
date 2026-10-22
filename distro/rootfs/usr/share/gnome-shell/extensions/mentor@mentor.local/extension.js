@@ -586,9 +586,23 @@ let shownPictureMenu = null;
 function pictureMenu(path, fromWindows = false) {
     shownPictureMenu?.close();
     const file = Gio.File.new_for_path(path);
-    const picture = GdkPixbuf.Pixbuf.new_from_file(path);
-    const [width, height] = [picture.get_width(), picture.get_height()];
-    const size = file.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
+    // Only the size is read before the menu opens, from the PNG's header: decoding the whole picture here, on the
+    // shell's thread, held the menu (and the desktop) back the longer the bigger the picture (2026-10-22), and with
+    // glycin even GdkPixbuf's get_file_info decodes it all. The file's bytes are kept (a picture from Windows' file
+    // goes with a later copy) and decoded only by the actions that need the pixels (not while the menu is up:
+    // new_from_stream_async held the main loop as long as a plain decode, tested).
+    const bytes = file.load_bytes(null)[0];
+    const size = bytes.get_size();
+    const start = bytes.toArray();
+    const head = new DataView(start.buffer, start.byteOffset, Math.min(size, 24));
+    const png = size >= 24 && head.getUint32(0) === 0x89504e47 && head.getUint32(12) === 0x49484452;  // \x89PNG, IHDR
+    const [format, width, height] = png
+        ? ['png', head.getUint32(16), head.getUint32(20)]
+        : GdkPixbuf.Pixbuf.get_file_info(path);
+    if (!format)
+        throw new Error(`not a picture: ${path}`);
+    let decoded = null;
+    const picture = () => (decoded ??= GdkPixbuf.Pixbuf.new_from_stream(Gio.MemoryInputStream.new_from_bytes(bytes), null));
     const [x, y] = global.get_pointer();
     const anchor = new St.Widget({x, y, width: 1, height: 1, reactive: false});
     Main.uiGroup.add_child(anchor);
@@ -620,7 +634,7 @@ function pictureMenu(path, fromWindows = false) {
             return path;
         GLib.mkdir_with_parents(folder, 0o755);
         if (!GLib.file_test(`${stem}.png`, GLib.FileTest.EXISTS))
-            file.copy(Gio.File.new_for_path(`${stem}.png`), Gio.FileCopyFlags.NONE, null, null);
+            GLib.file_set_contents(`${stem}.png`, bytes.toArray());
         return `${stem}.png`;
     };
     const heading = new PopupMenu.PopupMenuItem(
@@ -629,12 +643,12 @@ function pictureMenu(path, fromWindows = false) {
     menu.addMenuItem(heading);
     menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
     if (!fromWindows)  // a picture from Windows is on the clipboard already
-        menu.addAction('Copy', () => copy(file.load_bytes(null)[0], `${width} × ${height}, ${bytesText(size)}`));
+        menu.addAction('Copy', () => copy(bytes, `${width} × ${height}, ${bytesText(size)}`));
     const smaller = new PopupMenu.PopupSubMenuMenuItem('Copy smaller');
     for (const percent of [75, 50, 30]) {
         const w = Math.max(1, Math.round(width * percent / 100)), h = Math.max(1, Math.round(height * percent / 100));
         smaller.menu.addAction(`${percent}% · ${w} × ${h}`, () => {
-            const [, data] = picture.scale_simple(w, h, GdkPixbuf.InterpType.HYPER).save_to_bufferv('png', [], []);
+            const [, data] = picture().scale_simple(w, h, GdkPixbuf.InterpType.HYPER).save_to_bufferv('png', [], []);
             copy(new GLib.Bytes(data), `${w} × ${h}, ${bytesText(data.length)}`);
         });
     }
@@ -646,7 +660,7 @@ function pictureMenu(path, fromWindows = false) {
     // A 1280 x 800 screenshot: PNG 1.2 MB, JPG 135 KB, WebP 64 KB.
     const as = new PopupMenu.PopupSubMenuMenuItem('Copy in format');
     as.menu.addAction(`PNG \u00b7 sharpest \u00b7 ${bytesText(size)}`,
-        () => copy(file.load_bytes(null)[0], `PNG, ${width} \u00d7 ${height}, ${bytesText(size)}`));
+        () => copy(bytes, `PNG, ${width} \u00d7 ${height}, ${bytesText(size)}`));
     const copyFile = (name, ext, make) => {
         try {
             const copied = GLib.build_filenamev([GLib.get_user_cache_dir(), 'mentor', 'copied']);
@@ -666,14 +680,14 @@ function pictureMenu(path, fromWindows = false) {
         }
     };
     as.menu.addAction('JPG \u00b7 smaller', () => copyFile('JPG', 'jpg', (made, done) => {
-        picture.savev(made, 'jpeg', ['quality'], ['90']);
+        picture().savev(made, 'jpeg', ['quality'], ['90']);
         done();
     }));
     as.menu.addAction('WebP \u00b7 smallest', () => copyFile('WebP', 'webp', (made, done) => {
         let source = path;
         if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
             source = made.replace(/\.webp$/, '.png');
-            picture.savev(source, 'png', [], []);
+            GLib.file_set_contents(source, bytes.toArray());
         }
         const pillow = Gio.Subprocess.new(['python3', '-I', '-c',
             'import sys; from PIL import Image\n' +
@@ -699,7 +713,7 @@ function pictureMenu(path, fromWindows = false) {
         let source = path;
         if (!GLib.file_test(source, GLib.FileTest.EXISTS)) {  // the picture from Windows, gone with a later copy
             source = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'mentor-picture-text.png']);
-            picture.savev(source, 'png', [], []);
+            GLib.file_set_contents(source, bytes.toArray());
         }
         run(['/usr/local/bin/mentor', 'capture-text', '--file', source]);
     });
@@ -710,7 +724,7 @@ function pictureMenu(path, fromWindows = false) {
         const jpg = `${stem}.jpg`;
         try {
             GLib.mkdir_with_parents(folder, 0o755);
-            picture.savev(jpg, 'jpeg', ['quality'], ['90']);
+            picture().savev(jpg, 'jpeg', ['quality'], ['90']);
             const made = Gio.File.new_for_path(jpg).query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null).get_size();
             told(fromWindows ? 'Saved' : 'Saved as JPG', fromWindows
                 ? `${GLib.path_get_basename(jpg)}, ${bytesText(made)}, in Pictures/Screenshots`

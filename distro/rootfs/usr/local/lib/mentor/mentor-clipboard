@@ -70,8 +70,9 @@ POLL_MS = 50
 class Bridge:
     def __init__(self):
         self.fd = os.open(PORT, os.O_RDWR | os.O_NONBLOCK)
-        self.pending = b""
-        self.synced = None      # the text both sides already agree on
+        self.pending = bytearray()
+        self.hurrying = False   # a read of the rest of a long line is due
+        self.synced = None     # the text both sides already agree on
         self.received = []      # the files last brought over from the host, as they sit here
         self.incoming = None    # a transfer from the host under way: {"id", "dir", "file", "tops"}
         self.owner = None       # the process keeping received files on the clipboard
@@ -202,57 +203,77 @@ class Bridge:
             return False
 
     def read_host(self):
-        for _ in range(64):  # as much as is there, without starving the clipboard's own events
+        # All that is there, up to 16 MB a time (the clipboard's own events wait meanwhile). The port hands
+        # over 4 KB a read: reading 64 times a tick took a 2880 x 1646 snip (4.7 MB as base64) in over
+        # some 25 ticks of 50 ms, and adding each piece to a bytes object copied all before it (2026-10-22).
+        got, newline = 0, False
+        while got < 16 << 20:
             try:
                 chunk = os.read(self.fd, 1 << 16)
             except BlockingIOError:
                 break
             if not chunk:
                 break
-            self.pending += chunk
-        *lines, self.pending = self.pending.split(b"\n")
+            self.pending += chunk  # a bytearray: grows in place
+            got += len(chunk)
+            newline = newline or b"\n" in chunk
+        if newline:
+            *lines, rest = self.pending.split(b"\n")
+            self.pending = bytearray(rest)
+            for line in lines:
+                try:
+                    message = json.loads(line)
+                    if isinstance(message, dict):
+                        self.on_message(message)
+                except (ValueError, KeyError, TypeError, OSError):
+                    continue
         if len(self.pending) > 2 * MAX_IMAGE:  # a picture is one long line
-            self.pending = b""
-        for line in lines:
-            try:
-                message = json.loads(line)
-                if isinstance(message, dict):
-                    self.on_message(message)
-            except (ValueError, KeyError, TypeError, OSError):
-                continue
+            self.pending = bytearray()
+        # A long line (a picture) coming in: the rest is read 5 ms on, not at the next tick.
+        if got and self.pending and not self.hurrying:
+            self.hurrying = True
+            GLib.timeout_add(5, self.read_rest)
         return True
+
+    def read_rest(self):
+        self.hurrying = False
+        self.read_host()
+        return False
 
     def on_message(self, message):
         if "image" in message:
             # A picture copied on the host (Windows' PrtScr / Snipping Tool): on this clipboard as
             # a picture, so that Ctrl+V pastes it anywhere (the chat attaches it). Not sent back.
             data = base64.b64decode(str(message["image"]), validate=False)
-            if 0 < len(data) <= MAX_IMAGE:
+            # Only the PNG's signature and header are checked: decoding the whole picture first held the menu
+            # back the longer the bigger it was (2026-10-22). It is decoded only for set_image, below.
+            if not (0 < len(data) <= MAX_IMAGE and data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR"):
+                return
+            try:
+                os.makedirs(os.path.dirname(HOST_PICTURE), exist_ok=True)
+                with open(HOST_PICTURE + ".part", "wb") as f:
+                    f.write(data)
+                os.replace(HOST_PICTURE + ".part", HOST_PICTURE)
+            except OSError:
+                pass
+            self.synced = None
+            self.received = []
+            self.picture_set = time.monotonic()
+            # Through the shell, which hands it to every program: held here (X11), a large one never
+            # reached Wayland programs, and Chromium's page hung waiting (2026-10-19). Here only when
+            # the shell cannot (an older extension, no shell).
+            if not self.shell_picture(HOST_PICTURE):
                 loader = GdkPixbuf.PixbufLoader()
                 try:
                     loader.write(data)
                     loader.close()
                 except GLib.Error:
                     return
-                picture = loader.get_pixbuf()
-                if picture is not None:
-                    try:
-                        os.makedirs(os.path.dirname(HOST_PICTURE), exist_ok=True)
-                        with open(HOST_PICTURE + ".part", "wb") as f:
-                            f.write(data)
-                        os.replace(HOST_PICTURE + ".part", HOST_PICTURE)
-                    except OSError:
-                        pass
-                    self.synced = None
-                    self.received = []
-                    self.picture_set = time.monotonic()
-                    # Through the shell, which hands it to every program: held here (X11), a large one never
-                    # reached Wayland programs, and Chromium's page hung waiting (2026-10-19). Here only when
-                    # the shell cannot (an older extension, no shell).
-                    if not self.shell_picture(HOST_PICTURE):
-                        self.clipboard.set_image(picture)
-                        self.clipboard.store()
-                    self.picture_menu(HOST_PICTURE)
+                if loader.get_pixbuf() is None:
+                    return
+                self.clipboard.set_image(loader.get_pixbuf())
+                self.clipboard.store()
+            self.picture_menu(HOST_PICTURE)
             return
         if "text" in message:
             text = message["text"]

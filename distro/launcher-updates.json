@@ -1,44 +1,62 @@
 [
-  {
-    "version": 202610171953,
-    "sha256": "164e79b09c0c6994e675ebd38679c6b34fd8b8820d79a893fc9fc31222e8e0f4",
-    "summary": "A new Mentor window: speed choices, Windows sleep and time zone, sound and USB devices, Windows Hello, backups, and it updates itself.",
-    "published": "2026-10-17 22:53"
-  },
-  {
-    "version": 202610172000,
-    "sha256": "a83f6c2a2a51c8565b6fb6caa9dc73d267d37969f81b4f1a06a245caa3f0b70e",
-    "summary": "The Mentor window says when a new version is ready, and after it was updated.",
-    "published": "2026-10-17 23:00"
-  },
-  {
-    "version": 202610172004,
-    "sha256": "b6d1a50c2e3d600a85c7af1f4b7fb0f30239be101bcbf0068ebcb7c9cf7be96f",
-    "summary": "A shorter Mentor window: the owl and Start side by side.",
-    "published": "2026-10-17 23:04"
-  },
-  {
-    "version": 202610172030,
-    "sha256": "4925282f78cfa4249bae42778578a493f6b2dca7445a6e53fd9d480714049763",
-    "summary": "One volume: Windows' volume and Mentor's are kept the same, mute too.",
-    "published": "2026-10-17 23:30"
-  },
-  {
-    "version": 202610172213,
-    "sha256": "f97a9ec897736751c0dfac864aa7defd461997f35ef650d88146c682cfd6ced1",
-    "summary": "A small fix: after Mentor restarts, the launcher no longer keeps an old volume watch running.",
-    "published": "2026-10-18 01:13"
-  },
-  {
-    "version": 202610181135,
-    "sha256": "5c8627deddffcb50e09304bd5c8e25b75619d25b618b78d720837bf03d44d16a",
-    "summary": "One Start over… button (it took Reinstall's place) that says everything that is lost and offers a backup first; the screen switches share one row; the owl is larger, above Start.",
-    "published": "2026-10-18 14:35"
-  },
-  {
-    "version": 202610181753,
-    "sha256": "7a98c1511d4809b459a0150d5fa1ce890e4f28f9136fd478d3197b023e65001e",
-    "summary": "A Mentor that is slow to start is no longer stopped and started again after 8 minutes; the mouse is only caught in full screen, in a game.",
-    "published": "2026-10-18 20:53"
-  }
+    {
+        "version":  202610171953,
+        "sha256":  "164e79b09c0c6994e675ebd38679c6b34fd8b8820d79a893fc9fc31222e8e0f4",
+        "summary":  "A new Mentor window: speed choices, Windows sleep and time zone, sound and USB devices, Windows Hello, backups, and it updates itself.",
+        "published":  "2026-10-17 22:53"
+    },
+    {
+        "version":  202610172000,
+        "sha256":  "a83f6c2a2a51c8565b6fb6caa9dc73d267d37969f81b4f1a06a245caa3f0b70e",
+        "summary":  "The Mentor window says when a new version is ready, and after it was updated.",
+        "published":  "2026-10-17 23:00"
+    },
+    {
+        "version":  202610172004,
+        "sha256":  "b6d1a50c2e3d600a85c7af1f4b7fb0f30239be101bcbf0068ebcb7c9cf7be96f",
+        "summary":  "A shorter Mentor window: the owl and Start side by side.",
+        "published":  "2026-10-17 23:04"
+    },
+    {
+        "version":  202610172030,
+        "sha256":  "4925282f78cfa4249bae42778578a493f6b2dca7445a6e53fd9d480714049763",
+        "summary":  "One volume: Windows\u0027 volume and Mentor\u0027s are kept the same, mute too.",
+        "published":  "2026-10-17 23:30"
+    },
+    {
+        "version":  202610172213,
+        "sha256":  "f97a9ec897736751c0dfac864aa7defd461997f35ef650d88146c682cfd6ced1",
+        "summary":  "A small fix: after Mentor restarts, the launcher no longer keeps an old volume watch running.",
+        "published":  "2026-10-18 01:13"
+    },
+    {
+        "version":  202610181135,
+        "sha256":  "5c8627deddffcb50e09304bd5c8e25b75619d25b618b78d720837bf03d44d16a",
+        "summary":  "One Start overâ€¦ button (it took Reinstall\u0027s place) that says everything that is lost and offers a backup first; the screen switches share one row; the owl is larger, above Start.",
+        "published":  "2026-10-18 14:35"
+    },
+    {
+        "version":  202610181753,
+        "sha256":  "7a98c1511d4809b459a0150d5fa1ce890e4f28f9136fd478d3197b023e65001e",
+        "summary":  "A Mentor that is slow to start is no longer stopped and started again after 8 minutes; the mouse is only caught in full screen, in a game.",
+        "published":  "2026-10-18 20:53"
+    },
+    {
+        "version":  202610220438,
+        "sha256":  "f0a60b13129a95d14576266721cd69697792d5a012db50ea5cecf8635e03c1c5",
+        "summary":  "Mentor no longer stays frozen after the computer wakes from sleep.",
+        "published":  "2026-10-22 07:39"
+    },
+    {
+        "version":  202610220441,
+        "sha256":  "cc5bcde3ed6d242e46d5c42a2c4392fa4d9a828dc2623cadacb9c79d8c35147f",
+        "summary":  "The Mentor window\u0027s title no longer shows a keyboard hint that is not needed.",
+        "published":  "2026-10-22 07:41"
+    },
+    {
+        "version":  202610220622,
+        "sha256":  "cb73614606d8017789ef8b9b120568b20c708f6ad1b83762e28ac988626057f9",
+        "summary":  "Pictures from Windows\u0027 Print Screen reach Mentor sooner, even right after a snip.",
+        "published":  "2026-10-22 09:23"
+    }
 ]
