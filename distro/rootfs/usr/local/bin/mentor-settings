@@ -185,10 +185,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.tabs = Adw.ViewStack()
         self.tabs.add_titled_with_icon(page, "settings", "Settings", "emblem-system-symbolic")
         # How it looks, in a tab of its own (the user's wish, 2026-10-19): window colors with their accent sets,
-        # and the pointer.
+        # and the pointer; the desktop's picture too, since the desktop's menu has Themes in place of GNOME's
+        # "Change Background…" (the user's wish, 2026-10-24).
         themes = WidePage()
         themes.add(self.colors_group())
         themes.add(self.pointer_group())
+        themes.add(self.background_group())
         self.tabs.add_titled_with_icon(themes, "themes", "Themes", "applications-graphics-symbolic")
         # What Mentor stopped from going online, and what unknown went online (the user's wish, 2026-10-20).
         self.tabs.add_titled_with_icon(self.security_page(), "security", "Security", "security-high-symbolic")
@@ -273,36 +275,39 @@ class SettingsWindow(Adw.ApplicationWindow):
     # --- suggestions (their own tab; they were a window of the desktop's menu) ------------------------
 
     def colors_group(self):
-        """Window colors: 20 matched sets of tones and 9 accent sets (mentor_colors.py), each shown as a little
-        window, sidebar and content, with its name. A click uses it (DESKTOP.md, "Window colors")."""
+        """Window colors: 20 matched sets of tones, 6 mixed sets and 9 accent sets (mentor_colors.py), each shown as
+        a little window, sidebar and content, with its name. A click uses it (DESKTOP.md, "Window colors")."""
         group = Adw.PreferencesGroup(title="Window colors",
                                      description="The colors of the program windows. Programs that are open take them "
                                                  "when they are opened again")
         css = []
-        # Three groups, dark, light and accent, each wrapping by itself, five to a row at most: even rows
+        # Four groups, dark, light, mixed and accent, each wrapping by itself, five to a row at most: even rows
         # (six and four looked ragged in the wider window, 2026-10-19). Accent: sets whose title bars, taskbar
         # and menus are in one of GNOME's accent colors, which they also set (the user's wish, 2026-10-19).
+        # Mixed: light windows in a dark frame (title bars, side panels, taskbar), or the reverse (2026-10-24).
         flows = {}
         sets = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_top=12, margin_bottom=12,
                        margin_start=12, margin_end=12)
-        for kind, title in ((False, "Dark"), (True, "Light"), ("accent", "Accent")):
+        for kind, title in (("dark", "Dark"), ("light", "Light"), ("mixed", "Mixed"), ("accent", "Accent")):
             sets.append(Gtk.Label(label=title, xalign=0, css_classes=["heading"], margin_start=6,
-                                  margin_top=0 if kind is False else 8))
+                                  margin_top=0 if kind == "dark" else 8))
             flows[kind] = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=5,
                                       min_children_per_line=3, column_spacing=4, row_spacing=10, homogeneous=True)
             sets.append(flows[kind])
         current = mentor_colors.current() or ("GNOME light" if self.light_now() else "GNOME dark")
         first = None
-        for i, palette in enumerate(mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES):
+        for i, palette in enumerate(mentor_colors.ALL_PALETTES):
             name, light, window, view, sidebar, header, text = palette
             accent = mentor_colors.is_accent(palette)
+            side_text = mentor_colors.FRAME_TEXT.get(name, text)  # a mixed set's frame has text of its own
             full = mentor_colors.label(palette)  # "Orange accent": what mentor_colors knows it by
             if window is None:  # GNOME's own tones
                 window, sidebar, text = ("#fafafb", "#ebebed", "#2e3436") if light else ("#222226", "#2e2e32", "#ffffff")
             if accent:  # its picture shows its color, as its title bars and taskbar will be
                 sidebar = header
             css.append(f".swatch-{i} .side {{ background: {sidebar}; }} .swatch-{i} .main {{ background: {window}; }}"
-                       f" .swatch-{i} .line {{ background: {text}; opacity: 0.55; }}")
+                       f" .swatch-{i} .line {{ background: {text}; opacity: 0.55; }}"
+                       f" .swatch-{i} .side .line {{ background: {side_text}; }}")
             picture = Gtk.Box(css_classes=["swatch-picture", f"swatch-{i}"], overflow=Gtk.Overflow.HIDDEN,
                               width_request=72, height_request=46)
             side = Gtk.Box(css_classes=["side"], width_request=22, orientation=Gtk.Orientation.VERTICAL,
@@ -326,7 +331,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             else:
                 choice.set_group(first)
             choice.connect("toggled", lambda b, full=full: b.get_active() and self.use_colors(full))
-            flows["accent" if accent else light].append(choice)
+            flows[mentor_colors.kind(palette)].append(choice)
         provider = Gtk.CssProvider()
         provider.load_from_string("\n".join(css) + "\n.swatch-picture { border-radius: 8px; "
                                   "border: 1px solid alpha(currentColor, 0.15); }\n"
@@ -339,6 +344,18 @@ class SettingsWindow(Adw.ApplicationWindow):
         self.colors_note = Gtk.Label(label="", css_classes=["dim-label", "caption"], xalign=0, wrap=True,
                                      visible=False, margin_top=6)
         group.add(self.colors_note)
+        return group
+
+    def background_group(self):
+        """The desktop's picture: GNOME's own page for it (Settings, Appearance), through /usr/local/bin, which
+        draws Settings without OpenGL (DESKTOP.md, "Settings"). It was the desktop menu's "Change Background…"."""
+        group = Adw.PreferencesGroup(title="Background")
+        row = Adw.ActionRow(title="Desktop picture", subtitle="The picture behind the chat")
+        change = button("Change", lambda: subprocess.Popen(
+            ["/usr/local/bin/gnome-control-center", "background"], start_new_session=True))
+        row.add_suffix(change)
+        row.set_activatable_widget(change)
+        group.add(row)
         return group
 
     def pointer_group(self):

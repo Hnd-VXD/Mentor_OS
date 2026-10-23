@@ -436,5 +436,11 @@
     "name": "23.10.26.03",
     "summary": "The guard on programs going online is tighter: only real app store programs count as known. Flatpak apps work right, Unblock takes effect at once, and waiting cards come back after a restart.",
     "published": "2026-10-24 00:42"
+  },
+  {
+    "version": 202610232159,
+    "name": "23.10.26.04",
+    "summary": "Themes is now in the desktop's right-click menu, and there are new Mixed window colors: light windows with a dark frame and taskbar, or the reverse.",
+    "published": "2026-10-24 01:00"
   }
 ]

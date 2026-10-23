@@ -1823,7 +1823,7 @@ export default class MentorExtension extends Extension {
                     const [color, kind] = new TextDecoder().decode(GLib.file_get_contents(note)[1]).trim().split(/\s+/);
                     wanted = {color, light: kind === 'light'};
                 } catch (e) {
-                    lightBar = false;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
+                    lightBar = darkBar = false;  // no set of Mentor's: the taskbar is the user's or GNOME's, left alone
                     mark();
                     lines();
                     return;
@@ -1834,7 +1834,11 @@ export default class MentorExtension extends Extension {
                     taskbar.set_string('trans-bg-color', wanted.color);
                 if (taskbar.get_boolean('trans-use-custom-bg') !== use)
                     taskbar.set_boolean('trans-use-custom-bg', use);
-                lightBar = use && wanted.light;
+                // Light or dark by the tone itself, not by the style: a mixed set has a dark taskbar over light
+                // windows, or a light one over dark windows (2026-10-24).
+                const toneLight = luminance(wanted.color) > 0.4;
+                lightBar = use && toneLight;
+                darkBar = use && !toneLight && light;
                 mark();
                 lines();
             };
@@ -1864,12 +1868,20 @@ export default class MentorExtension extends Extension {
             // panel (#panel), which the overview gives white text (#panel:overview, for its dark background):
             // on the light tone it could not be read (the user, 2026-10-19). The class is what
             // stylesheet-light.css darkens; Dash to Panel makes its panels anew now and then (panels-created).
-            let lightBar = false;
+            // A dark tone in the light style (a mixed set): the text light, as GNOME's light style makes it dark
+            // (class mentor-dark-taskbar, in stylesheet-light.css; mentor-light-taskbar is in both stylesheets).
+            let lightBar = false, darkBar = false;
+            const luminance = color => {
+                const [r, g, b] = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16) / 255)
+                    .map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+                return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            };
             const mark = () => {
                 for (const panel of global.dashToPanel?.panels ?? []) {
-                    if (panel.panel?.add_style_class_name)
-                        (lightBar ? panel.panel.add_style_class_name : panel.panel.remove_style_class_name)
-                            .call(panel.panel, 'mentor-light-taskbar');
+                    if (!panel.panel?.add_style_class_name)
+                        continue;
+                    for (const [on, name] of [[lightBar, 'mentor-light-taskbar'], [darkBar, 'mentor-dark-taskbar']])
+                        (on ? panel.panel.add_style_class_name : panel.panel.remove_style_class_name).call(panel.panel, name);
                 }
             };
             const remade = global.dashToPanel?.connect?.('panels-created', mark) ?? 0;
@@ -1884,7 +1896,7 @@ export default class MentorExtension extends Extension {
                 style.disconnect(changed);
                 if (remade)
                     global.dashToPanel?.disconnect?.(remade);
-                lightBar = false;
+                lightBar = darkBar = false;
                 mark();
                 lines();
             };

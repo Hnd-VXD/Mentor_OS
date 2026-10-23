@@ -1,4 +1,12 @@
-/* Nothing to change in the dark style. This file is here so that the shell switches to
-   stylesheet-light.css by itself when the style turns light while it runs: it reloads an extension's
-   stylesheet on a change of style only when the one loaded is a -dark or -light one
-   (extensionSystem.js, _reloadExtensionStylesheets). DESKTOP.md, "Window colors". */
+/* This file is here so that the shell switches to stylesheet-light.css by itself when the style turns
+   light while it runs: it reloads an extension's stylesheet on a change of style only when the one loaded
+   is a -dark or -light one (extensionSystem.js, _reloadExtensionStylesheets). DESKTOP.md, "Window colors". */
+
+/* A mixed set's light taskbar over dark windows (DESKTOP.md, "Mixed sets"): the dark style makes the
+   taskbar's text and the nine dots white, which could not be read on it. The class is set by the
+   extension's part "taskbar color" only while the taskbar has a light tone. */
+#uiGroup #panel.mentor-light-taskbar .panel-button,
+#uiGroup #panel.mentor-light-taskbar:overview .panel-button,
+#uiGroup #panel.mentor-light-taskbar .dash-item-container .show-apps .overview-icon {
+    color: #2e3436;
+}

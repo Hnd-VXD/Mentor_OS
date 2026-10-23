@@ -520,15 +520,14 @@ def cmd_colors(args):
     name = " ".join(args.name)
     if not name:
         now = mentor_colors.current() or "GNOME's own"
-        for palette in mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES:
+        for palette in mentor_colors.ALL_PALETTES:
             name = mentor_colors.label(palette)
-            kind = "accent" if mentor_colors.is_accent(palette) else "light" if palette[1] else "dark"
-            print(f"{name:16} {kind}" + ("   (in use)" if name == now else ""))
+            print(f"{name:18} {mentor_colors.kind(palette)}" + ("   (in use)" if name == now else ""))
         return
     palette = mentor_colors.apply(name)
     if palette is None:
         sys.exit(f"No window colors called {name!r}. They are: " + ", ".join(
-            mentor_colors.label(p) for p in mentor_colors.PALETTES + mentor_colors.ACCENT_PALETTES))
+            mentor_colors.label(p) for p in mentor_colors.ALL_PALETTES))
     print(f"{mentor_colors.label(palette)} is in use. Programs that are open show it when they are opened again.")
 
 

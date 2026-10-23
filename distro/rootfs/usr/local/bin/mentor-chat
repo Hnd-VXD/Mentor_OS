@@ -3138,8 +3138,9 @@ class DesktopWindow(Adw.ApplicationWindow):
                               ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
                               ("mentor-settings", lambda *_: self.spawn(["/usr/local/bin/mentor-settings"])),
                               ("report-problem", lambda *_: self.report_problem()),
-                              # What the desktop's menu has on stock GNOME.
-                              ("background", lambda *_: self.spawn(["gnome-control-center", "background"])),
+                              # Themes: Mentor Settings on its Themes tab, where the background is too (the user's
+                              # wish, 2026-10-24, in place of GNOME's "Change Background…").
+                              ("themes", lambda *_: self.spawn(["/usr/local/bin/mentor-settings", "themes"])),
                               ("settings", lambda *_: self.spawn(["gnome-control-center"]))):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", handler)
@@ -3242,7 +3243,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             report.append("Report a problem\u2026", "win.report-problem")
             menu.append_section(None, report)
         system = Gio.Menu()
-        system.append("Change Background\u2026", "win.background")
+        system.append("Themes", "win.themes")
         # Mentor Settings beside GNOME's own Settings; Display Settings is one click inside Settings (the user's wish).
         system.append("Mentor Settings\u2026", "win.mentor-settings")
         system.append("Settings", "win.settings")

@@ -15,3 +15,12 @@
 #uiGroup #panel.mentor-light-taskbar:overview .panel-button {
     color: #2e3436;
 }
+
+/* A mixed set's dark taskbar over light windows (DESKTOP.md, "Mixed sets"): the light style makes the
+   taskbar's text and the nine dots dark, which could not be read on it. The class is set by the
+   extension's part "taskbar color" only while the taskbar has such a tone. */
+#uiGroup #panel.mentor-dark-taskbar .panel-button,
+#uiGroup #panel.mentor-dark-taskbar:overview .panel-button,
+#uiGroup #panel.mentor-dark-taskbar .dash-item-container .show-apps .overview-icon {
+    color: #ffffff;
+}

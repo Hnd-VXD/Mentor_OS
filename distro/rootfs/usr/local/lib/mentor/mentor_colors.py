@@ -67,17 +67,46 @@ ACCENT_PALETTES = [(name, False, "#222226", "#1d1d20", side, header, "#ffffff")
                    for name, _key, header, side in ACCENT_SETS]
 ACCENT_KEYS = {name: key for name, key, _header, _side in ACCENT_SETS}
 
+# Mixed sets (the user's wish, 2026-10-24: "another set of themes, kinda mixed, light/dark elements"): the
+# frame of each window (title bars and side panels) and the taskbar in one, the windows' content in the other.
+# Light windows in a dark frame, or dark windows in a light one; GNOME's style is the windows' own, so text,
+# icons and the shell's menus follow them. Frame text and content text each at a contrast of at least 10:1.
+# name, light windows?, window, view, frame, frame text, text
+MIXED_SETS = [
+    ("Paper and ink", True, "#f6f6f4", "#ffffff", "#2b2d33", "#f2f2f4", "#222226"),
+    ("Cream and coffee", True, "#f7f3ea", "#fbf8f2", "#3b2f27", "#f4ece4", "#2e2a24"),
+    ("Mist and navy", True, "#eef2f6", "#f5f8fb", "#1e2a3c", "#e8eef6", "#1f2933"),
+    ("Sage and forest", True, "#eef2ec", "#f5f8f3", "#23322a", "#e6efe6", "#24301f"),
+    ("Night and mist", False, "#1f2430", "#1b1f29", "#dfe6ee", "#1f2933", "#e6e9ef"),
+    ("Charcoal and sand", False, "#262422", "#201e1c", "#e6dccd", "#2b241c", "#eeeae6"),
+]
+# as palettes: name, light?, window, view, sidebar, headerbar, text
+MIXED_PALETTES = [(name, light, window, view, frame, frame, text)
+                  for name, light, window, view, frame, _ink, text in MIXED_SETS]
+FRAME_TEXT = {name: ink for name, _light, _window, _view, _frame, ink, _text in MIXED_SETS}
+# every set, in the order Mentor Settings and `mentor colors` show them
+ALL_PALETTES = PALETTES + MIXED_PALETTES + ACCENT_PALETTES
+
 
 def find(name):
     wanted = str(name).strip().lower()
     # "Slate" is a dark set and an accent: the accent one is called "Slate accent" where both could be meant
     if wanted.endswith(" accent"):
         return next((p for p in ACCENT_PALETTES if p[0].lower() == wanted[:-7]), None)
-    return next((p for p in PALETTES + ACCENT_PALETTES if p[0].lower() == wanted), None)
+    return next((p for p in ALL_PALETTES if p[0].lower() == wanted), None)
 
 
 def is_accent(palette):
     return palette is not None and any(palette is p for p in ACCENT_PALETTES)
+
+
+def is_mixed(palette):
+    return palette is not None and palette[0] in FRAME_TEXT
+
+
+def kind(palette):
+    """What `mentor colors` and Mentor Settings group it under: dark, light, mixed or accent."""
+    return "accent" if is_accent(palette) else "mixed" if is_mixed(palette) else "light" if palette[1] else "dark"
 
 
 def label(palette):
@@ -94,12 +123,18 @@ def css(palette, gtk3=False):
     # an accent set keeps its color for title bars (and taskbar and menus): dialogs, popovers and cards take
     # GNOME's own dark grey, or every one of them would be orange (in the side panels' tint they looked muddy)
     panel = GNOME_TONES[False][2] if is_accent(palette) else header
+    # A mixed set's frame has text of its own; dialogs, popovers and cards are the windows' (white-ish in light
+    # windows, GNOME's dark grey in dark ones), and the title bars keep the frame's tone behind another window.
+    frame_text, backdrop = text, window
+    if is_mixed(palette):
+        frame_text, backdrop = FRAME_TEXT[palette[0]], header
+        panel = view if _light else GNOME_TONES[False][2]
     colors = {
         "window-bg-color": window, "window-fg-color": text,
         "view-bg-color": view, "view-fg-color": text,
-        "headerbar-bg-color": header, "headerbar-fg-color": text, "headerbar-backdrop-color": window,
-        "sidebar-bg-color": sidebar, "sidebar-fg-color": text, "sidebar-backdrop-color": sidebar,
-        "secondary-sidebar-bg-color": sidebar, "secondary-sidebar-fg-color": text,
+        "headerbar-bg-color": header, "headerbar-fg-color": frame_text, "headerbar-backdrop-color": backdrop,
+        "sidebar-bg-color": sidebar, "sidebar-fg-color": frame_text, "sidebar-backdrop-color": sidebar,
+        "secondary-sidebar-bg-color": sidebar, "secondary-sidebar-fg-color": frame_text,
         "secondary-sidebar-backdrop-color": sidebar,
         "dialog-bg-color": panel, "dialog-fg-color": text,
         "popover-bg-color": panel, "popover-fg-color": text,
@@ -112,9 +147,16 @@ def css(palette, gtk3=False):
         lines = [f"@define-color {key.replace('-', '_')} {value};" for key, value in colors.items()]
         lines += [f"@define-color theme_bg_color {window};", f"@define-color theme_fg_color {text};",
                   f"@define-color theme_base_color {view};", f"@define-color theme_text_color {text};"]
+        if is_mixed(palette):
+            # GTK 3's Adwaita has no named color for title bars: a mixed set paints them, in GTK 3 programs and
+            # in Electron ones, which draw their title bar from GTK 3's headerbar (DESKTOP.md, "Mixed sets").
+            lines += ["headerbar, .titlebar:not(headerbar), headerbar:backdrop, .titlebar:not(headerbar):backdrop {",
+                      f"  background: {header}; color: {frame_text}; border-color: {header}; box-shadow: none; }}",
+                      "headerbar .title, headerbar .subtitle, headerbar label, .titlebar .title {",
+                      f"  color: {frame_text}; }}"]
     else:
         lines = [":root {"] + [f"  --{key}: {value};" for key, value in colors.items()] + ["}"]
-        if is_accent(palette):
+        if is_accent(palette) or is_mixed(palette):
             # libadwaita draws title bars flat, the window's own color through them, so --headerbar-bg-color
             # alone never showed (tested 2026-10-19): an accent set paints them, in focus; behind another
             # window they take the window's color, as GNOME's do.
@@ -178,7 +220,10 @@ def apply(name):
         with open(note, "w") as f:
             # the title bar tone, light or dark, then the window and content tones (the shell's menus use them);
             # an accent set adds the menus' own tone, GNOME's dark grey (the extension's part "menu colors")
+            # a mixed set: the menus in the windows' tone, as GNOME's style (the shell's text) is the windows'
             menus = f" {GNOME_TONES[False][2]}" if is_accent(palette) else ""
+            if is_mixed(palette):
+                menus = f" {palette[3] if palette[1] else GNOME_TONES[False][2]}"
             f.write(f"{palette[5]} {'light' if palette[1] else 'dark'} {palette[2]} {palette[3]}{menus}\n")
         subprocess.run(["gsettings", "set", taskbar, "trans-bg-color", palette[5]], check=False)
         subprocess.run(["gsettings", "set", taskbar, "trans-use-custom-bg", "true"], check=False)
