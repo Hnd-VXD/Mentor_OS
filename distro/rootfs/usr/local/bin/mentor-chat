@@ -597,8 +597,10 @@ textview.agent-card > text { background: transparent; color: #ffffff; }
 .steps { padding: 12px 16px; border-radius: 14px; background: rgba(20, 22, 27, 0.86);
          border: 1px solid rgba(255, 255, 255, 0.14); }
 .steps .steps-header { background: none; padding: 0 0 4px 0; font-size: 1em; font-weight: 700; color: #ffffff; }
-.steps .steps-header:disabled { color: #ffffff; }
-.gear { color: #7fb2ff; }
+/* GNOME dims a button that cannot be clicked to half: the card's header, with its gear, looked muffled
+   (the user, 2026-10-24). It is a label here until there are steps to fold. */
+.steps .steps-header:disabled { color: #ffffff; filter: none; opacity: 1; }
+.gear { color: #9cc8ff; -gtk-icon-size: 18px; }
 .tool-row { font-size: 0.9em; padding: 4px 10px; border-radius: 10px;
             background: rgba(20, 22, 27, 0.72); color: rgba(255, 255, 255, 0.82); }
 .chat-error { color: #ff8a75; }
@@ -674,8 +676,10 @@ def zoom_css(percent):
     return f".chat-zoom {{ font-size: {percent}%; }}\n"
 # The steps card's gear turns while the agent works. Not a CSS animation: GTK leaves those still when
 # GNOME's animations are off (a user's choice, or Mentor's before 2026-10-18), so it is turned a step at
-# a time by a timer (Conversation.add_step), through these classes.
-GEAR_STEPS = 16
+# a time by a timer (Conversation.add_step), through these classes: a turn in about four seconds, in 32 small
+# steps (16 steps in 1.4 s turned too fast, the user, 2026-10-24).
+GEAR_STEPS = 32
+GEAR_TICK = 120  # milliseconds a step
 CSS += "".join(f".gear.turn-{i} {{ -gtk-icon-transform: rotate({i / GEAR_STEPS}turn); }}\n" for i in range(GEAR_STEPS))
 
 
@@ -2409,7 +2413,7 @@ class Conversation(Gtk.Box):
             # the time it has taken, counted on the card while the agent works
             GLib.timeout_add_seconds(1, lambda: not steps["done"] and (self.show_steps(steps) or True))
 
-            def turn():  # the gear, a sixteenth of a turn at a time, until the answer is there
+            def turn():  # the gear, a step at a time, until the answer is there
                 if steps["done"] or (steps.get("turn") is not None and gear.get_root() is None):
                     return GLib.SOURCE_REMOVE
                 steps["turn"] = ((steps.get("turn") or 0) + 1) % GEAR_STEPS
@@ -2417,7 +2421,8 @@ class Conversation(Gtk.Box):
                     gear.set_css_classes(["gear", f"turn-{steps['turn']}"])
                 return GLib.SOURCE_CONTINUE
             if not restored:
-                GLib.timeout_add(90, turn)
+                GLib.timeout_add(GEAR_TICK, turn)
+                self.show_waiting()  # the gear says the agent works: no ring under it
             header.connect("clicked", lambda *_: (steps.update(open=not steps["open"]), self.show_steps(steps)))
             self.add(card)
         self.steps["rows"].append(row)
@@ -2456,6 +2461,16 @@ class Conversation(Gtk.Box):
                 self.history.append({"took": int(self.steps["end"] - self.steps["start"])})
             self.show_steps(self.steps)
             self.steps = None
+            self.show_waiting()
+
+    def show_waiting(self):
+        """While the agent works, one sign of it: the turning gear of the steps card when there is one, the
+        ring before the first step and between answers (the user's wish, 2026-10-24: both at once was too
+        much). The status words under it stay either way."""
+        if self.spinner and getattr(self, "ring", None):
+            running = self.steps is not None and not self.steps.get("restored")
+            self.ring.set_visible(not running)
+            self.ring.set_spinning(not running)
 
     def on_action(self, _button):
         if self.busy:
@@ -2640,9 +2655,11 @@ class Conversation(Gtk.Box):
         self.status.add_css_class("attachment-note")
         self.status.set_visible(False)
         waiting = Gtk.Box(spacing=8, halign=Gtk.Align.START)
-        waiting.append(Gtk.Spinner(spinning=True))
+        self.ring = Gtk.Spinner(spinning=True)
+        waiting.append(self.ring)
         waiting.append(self.status)
         self.spinner = self.add(waiting)
+        self.show_waiting()
         stream = Gio.DataInputStream.new(self.process.get_stdout_pipe())
         stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, self.process)
 

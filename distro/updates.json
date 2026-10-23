@@ -442,5 +442,11 @@
     "name": "23.10.26.04",
     "summary": "Themes is now in the desktop's right-click menu, and there are new Mixed window colors: light windows with a dark frame and taskbar, or the reverse.",
     "published": "2026-10-24 01:00"
+  },
+  {
+    "version": 202610232228,
+    "name": "23.10.26.05",
+    "summary": "While Mentor works, the chat shows one sign at a time: the gear while steps run. The gear is clearer and turns more calmly.",
+    "published": "2026-10-24 01:29"
   }
 ]
