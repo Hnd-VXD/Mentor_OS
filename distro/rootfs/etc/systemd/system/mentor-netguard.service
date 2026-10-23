@@ -2,9 +2,17 @@
 Description=Mentor's guard on programs going online (OpenSnitch's interface, with no window)
 Documentation=file:/etc/mentor/SECURITY.md
 Before=opensnitchd.service
+# Failing to start ten times in five minutes (a crash loop: about a minute), it is given up, and OpenSnitch's
+# default stays allow; `mentor security` says NOT WORKING; `systemctl reset-failed mentor-netguard` lets it start again.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
+# While it answers, OpenSnitch refuses what it cannot ask about (one question at a time: the guard sets that itself
+# once it answers); stopped or failed, it lets everything through again, so that the internet never depends on this
+# guard (mentor-netguard default; SECURITY.md).
 ExecStart=/usr/local/lib/mentor/mentor-netguard
+ExecStopPost=/usr/local/lib/mentor/mentor-netguard default allow
 Restart=always
 RestartSec=5
 

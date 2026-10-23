@@ -540,6 +540,14 @@ USAGE_ASKED = ("codex", "gemini")  # the accounts that have to be asked; Claude 
 # written under another name and renamed, so that it is whole when seen. It is shown once and
 # removed. `prompt` is what goes to the agent when the user asks it to look.
 NOTICES_DIR = os.path.join(GLib.get_user_state_dir(), "mentor", "notices")
+# Every card shown, a line each ({"t", "level", "title", "text", "prompt"?, "net"?}): a card is gone once dismissed,
+# and the menu's "Important warnings…" lists the red ones again, to hand to the agent (the user's wish, 2026-10-23).
+CARDS_PATH = os.path.join(GLib.get_user_state_dir(), "mentor", "cards.jsonl")
+CARDS_KEPT = 1 << 20  # bytes of it; past that the older half goes
+# Programs going online (mentor-netguard, SECURITY.md "Programs going online"): those waiting for the user's answer,
+# allowed and blocked. The cards' Allow and Block and the menu's "Network…" answer through NETGUARD, no password.
+NET_PATH = "/var/lib/mentor/guard/net.json"
+NETGUARD = "/usr/local/lib/mentor/mentor-netguard"
 # What mentor-advisor found worth bringing up, and what this user has said about hearing of it.
 ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
 ADVICE_STATE_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "advice.json")
@@ -753,6 +761,24 @@ def to_markup(text):
 
 
 HISTORY_LINES = 3  # lines of an entry shown in History before "Show more"
+
+
+def net_name(program):
+    """(name, where) of a program going online (mentor_guard.net_name: "python3 command" for code given as text)."""
+    try:
+        import mentor_guard
+        return mentor_guard.net_name(program)
+    except ImportError:
+        return os.path.basename(program), os.path.dirname(program)
+
+
+def globe(row=False):
+    """The small globe beside a place on the internet (cards of programs going online; Network…'s rows, `row`)."""
+    image = Gtk.Image.new_from_gicon(Gio.ThemedIcon.new_from_names(["mentor-globe-symbolic", "globe-symbolic"]))
+    image.set_valign(Gtk.Align.CENTER if row else Gtk.Align.START)
+    image.set_margin_top(0 if row else 2)
+    image.add_css_class("dim-label")
+    return image
 
 
 def history_card(entry, when, open_in_chat=None, asked=""):
@@ -1932,13 +1958,15 @@ class Conversation(Gtk.Box):
         self.add(box)
         return label
 
-    def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None, update=None):
+    def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None, update=None,
+                   net=None, network=False):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
         problem, green for an idea (something it suggests, such as writing down what was just
         built), with a way to hand it to the agent. Not part of what was said to the agent.
         `silence` is a function: the user does not want ideas of this kind (a button for it).
         `update` is the version of a Mentor update waiting to be installed: the card asks first,
-        and its Update button starts the install (mentor_update, UPDATES.md)."""
+        and its Update button starts the install (mentor_update, UPDATES.md). `net` is a program
+        waiting to go online: the card gets Block and Allow (net_card); `network`, several of them: Open Network…."""
         heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
         heading.add_css_class("heading")
         body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64,
@@ -1998,6 +2026,14 @@ class Conversation(Gtk.Box):
             if older and older[1] is not card and older[1].get_parent() is older[0].messages:
                 older[0].messages.remove(older[1])
             self.window.update_card = (self, card)
+        if net:
+            self.window.net_card(card, body, buttons, net, text)
+        if network:
+            show = Gtk.Button(label="Open Network…")
+            show.add_css_class("pill")
+            show.add_css_class("look")
+            show.connect("clicked", lambda *_: self.window.show_network())
+            buttons.append(show)
         card.append(buttons)
         self.window.note(self, f"{title}. {text}".strip(), False)
         if self.first_run and self.welcome:  # the card of a first start stays where it is
@@ -2501,7 +2537,12 @@ class Conversation(Gtk.Box):
         prompt = self.handover(ENGINE_OF.get(provider, "agent"), prompt)
         if provider == "claude":
             self.engine = "claude"
-            argv = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
+            # The message goes last, after "--" (below): one that began with a dash ("--help") was
+            # taken as an option. One that begins with a slash ("/cost") ran a command of Claude
+            # Code's, and --disable-slash-commands only swallows it; a space before it keeps it a message.
+            if prompt.startswith("/"):
+                prompt = " " + prompt
+            argv = [CLAUDE, "-p", "--output-format", "stream-json", "--verbose",
                     "--mcp-config", MCP_CONFIG, "--strict-mcp-config",
                     "--allowedTools", ALLOWED_TOOLS, "--disallowedTools", DISALLOWED_TOOLS,
                     "--append-system-prompt", SYSTEM_PROMPT + ATTACHED["claude"]]
@@ -2534,7 +2575,8 @@ class Conversation(Gtk.Box):
             options += ["-c", f"mcp_servers.mentor.env={{MENTOR_SANDBOX={json.dumps(self.sandbox)}}}"]
             if model:
                 options += ["-m", model]
-            argv = [CODEX, "exec", *(["resume"] if self.sessions.get("codex") else []), *options]
+            # "--" before the session and the message: a message that began with a dash was an option
+            argv = [CODEX, "exec", *(["resume"] if self.sessions.get("codex") else []), *options, "--"]
             if self.sessions.get("codex"):
                 argv.append(self.sessions["codex"])
             argv.append(prompt)
@@ -2557,7 +2599,9 @@ class Conversation(Gtk.Box):
                 prompt = said + listed + "\n".join(agy_attach(folder, path) or path for path in attached)
             # A message that begins with a slash is still a message, not one of its commands.
             # /etc/mentor too (read only for the user): the files it is told to read are there.
-            argv = [AGY, "-p", prompt, "--output-format", "stream-json", "--disable-slash-commands",
+            # The message is joined to -p: apart, one that began with a dash was an option, and agy
+            # takes no "--".
+            argv = [AGY, "-p=" + prompt, "--output-format", "stream-json", "--disable-slash-commands",
                     "--add-dir", "/etc/mentor", *folders]
             if model:
                 argv += ["--model", model]
@@ -2566,7 +2610,8 @@ class Conversation(Gtk.Box):
         else:
             self.engine = "agent"  # one conversation format, whichever provider answers
             key = read_key(provider, model)
-            argv = [AGENT, "-p", prompt, "--provider", provider, "--model", model,
+            # joined to the option, so that a message beginning with a dash is not taken as one
+            argv = [AGENT, "--prompt=" + prompt, "--provider", provider, "--model", model,
                     "--system", SYSTEM_PROMPT + ATTACHED["agent"]]
             if effort:
                 argv += ["--effort", effort]
@@ -2574,6 +2619,8 @@ class Conversation(Gtk.Box):
                 argv += ["--file", path]
         if self.engine in ("claude", "agent") and self.sessions.get(self.engine):
             argv += ["--resume", self.sessions[self.engine]]
+        if self.engine == "claude":
+            argv += ["--", prompt]
         self.trouble = None
         self.pending = ""
         self.stray_output = []
@@ -3032,6 +3079,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         # The text box lifted out over the windows (toggle_ask): its window, whose it is, the picture taken.
         self.ask_window = self.ask_of = self.ask_shot = None
         self.history_window = None  # History, a window of its own (show_history)
+        self.network_window = None  # Network… and Important warnings…, the same (show_network, show_warnings)
+        self.warnings_window = None
+        self.net_cards = []         # cards of programs waiting to go online (net_card)
         self.advice_count = Gtk.Label()
         bell = Gtk.Box(spacing=6)
         bell.append(Gtk.Image(icon_name="preferences-system-notifications-symbolic"))
@@ -3083,6 +3133,8 @@ class DesktopWindow(Adw.ApplicationWindow):
         for name, handler in (("clear-chat", lambda *_: self.ask_to_clear()),
                               ("new-chat", lambda *_: self.new_or_empty()),
                               ("history", lambda *_: self.show_history()),
+                              ("network", lambda *_: self.show_network()),
+                              ("warnings", lambda *_: self.show_warnings()),
                               ("toggle-chat", lambda *_: self.show_chat(self.chat_hidden)),
                               ("mentor-settings", lambda *_: self.spawn(["/usr/local/bin/mentor-settings"])),
                               ("report-problem", lambda *_: self.report_problem()),
@@ -3143,6 +3195,8 @@ class DesktopWindow(Adw.ApplicationWindow):
         os.makedirs(NOTICES_DIR, exist_ok=True)
         self.notices_monitor = Gio.File.new_for_path(NOTICES_DIR).monitor_directory(Gio.FileMonitorFlags.NONE, None)
         self.notices_monitor.connect("changed", lambda *_: GLib.timeout_add(500, self.show_notices))
+        self.net_watch = Gio.File.new_for_path(NET_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.net_watch.connect("changed", lambda *_: GLib.timeout_add(500, self.follow_net))
         self.show_notices()
         self.show_usage()
         if MODELS[self.model_index][1] in USAGE_ASKED:
@@ -3347,6 +3401,10 @@ class DesktopWindow(Adw.ApplicationWindow):
             menu.append_item(item)
         more = Gio.Menu()
         more.append("History\u2026", "win.history")
+        # Programs that asked to go online, and the red cards shown: each can be handed to the agent again
+        # (the user's wish, 2026-10-23).
+        more.append("Network\u2026", "win.network")
+        more.append("Important warnings\u2026", "win.warnings")
         menu.append_section(None, more)
         button.set_menu_model(menu)
 
@@ -3526,6 +3584,199 @@ class DesktopWindow(Adw.ApplicationWindow):
         search.connect("stop-search", lambda *_: search.set_text("") if search.get_text() else dialog.close())
         dialog.present()
         more()
+
+    def side_window(self, title, slot, content):
+        """A window of its own beside the desktop, as History: minimize, maximize and close, Esc closes, one at a
+        time (`slot` is the attribute that holds it). Its title must be in the extension's PLAIN_TITLES."""
+        dialog = Adw.Window(application=self.get_application(), title=title, default_width=760, default_height=680)
+        setattr(self, slot, dialog)
+
+        def gone(*_):
+            setattr(self, slot, None)
+            return False
+        dialog.connect("close-request", gone)
+        view = Adw.ToolbarView(content=content)
+        view.add_top_bar(Adw.HeaderBar())
+        dialog.set_content(view)
+        close = Gtk.ShortcutController()
+        close.add_shortcut(Gtk.Shortcut(trigger=Gtk.ShortcutTrigger.parse_string("Escape"),
+                                        action=Gtk.CallbackAction.new(lambda *_: dialog.close() or True)))
+        dialog.add_controller(close)
+        return dialog
+
+    def hand_to_agent(self, dialog, prompt, shown):
+        """From one of the side windows to a new conversation, which is then what the user sees."""
+        dialog.close()
+        self.show_chat(True)
+        self.for_request().send(prompt, shown=shown)
+
+    def show_network(self):
+        """Network…: every program that asked to go online, with where it went (city and country, mentor_geo) and
+        what was answered; Allow, Block, Unblock, and Ask Mentor, which hands it to the agent again."""
+        if self.network_window is not None:
+            self.network_window.present()
+            return
+        page = Adw.PreferencesPage()
+        dialog = self.side_window("Network", "network_window", page)
+        groups = []
+        shown_as = [None]
+
+        def refill():
+            try:
+                import mentor_geo
+            except ImportError:
+                mentor_geo = None
+            data = self.read_net()
+            # Made again only when a program, its answer or its places changed: net.json is written with the counts
+            # too (every 30 s while programs try), which closed the row the user had opened.
+            seen = None if data is None else sorted(
+                (program, self.net_state(data, program), tuple(entry.get("destinations", [])),
+                 tuple(sorted(entry.get("ips", {}).items())))
+                for program, entry in {**data.get("tries", {}), **data.get("unknown", {})}.items()
+                if program in data.get("unknown", {}) or program in data.get("blocked", {}))
+            if groups and seen == shown_as[0]:
+                return
+            shown_as[0] = seen
+            for group in groups:
+                page.remove(group)
+            groups.clear()
+            sections = {state: Adw.PreferencesGroup(title=title, description=about) for state, title, about in (
+                ("waiting", "Waiting for your answer", "Mentor does not know these programs, so they stay offline "
+                                                       "until you answer."),
+                ("allowed", "Allowed", "Programs you let go online."),
+                ("blocked", "Blocked", "Programs kept offline. Unblock asks your password."),
+                ("let out", "Went online before Mentor asked", "From before Mentor asked first."))}
+            if data is None:
+                group = Adw.PreferencesGroup()
+                group.add(Adw.ActionRow(title="The guard on programs going online is not running",
+                                        subtitle="Ask Mentor to look at it"))
+                page.add(group)
+                groups.append(group)
+                return
+            programs = dict(data.get("unknown", {}))
+            for program in data.get("blocked", {}):
+                programs.setdefault(program, data.get("tries", {}).get(program, {}))
+            counts = dict.fromkeys(sections, 0)
+            for program, entry in sorted(programs.items(), key=lambda item: -item[1].get("last", 0)):
+                state = self.net_state(data, program)
+                if state == "blocked":  # where it went since it was blocked, in front of where it went before
+                    tried = data.get("tries", {}).get(program, {})
+                    entry = {**entry, "destinations": entry.get("destinations", []) + tried.get("destinations", []),
+                             "ips": {**entry.get("ips", {}), **tried.get("ips", {})}, "last": tried.get("last") or entry.get("last")}
+                name, folder = net_name(program)
+                places = list(reversed(entry.get("destinations", [])))
+                ips = entry.get("ips", {})
+                shown = [mentor_geo.where(place, ips) if mentor_geo else place.rsplit(":", 1)[0] for place in places]
+                shown = list(dict.fromkeys(shown))  # a place once (its port and the name lookup are left out)
+                last = entry.get("last")
+                bits = [folder]
+                if last:
+                    bits.append("last " + time.strftime("%-d %B %H:%M", time.localtime(last)))
+                if state == "waiting" and entry.get("refused"):
+                    bits.append(f"tried {entry['refused']} time(s)")
+                row = Adw.ExpanderRow(title=GLib.markup_escape_text(name, -1),
+                                      subtitle=GLib.markup_escape_text(" \u00b7 ".join(bits), -1))
+                said = {"waiting": "is waiting for my answer to go online", "allowed": "I allowed to go online",
+                        "blocked": "is blocked from going online", "let out": "went online before Mentor asked first"}[state]
+                prompt = (f"Mentor's Network list shows {program}, which {said}. It tried to reach: "
+                          + (", ".join(shown[:12]) or "nowhere yet") + ". Find out what it is (SECURITY.md, \"Programs "
+                          "going online\"), tell me in plain words, and ask me what to do with it: allow it, block it, "
+                          "or something else. Change nothing before I agree.")
+                ask = Gtk.Button(label="Ask Mentor", valign=Gtk.Align.CENTER)
+                ask.connect("clicked", lambda _b, prompt=prompt, name=name: self.hand_to_agent(
+                    dialog, prompt, f"About {name}, from Network"))
+                row.add_suffix(ask)
+                actions = {"waiting": (("Block", "block"), ("Allow", "allow")), "allowed": (("Block", "block"),),
+                           "let out": (("Block", "block"),), "blocked": (("Unblock", "unblock"),)}[state]
+                for label, what in actions:
+                    answer = Gtk.Button(label=label, valign=Gtk.Align.CENTER)
+                    if what == "allow":
+                        answer.add_css_class("suggested-action")
+                    answer.connect("clicked", lambda button, what=what, program=program: (
+                        button.set_sensitive(False), self.answer_net(what, program)))
+                    row.add_suffix(answer)
+                for place in shown[:30] or ["Nowhere yet"]:
+                    where = Adw.ActionRow(title=GLib.markup_escape_text(place, -1))
+                    if shown:
+                        where.add_prefix(globe(row=True))
+                    row.add_row(where)
+                sections[state].add(row)
+                counts[state] += 1
+            for state, group in sections.items():
+                if counts[state] or state == "waiting":
+                    if not counts[state]:
+                        group.add(Adw.ActionRow(title="None"))
+                    page.add(group)
+                    groups.append(group)
+            credit = Adw.PreferencesGroup(description="Cities and countries: IP Geolocation by DB-IP (db-ip.com)")
+            page.add(credit)
+            groups.append(credit)
+        dialog.refill = refill
+        # Shown first, filled after: filled first (net.json, the places' database), the click that asked for it was
+        # too long ago for GNOME, which only said "Network is ready" and left it behind (tested 2026-10-23).
+        dialog.present()
+        GLib.idle_add(lambda: refill() and False)
+
+    def show_warnings(self):
+        """Important warnings…: the red cards shown, newest first (CARDS_PATH), each with Ask Mentor, which hands
+        it to the agent again."""
+        if self.warnings_window is not None:
+            self.warnings_window.present()
+            return
+        rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=6, margin_bottom=18,
+                       margin_start=24, margin_end=24)
+        dialog = self.side_window("Important warnings", "warnings_window",
+                                  Gtk.ScrolledWindow(child=rows, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER))
+
+        def fill():
+            cards = []
+            try:
+                with open(CARDS_PATH, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        try:
+                            card = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(card, dict) and card.get("level") == "problem" and card.get("title"):
+                            cards.append(card)
+            except OSError:
+                pass
+            day_shown = None
+            for card in reversed(cards[-300:]):
+                when = time.localtime(card.get("t", 0))
+                day = time.strftime("%A, %d %B %Y", when)
+                if day != day_shown:
+                    day_shown = day
+                    heading = Gtk.Label(label=day, xalign=0, margin_top=10)
+                    heading.add_css_class("heading")
+                    rows.append(heading)
+                title, text = str(card["title"]), str(card.get("text") or "")
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                box.add_css_class("notice")
+                box.add_css_class("problem")
+                heading = Gtk.Label(label=f"{time.strftime('%H:%M', when)}  \u00b7  {title}", xalign=0, wrap=True)
+                heading.add_css_class("heading")
+                box.append(heading)
+                if text:
+                    box.append(Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                                         selectable=True))
+                prompt = card.get("prompt") if isinstance(card.get("prompt"), str) else (
+                    f"Mentor showed me this card on {day} at {time.strftime('%H:%M', when)}: \u201c{title}\u201d. {text}"
+                    "\n\nTell me in plain words what it meant, whether it is still so, and whether I need to do anything. "
+                    "Do not change anything before I agree.")
+                ask = Gtk.Button(label="Ask Mentor", halign=Gtk.Align.END)
+                ask.add_css_class("pill")
+                ask.add_css_class("look")
+                ask.connect("clicked", lambda _b, prompt=prompt, title=title, day=day: self.hand_to_agent(
+                    dialog, f"(This card was shown on {day}; look at how things are now.)\n\n{prompt}", title))
+                box.append(ask)
+                rows.append(box)
+            if not cards:
+                rows.append(Gtk.Label(label="No important warnings yet.", margin_top=30))
+            return False
+
+        dialog.present()  # shown first, filled after, as Network… (show_network)
+        GLib.idle_add(fill)
 
     def on_selected(self, *_):
         current = self.current
@@ -4489,12 +4740,16 @@ class DesktopWindow(Adw.ApplicationWindow):
             if not title or not self.current:
                 continue
             prompt = notice.get("prompt") if isinstance(notice.get("prompt"), str) else None
+            level = notice.get("level") if notice.get("level") in ("problem", "idea") else "warning"
+            net = notice.get("net") if isinstance(notice.get("net"), str) and notice["net"].startswith("/") else None
             if notice.get("quiet") is not True:  # a quiet one is only a card: no pop-up for it
                 loud.append((title, text))
-            self.current.add_notice(notice.get("level") if notice.get("level") in ("problem", "idea") else "warning", title, text, prompt,
+            self.log_card(level, title, text, prompt, net)
+            self.current.add_notice(level, title, text, prompt,
                                     auto=notice.get("auto") is True,
                                     update=notice.get("update") if isinstance(notice.get("update"), str) else None,
-                                    action=notice.get("action") if isinstance(notice.get("action"), str) else "Let Mentor look")
+                                    action=notice.get("action") if isinstance(notice.get("action"), str) else "Let Mentor look",
+                                    net=net, network=notice.get("network") is True)
             shown.append((title, text))
         if shown:
             self.show_chat()
@@ -4504,6 +4759,129 @@ class DesktopWindow(Adw.ApplicationWindow):
                 notification.set_default_action("app.show")
                 self.get_application().send_notification("notice", notification)
         return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def log_card(level, title, text, prompt=None, net=None):
+        """Keep a card shown, for the menu's "Important warnings…" (CARDS_PATH)."""
+        try:
+            os.makedirs(os.path.dirname(CARDS_PATH), exist_ok=True)
+            if os.path.exists(CARDS_PATH) and os.path.getsize(CARDS_PATH) > CARDS_KEPT:
+                with open(CARDS_PATH, "rb") as f:
+                    f.seek(-CARDS_KEPT // 2, os.SEEK_END)
+                    kept = f.read().split(b"\n", 1)[-1]
+                with open(CARDS_PATH + ".new", "wb") as f:
+                    f.write(kept)
+                os.replace(CARDS_PATH + ".new", CARDS_PATH)
+            with open(CARDS_PATH, "a") as f:
+                f.write(json.dumps({"t": int(time.time()), "level": level, "title": title, "text": text,
+                                    **({"prompt": prompt} if prompt else {}), **({"net": net} if net else {})}) + "\n")
+        except OSError:
+            pass
+
+    # --- programs going online (mentor-netguard; SECURITY.md, "Programs going online") ---------------------
+    # A program Mentor does not know is kept offline until the user answers: on its card (Block, Allow) or in the
+    # menu's "Network…". The answer goes through the guard, with no password. Every card of a program follows
+    # what is answered anywhere (here, in Network…, in Mentor Settings, by the assistant), through net.json.
+
+    @staticmethod
+    def read_net():
+        try:
+            with open(NET_PATH) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def net_state(data, program):
+        if program in data.get("blocked", {}):
+            return "blocked"
+        if program in data.get("allowed", {}):
+            return "allowed"
+        if program in data.get("waiting", {}):
+            return "waiting"
+        return "let out"  # went online before Mentor asked first (2026-10-23), never answered
+
+    def answer_net(self, what, program, done=None):
+        """allow, block (no password: the guard takes it from the user's session) or unblock (as root: the password
+        is asked) a program; `done(ok, what was said)` after."""
+        if what == "unblock":
+            name = net_name(program)[0]
+            arguments = json.dumps({"command": f"{NETGUARD} unblock {GLib.shell_quote(program)}",
+                                    "explain": f"Letting {name} go online again. You asked for this in Network."})
+            argv = ["python3", "-c", "import json, sys; sys.path.insert(0, '/usr/local/lib/mentor'); import mentor_tools; "
+                    "print(mentor_tools.call('run_root_command', json.loads(sys.argv[1])))", arguments]
+        else:
+            argv = [NETGUARD, what, program]
+        try:
+            process = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as e:
+            if done:
+                done(False, e.message)
+            return
+
+        def finished(process, result):
+            try:
+                _ok, said, _ = process.communicate_utf8_finish(result)
+            except GLib.Error as e:
+                said = e.message
+            self.follow_net()
+            if done:
+                done(process.get_successful(), (said or "").strip())
+        process.communicate_utf8_async(None, None, finished)
+
+    def net_card(self, card, body, buttons, program, text):
+        """Block and Allow on the card of a program waiting to go online, and a small globe beside where it goes
+        (the user's wish, 2026-10-23)."""
+        line = Gtk.Box(spacing=8)
+        card.insert_child_after(line, body)
+        card.remove(body)
+        line.append(globe())
+        line.append(body)
+        answers = []
+        for label, what in (("Block", "block"), ("Allow", "allow")):
+            answer = Gtk.Button(label=label)
+            answer.add_css_class("pill")
+            if what == "allow":
+                answer.add_css_class("look")
+
+            def clicked(_button, what=what):
+                for each in answers:
+                    each.set_sensitive(False)
+
+                def done(ok, said):
+                    for each in answers:
+                        each.set_sensitive(True)
+                    if not ok:
+                        body.set_label(f"{text}\n\nThat did not work: {said or 'the guard did not answer'}")
+                self.answer_net(what, program, done)
+            answer.connect("clicked", clicked)
+            buttons.append(answer)
+            answers.append(answer)
+        self.net_cards.append((card, body, answers, program, text))
+        GLib.idle_add(self.follow_net)  # once the card is in the chat: until then it has no parent, as one dismissed
+
+    def follow_net(self):
+        """Every card and the Network window as net.json says now."""
+        data = self.read_net() or {}
+        kept = []
+        for item in self.net_cards:
+            card, body, answers, program, text = item
+            if card.get_parent() is None:  # dismissed
+                continue
+            kept.append(item)
+            state = self.net_state(data, program)
+            for answer in answers:
+                answer.set_visible(state == "waiting")
+            where = text.split(" Mentor does not know")[0]
+            if state == "allowed":
+                body.set_label(f"{where} Allowed: it can go online now. If it showed an error, try again in it.")
+            elif state == "blocked":
+                body.set_label(f"{where} Blocked: it stays offline. Network\u2026 in the menu can let it out again.")
+        self.net_cards = kept
+        if self.network_window is not None:
+            self.network_window.refill()
+        return False
 
     def on_finished(self, conversation):
         """An answer nobody is looking at (the desktop is covered) is announced."""

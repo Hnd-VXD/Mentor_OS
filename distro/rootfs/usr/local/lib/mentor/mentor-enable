@@ -23,6 +23,9 @@ rm -f /etc/systemd/system/sysinit.target.wants/mentor-noexec.service
 if [ -e /usr/lib/systemd/system/opensnitchd.service ]; then
     systemctl enable mentor-netguard.service opensnitchd.service
 fi
+# Where the places programs go online to are (city, country): DB-IP's free database, fetched once a month
+# (usr/local/lib/mentor/mentor_geo.py; etc/mentor/SECURITY.md).
+systemctl enable mentor-geo.timer
 # GNOME asks after a change of language whether to rename Desktop, Documents, Downloads... into it; the
 # folders keep their names: Mentor's recipes live in ~/Documents/Mentor recipes (DESKTOP.md, "Folders").
 systemctl --global mask user-dirs-update-gtk.service

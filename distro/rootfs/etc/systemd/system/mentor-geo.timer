@@ -1,0 +1,11 @@
+[Unit]
+Description=Mentor looks once a day whether this month's database of where addresses are is in place
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=1d
+AccuracySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -24,6 +24,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import mentor_journal
+import mentor_guard
 import mentor_security
 import mentor_settings
 import mentor_tools
@@ -423,12 +424,18 @@ class SettingsWindow(Adw.ApplicationWindow):
             title="Blocked from the internet",
             description="Programs Mentor stopped from going online, with your yes. Unblock one to let it out again "
                         "(your password is asked).")
+        self.waiting_group = Adw.PreferencesGroup(
+            title="Waiting for your answer",
+            description="Programs that are not from Mentor, a package or an app store tried to go online. They stay "
+                        "offline until you answer.")
         self.online_group = Adw.PreferencesGroup(
             title="Went online, not known to Mentor",
-            description="Programs that are not from Mentor, a package or an app store, and connected to the internet. "
-                        "They were let through.")
+            description="Programs not from Mentor, a package or an app store that you allowed, or that went online "
+                        "before Mentor asked first.")
         self.watch_group = Adw.PreferencesGroup(title="Watching")
-        for group in (self.blocked_group, self.online_group, self.watch_group):
+        credit = Adw.PreferencesGroup(description="Cities and countries of the places programs go: IP Geolocation by "
+                                                  "DB-IP (db-ip.com), CC BY 4.0")
+        for group in (self.waiting_group, self.blocked_group, self.online_group, self.watch_group, credit):
             page.add(group)
         self.security_rows = []
         self.show_security()
@@ -460,9 +467,10 @@ class SettingsWindow(Adw.ApplicationWindow):
             places = sorted(set(tries.get(program, {}).get("destinations", [])))
             count = tries.get(program, {}).get("count", 0)
             since = str(blocked[program])[:10]
-            row = Adw.ExpanderRow(title=GLib.markup_escape_text(os.path.basename(program)),
+            name, folder = mentor_guard.net_name(program)
+            row = Adw.ExpanderRow(title=GLib.markup_escape_text(name),
                                   subtitle=GLib.markup_escape_text(
-                                      f"{os.path.dirname(program)} · blocked since {since} · "
+                                      f"{folder} · blocked since {since} · "
                                       + (f"tried {count} time(s)" if count else "has not tried since")))
             row.add_suffix(button("Unblock", lambda program=program: self.netguard("unblock", program)))
             for place in places[:30] or ["No try since it was blocked"]:
@@ -470,22 +478,37 @@ class SettingsWindow(Adw.ApplicationWindow):
             add(self.blocked_group, row)
         if net is not None and not blocked:
             add(self.blocked_group, Adw.ActionRow(title="Nothing is blocked"))
+        try:
+            import mentor_geo
+        except ImportError:
+            mentor_geo = None
         unknown = {p: e for p, e in (net or {}).get("unknown", {}).items() if p not in blocked}
+        waiting = (net or {}).get("waiting", {})
         for program, entry in sorted(unknown.items(), key=lambda item: -item[1].get("last", 0)):
-            places = sorted(set(entry.get("destinations", [])))
+            places = list(dict.fromkeys(mentor_geo.where(place, entry.get("ips")) if mentor_geo else place
+                                        for place in reversed(entry.get("destinations", []))))
             last = time.strftime("%-d %B %H:%M", time.localtime(entry.get("last", 0)))
-            row = Adw.ExpanderRow(title=GLib.markup_escape_text(os.path.basename(program)),
+            name, folder = mentor_guard.net_name(program)
+            row = Adw.ExpanderRow(title=GLib.markup_escape_text(name),
                                   subtitle=GLib.markup_escape_text(
-                                      f"{os.path.dirname(program)} · {entry.get('count', 0)} connection(s), "
+                                      f"{folder} · {entry.get('count', 0)} connection(s), "
                                       f"last {last}"))
             row.add_suffix(button("Ask Mentor", lambda program=program: ask(
-                f"Mentor Settings shows that {program} went online, and Mentor does not know it. Find out what it is "
-                "(SECURITY.md, \"Programs going online\"), tell me in plain words, and block it only if I agree.")))
+                f"Mentor Settings shows that {program} tried to go online, and Mentor does not know it. Find out what "
+                "it is (SECURITY.md, \"Programs going online\"), tell me in plain words, and allow or block it only if "
+                "I agree.")))
             row.add_suffix(button("Block", lambda program=program: self.netguard("block", program)))
+            if program in waiting:  # Allow needs no password: the guard takes the answer from the user's session
+                row.add_suffix(button("Allow", lambda program=program: later(
+                    lambda: subprocess.run(["/usr/local/lib/mentor/mentor-netguard", "allow", program],
+                                           capture_output=True, timeout=20),
+                    lambda _r: self.show_security()), suggested=True))
             for place in places[:30]:
                 row.add_row(Adw.ActionRow(title=GLib.markup_escape_text(place)))
-            add(self.online_group, row)
-        if net is not None and not unknown:
+            add(self.waiting_group if program in waiting else self.online_group, row)
+        if net is not None and not any(p in waiting for p in unknown):
+            add(self.waiting_group, Adw.ActionRow(title="None"))
+        if net is not None and all(p in waiting for p in unknown):
             add(self.online_group, Adw.ActionRow(title="None", subtitle="Every program that went online is one Mentor knows"))
         # the watch for unusual programs, and the weekly check of the system's programs
         try:
@@ -519,7 +542,7 @@ class SettingsWindow(Adw.ApplicationWindow):
     def netguard(self, what, program):
         """Block or unblock a program going online, as root (the password dialog says what for)."""
         import shlex
-        name = os.path.basename(program)
+        name = mentor_guard.net_name(program)[0]
         arguments = {"command": f"/usr/local/lib/mentor/mentor-netguard {what} {shlex.quote(program)}",
                      "explain": (f"Letting {name} go online again. You asked for this in Mentor Settings."
                                  if what == "unblock" else

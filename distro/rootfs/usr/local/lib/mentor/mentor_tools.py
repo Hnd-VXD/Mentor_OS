@@ -87,14 +87,17 @@ MAX_OUTPUT = 20000
 NOTICES = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "notices")
 
 
-def leave_notice(level, title, text="", prompt=None, auto=False, update=None, action=None, quiet=False):
+def leave_notice(level, title, text="", prompt=None, auto=False, update=None, action=None, quiet=False, net=None,
+                 network=False):
     """Tell the user something by itself: the assistant shows it in the chat as a card, yellow
     for a "warning", red for a "problem" (mentor-chat, NOTICES_DIR). `prompt` is what goes to
     the agent when the user asks it to look; with `auto` the assistant sends it on by itself,
     without waiting to be asked (only mentor-firewall-watch does). `update` is the version of an
     update waiting to be installed: the card gets an Update button (mentor_update). `action` names the
     button that hands `prompt` over ("Let Mentor look" when not given). `quiet`: only the card, never GNOME's
-    pop-up notification too. Returns where it was left."""
+    pop-up notification too. `net` is a program waiting to go online (mentor-netguard): the card gets Allow and Block;
+    `network`: several of them, and the card gets Open Network… (the chat's Network window).
+    Returns where it was left."""
     os.makedirs(NOTICES, exist_ok=True)
     path = os.path.join(NOTICES, f"{time.time():.3f}-{os.getpid()}.json")
     with open(path + ".new", "w") as f:
@@ -102,7 +105,8 @@ def leave_notice(level, title, text="", prompt=None, auto=False, update=None, ac
                    **({"prompt": prompt} if prompt else {}), **({"auto": True} if auto and prompt else {}),
                    **({"update": str(update)} if update else {}),
                    **({"action": str(action)[:40]} if action and prompt else {}),
-                   **({"quiet": True} if quiet else {})}, f)
+                   **({"quiet": True} if quiet else {}), **({"net": str(net)} if net else {}),
+                   **({"network": True} if network else {})}, f)
     os.replace(path + ".new", path)  # whole when it is seen
     return path
 

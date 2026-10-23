@@ -49,6 +49,31 @@ MINING_WORDS = re.compile(r"stratum\d?\+(tcp|ssl|tls)://|--donate-level|--coin[=
 POOL_PORTS = {3333, 3334, 3357, 4444, 5555, 7777, 10128, 14433, 14444, 20128, 45560, 45700}
 # The AI engines Mentor sets up for the user live in their home (npm's and the engines' own installers).
 ENGINES = re.compile(r"^/home/[^/]+/\.local/(lib/node_modules/|bin/(agy|claude|codex|gemini)$|share/claude/)")
+# Programs that run another file or code given to them: what they run is judged, not them (mentor-netguard
+# program_of). Not gjs: GNOME's apps start as `gjs -m FILE`, where -m names a file.
+INTERPRETERS = re.compile(r"^/usr/bin/(python3?(\.\d+)?|bash|sh|dash|zsh|perl|ruby|node|lua\S*|php)$")
+
+
+def command_key(interpreter, rest):
+    """How code given to an interpreter as text (`python3 -c …`, `bash -c …`, a script on stdin) is named in net.json
+    and in Mentor's rules: the interpreter's path, a space, and the rest of its command line exactly."""
+    return interpreter + " " + " ".join(rest)
+
+
+def split_command(program):
+    """(interpreter, the rest of its command line) for a command_key, or None for a program or script file."""
+    first, _, rest = program.partition(" ")
+    return (first, rest) if _ and INTERPRETERS.match(first) else None
+
+
+def net_name(program):
+    """(name, where) of a program going online, as the user sees it: "fetcher", "/home/USER/.cache"; for code given
+    as text "python3 command", and the start of the command."""
+    command = split_command(program)
+    if command:
+        text = " ".join(command[1].split())
+        return f"{os.path.basename(command[0])} command", text if len(text) <= 80 else text[:79] + "…"
+    return os.path.basename(program), os.path.dirname(program)
 
 
 # --- small helpers ---------------------------------------------------------------------------------
@@ -538,27 +563,47 @@ def check_files():
 
 # --- for everyone -------------------------------------------------------------------------------
 
+def _boot():
+    """(this start's id, when it began): a program still waiting after a restart is told of again when it tries."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            boot = f.read().strip()
+        with open("/proc/stat") as f:
+            began = next((float(line.split()[1]) for line in f if line.startswith("btime ")), 0.0)
+    except (OSError, ValueError, IndexError):
+        return "", 0.0
+    return boot, began
+
+
 def net_findings():
-    """Unknown programs that went online (mentor-netguard writes them), as findings; not those already blocked."""
+    """Unknown programs waiting to go online (mentor-netguard keeps them offline until the user answers), as findings:
+    one card each, again after a restart only when it tries again. Answered ones (allowed, blocked) are not."""
+    import mentor_geo
     data = _load(NET, {})
+    boot, began = _boot()
     found = []
     for program, entry in data.get("unknown", {}).items():
-        if program in data.get("blocked", {}):
+        if program not in data.get("waiting", {}) or program in data.get("blocked", {}) or entry.get("last", 0) < began:
             continue
         places = entry.get("destinations", [])
         hosts = [p for p in places if not p.endswith(":53")] or places
-        found.append({"key": "net:" + program, "level": "warning",
-                      "title": "A program you may not know went online",
-                      "text": f"{os.path.basename(program)} ({os.path.dirname(program)}) connected to "
-                              + ", ".join(hosts[-3:]) + ".",
+        shown = [mentor_geo.where(p, entry.get("ips")) for p in hosts[-3:]]  # looked up by the guard (resolver)
+        name, folder = net_name(program)
+        found.append({"key": f"net:{boot}:{program}", "level": "warning", "program": program,
+                      "title": f"{name} wants to go online",
+                      "text": "To " + "; ".join(shown) + ". Mentor does not know this program, so it stays offline "
+                              "until you answer.",
                       "details": f"{program} is not from a package, Mentor, an app store, or something Mentor's "
-                                 f"assistant installed, and it connected to the internet ({entry.get('count', 0)} "
-                                 f"time(s); first {time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('first', 0)))}"
-                                 f", last {time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('last', 0)))}). "
-                                 f"Run by user id {entry.get('user', '?')}, as: {entry.get('args', '')}\nWhere it went: "
-                                 + ", ".join(places[-12:]) + "\n\nIt was let through. To block it, with the user's "
-                                 f"yes: run_root_command `/usr/local/lib/mentor/mentor-netguard block '{program}'` "
-                                 "(it can be let out again in Mentor Settings, Security).",
+                                 f"assistant installed, and it tried to connect to the internet "
+                                 f"({entry.get('count', 0)} time(s); first "
+                                 f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('first', 0)))}, last "
+                                 f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(entry.get('last', 0)))}). Run by "
+                                 f"user id {entry.get('user', '?')}, as: {entry.get('args', '')}\nWhere it tried to go: "
+                                 + ", ".join(mentor_geo.where(p, entry.get("ips")) for p in places[-12:])
+                                 + "\n\nIt is kept offline until the user answers (the card has Allow and Block). "
+                                 "With the user's yes, run_command `/usr/local/lib/mentor/mentor-netguard allow '" + program
+                                 + "'` lets it go online, `/usr/local/lib/mentor/mentor-netguard block '" + program + "'` blocks it (no password for "
+                                 "either; Mentor Settings, Security, can let a blocked one out again).",
                       "since": entry.get("first", 0)})
     return found
 

@@ -294,13 +294,15 @@ class Engine:
     def command(self, message):
         """(argv, folder to run in, environment to add)."""
         system = f"{guide()}\n\n{PROMPT}"
+        # The message is put so that one beginning with a dash is not taken as an option, nor one
+        # beginning with a slash as a command (as in mentor-chat).
         if self.provider == "claude":
-            argv = ["claude", "-p", message, "--output-format", "stream-json", "--verbose",
+            argv = ["claude", "-p", "--output-format", "stream-json", "--verbose",
                     "--mcp-config", MCP_CONFIG, "--strict-mcp-config", "--allowedTools", ALLOWED_TOOLS,
                     "--disallowedTools", DISALLOWED_TOOLS, "--append-system-prompt", PROMPT]
             if self.session:
                 argv += ["--resume", self.session]
-            return argv, HOME, {}
+            return argv + ["--", " " + message if message.startswith("/") else message], HOME, {}
         if self.provider == "codex":
             options = ["--json", "--skip-git-repo-check"]
             for name, value in {"sandbox_mode": "read-only", "approval_policy": "never",
@@ -309,7 +311,7 @@ class Engine:
                                 "developer_instructions": system}.items():
                 options += ["-c", f"{name}={json.dumps(value)}"]
             options += ["-c", f"mcp_servers.mentor.env={{MENTOR_SANDBOX={json.dumps(SANDBOX)}}}"]
-            argv = ["codex", "exec", *(["resume"] if self.session else []), *options]
+            argv = ["codex", "exec", *(["resume"] if self.session else []), *options, "--"]
             return argv + ([self.session] if self.session else []) + [message], HOME, {}
         if self.provider == "gemini":
             # It takes its instructions and its tool servers from the folder it is run in, and
@@ -332,12 +334,12 @@ class Engine:
             with open(os.path.join(folder, ".agents", "mcp_config.json"), "w") as f:
                 json.dump({"mcpServers": {"mentor": {"command": MCP_SERVER, "env": {"MENTOR_SANDBOX": SANDBOX}}}}, f)
             allow_mentor_tools()
-            argv = ["agy", "-p", message, "--output-format", "stream-json", "--disable-slash-commands",
+            argv = ["agy", "-p=" + message, "--output-format", "stream-json", "--disable-slash-commands",
                     "--add-dir", "/etc/mentor"]
             if self.session:
                 argv += ["--conversation", self.session]
             return argv, folder, {}
-        argv = [AGENT, "-p", message, "--provider", "nvidia", "--model", self.model or NVIDIA_MODEL, "--system", PROMPT]
+        argv = [AGENT, "--prompt=" + message, "--provider", "nvidia", "--model", self.model or NVIDIA_MODEL, "--system", PROMPT]
         if self.session:
             argv += ["--resume", self.session]
         return argv, HOME, {"MENTOR_API_KEY": nvidia_key()}

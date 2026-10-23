@@ -1,0 +1,13 @@
+[Unit]
+Description=Mentor brings the newest database of where internet addresses are, once a month
+Documentation=file:/etc/mentor/SECURITY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/mentor/mentor_geo.py update
+Nice=15
+IOSchedulingClass=idle
+# Kept offline (the guard on programs going online), its download would wait for ever: a oneshot has no limit.
+TimeoutStartSec=20min

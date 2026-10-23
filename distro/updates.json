@@ -424,5 +424,11 @@
     "name": "23.10.26.01",
     "summary": "In Repair mode you can scroll back with the mouse wheel, and the screen has a blinking cursor and a mouse pointer.",
     "published": "2026-10-23 13:20"
+  },
+  {
+    "version": 202610232056,
+    "name": "23.10.26.02",
+    "summary": "Programs Mentor does not know now ask before going online: a card with Block and Allow, and where they want to go, with city and country. New in the chat's menu: Network… and Important warnings….",
+    "published": "2026-10-23 23:57"
   }
 ]

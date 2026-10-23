@@ -139,6 +139,9 @@ def guard_findings():
         yield ("security:" + key, level, title, text, request)
 
 
+NET_GATHER = 3          # seconds a run for programs going online waits, so that a burst of them is one card
+NET_LOOK_EVERY = 120    # at most one look by itself at programs going online in this many seconds
+NET_CARD_EVERY = 30     # after a card of programs going online, what comes next is gathered this long
 SINCE_PATH = os.path.join(os.path.dirname(STATE_PATH), "watch-since.json")
 REPORT_AFTER = 24 * 3600  # a part of Mentor's that stays broken this long is offered to the maker
 
@@ -187,9 +190,16 @@ def main():
     off = set(mentor_settings.get("watch_off") or [])
     if mentor_settings.get("auto_review"):
         off.add("refused")  # the agent looks at those itself as they happen (mentor-firewall-watch)
+    if "--guard" in sys.argv:
+        # Programs that went online together: one run, one card (net_notices). They try again in waves (a name
+        # lookup every 5 s), which made four cards of eleven programs: after a card, the next waits NET_CARD_EVERY.
+        # Changes of net.json meanwhile start no other run (systemd: the service is running).
+        time.sleep(max(NET_GATHER, min(NET_CARD_EVERY, raised.get("net-card", 0) + NET_CARD_EVERY - now)))
+        now = time.time()
     found = list(guard_findings() if "--guard" in sys.argv else findings())
     if "--guard" not in sys.argv:
         found += still_broken(found, now)
+    waiting = []  # programs waiting to go online, new in this run: told of together (net_notices)
     for key, level, title, text, request in found:
         if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue
@@ -197,6 +207,10 @@ def main():
         os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
         with open(STATE_PATH, "w") as f:
             json.dump(raised, f)
+        # A program waiting to go online (key "security:guard-net:BOOT:PROGRAM"): its card has Allow and Block.
+        if key.startswith("security:guard-net:") and key.count(":") >= 3:
+            waiting.append((key.split(":", 3)[3], level, title, text, request))
+            continue
         # Something that looks like a harmful program: with "Let Mentor look by itself" on, the assistant looks
         # at once and says in a few words what it is (the user's wish, 2026-10-19), as for refused connections.
         if key.startswith("security:guard-") and mentor_settings.get("auto_review"):
@@ -215,6 +229,47 @@ def main():
         if not output("pgrep", "-u", str(os.getuid()), "-f", "bin/mentor-chat").strip():
             output("notify-send", "--app-name=Mentor", "--icon=dialog-warning", title,
                    text + "\n\nThe assistant is not running. From a terminal: mentor repair", timeout=20)
+    if waiting:
+        net_notices(waiting, raised, now)
+
+
+def net_notices(waiting, raised, now):
+    """Programs waiting to go online, new in this run: one card each with Allow and Block, or for two and more one
+    card that names them, with Open Network… to answer each (twelve programs at once gave twelve cards and twelve
+    looks, 2026-10-23). With "Let Mentor look by itself", one look, at most every NET_LOOK_EVERY seconds."""
+    look = mentor_settings.get("auto_review") and now - raised.get("net-look", 0) >= NET_LOOK_EVERY
+    raised["net-card"] = now
+    if look:
+        raised["net-look"] = now
+    with open(STATE_PATH, "w") as f:
+        json.dump(raised, f)
+    by_itself = (" This was noticed just now, by itself, and I did not ask: answer in three or four short sentences, "
+                 "in simple words, what it is and what you would do.")
+    if len(waiting) == 1:
+        program, level, title, text, request = waiting[0]
+        if look:
+            mentor_tools.leave_notice(level, title, text + " Mentor is having a look.", request + by_itself,
+                                      auto=True, net=program)
+        else:
+            mentor_tools.leave_notice(level, title, text, request, action="Ask Mentor", net=program)
+        return
+    import mentor_guard
+    names = [mentor_guard.net_name(program)[0] for program, *_ in waiting]
+    listed = ", ".join(names[:-1]) + " and " + names[-1] if len(names) <= 6 else ", ".join(names[:5]) + \
+        f" and {len(names) - 5} more"
+    text = (f"{listed}. Mentor does not know them, so they stay offline until you answer. Network\u2026 in the menu "
+            "has each, with Allow and Block.")
+    request = ("Mentor's guard on programs going online keeps these programs offline until I answer:\n\n"
+               + "\n\n---\n\n".join(r.split("\n\nFollow /etc/mentor/SECURITY.md")[0] for *_, r in waiting[:6])
+               + "\n\nFollow /etc/mentor/SECURITY.md, \"Unusual programs\": look at them together, reading only, and "
+               "tell me in plain words what they are, whether any is harmful, and what you would do with each. Do not "
+               "allow, block, stop or remove anything before I agree.")
+    title = f"{len(waiting)} programs want to go online"
+    if look:
+        mentor_tools.leave_notice("warning", title, text + " Mentor is having a look.",
+                                  request + by_itself.replace("what it is", "what they are"), auto=True, network=True)
+    else:
+        mentor_tools.leave_notice("warning", title, text, request, action="Ask Mentor", network=True)
 
 
 main()
