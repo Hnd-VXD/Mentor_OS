@@ -62,6 +62,8 @@ When it fails after a Python update: `journalctl -u mentor-host-link -b` shows t
 
 ## 4. The time zone follows Windows'
 
+In the user's words: the clock is wrong; the time zone is wrong; the time is not the same as on Windows.
+
 Mentor.exe sends Windows' time zone by the name Linux knows it by (Windows' "GTB Standard Time" is `Europe/Bucharest` or `Europe/Athens`, depending on the country in Windows' region settings), when the link opens and whenever it changes on Windows. mentor-host-link sets it with `timedatectl set-timezone`. A zone that shows exactly the same time as the one already set is left as it is (Athens stays Athens when Windows says Bucharest).
 
 **A zone chosen inside Mentor wins.** When the zone here is not the one mentor-host-link last set (the user chose another in GNOME Settings, or asked you to), Windows' is no longer followed. Its record is `/var/lib/mentor/host-timezone.json`: `following`, `applied` (what it last set), `windows` (what Windows says), `chosen` (the user's).

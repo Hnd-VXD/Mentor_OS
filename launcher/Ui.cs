@@ -87,7 +87,6 @@ class PillButton : Painted
     public DialogResult Result = DialogResult.None;
     bool hot, down;
 
-    public PillButton() { Cursor = Cursors.Hand; }
 
     protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hot = down = false; Invalidate(); base.OnMouseLeave(e); }

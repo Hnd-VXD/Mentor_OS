@@ -74,6 +74,8 @@ The user can tell the **Mentor repair center** (that is what the user hears it c
 
 ## When something is wrong
 
+In the user's words: the update could not be installed; an update failed; the update was undone at the start; take an update back.
+
 - **"The update could not be installed"** (a red card): nothing was changed; the sandbox was thrown away. Read the last lines of the log and say in plain words why (offline, a package that could not be downloaded, the disk full). It is offered again tomorrow, or with Settings → Look.
 - **The update was undone at the start after it**: BOOT.md's restore told the user. The version is in `failed` and is not offered again; a newer one is. Read `journalctl -b -1 -p err` for why that start failed and tell the user.
 - **To take an installed update back** (it works but the user does not want it): it is an ordinary change. `change_undo` with its id from `change_list`, then a restart. `/etc/mentor/version` goes back with it, so the update is offered again: say so.

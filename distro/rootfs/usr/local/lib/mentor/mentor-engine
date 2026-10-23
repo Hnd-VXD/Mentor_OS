@@ -11,6 +11,10 @@ case $1 in
     claude) name="Claude Code"
             # Its install script fetches the native binary, which npm only runs when allowed by name.
             install() { npm_install --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code; }
+            # Claude Code prints its sign-in link as well, for computers where no browser opens; opened
+            # too, it starts a second sign-in that spoils the first (the user, 2026-10-23).
+            hint="Your browser opens by itself in a moment. Approve there; you don't need the link below.
+If it shows a code instead, copy it, click here and press Ctrl+Shift+V, then Enter."
             set -- claude auth login ;;
     codex)  name="Codex"; install() { npm_install @openai/codex; }; set -- codex login ;;
     gemini) name="Google's Antigravity CLI"

@@ -26,7 +26,7 @@ Read the journal (tool: `journal_read`) **before you answer or act** in each of 
 |---|---|
 | "What did you change / install / do?", "when", "why is X like this?" | `journal_read`, with `search` for the thing named, or `since` for the time named. Answer from what it says |
 | Something stopped working, looks different, or is slow since some time | `journal_read` first, before any other search. What changed last, or changed that part, is the first suspect. Say what you found, then look further |
-| "Undo that", "put it back as it was" | `journal_read` to find the change; its "way back" line names the tool. Tell the user what you will undo, then do it |
+| "Undo that", "put it back as it was" | `journal_undo` with words of that request: it undoes **every** change under it, the last one first ("Undoing a request" below). Then tell the user what was put back |
 | A red or yellow card about a failed service, a broken part of the desktop, a changed file | `journal_read` with `search` for the name: was it something done on purpose? |
 | "Set my other computer up the same", "what would I have to do again after a reset?" | `journal_read` with `limit` 0: the changes, oldest first, are the list |
 | You are in repair mode | `mentor journal -n 20` (step 1 of REPAIR.md): what was changed before the desktop went |
@@ -58,6 +58,22 @@ The same from a terminal: `mentor journal [WORDS…] [--since DATE] [-n N] [--al
 
 Without `all` you see the changes. A line marked `(command)` is a command nobody said changes anything. A line marked `FAILED:` was tried and ended with an error: it may have changed nothing, or part of it.
 
+### Undoing a request
+
+One request often made several changes. "Put it back", "undo that", "I don't like it" means all of them. Use the tool `journal_undo`; do not undo the changes one by one with `settings_set`.
+
+1. `journal_undo` with `search`: words of the request, or of one of its changes (`"night light"`, `"gimp"`, `"color-scheme"`). The user's words now ("the orange", "the colours") are often not in the journal: use the name of the thing (`"night light"` for screen colours that are too orange or blue, `"text size"`), or `journal_read` first to find the request. It finds the request and takes **every** change under it, also those the words did not name (a setting of another schema, such as `org.gnome.system.location enabled`, that was changed for it).
+2. If it answers "more than one request matches", it has done nothing. Read the list (the newest last): "undo that" means the newest one, so call it again with its `conversation`. When the user means all of today's (several requests about the same thing, "make it warmer", "more orange"), call it again with `every_match` true: it takes back only the requests of the newest one's day, and lists the older ones as left alone. Those are choices the user made before; take one back only when the user names it. `search` matches the request's words and the names of what was changed, never the values: on 2026-10-22 "undo the night light", matched against everything, also took back the Console's theme `'night'` and a week-old "change theme to light", which turned the user's keep-awake extension off.
+3. If a package, a system service or a system file is among the changes, give `explain` (the password is asked). Without it the tool does nothing and says so.
+4. It answers with each change `ok` or `FAILED`, a setting with the value it is back to. Changes it "cannot undo by itself" (a command, a file that was new, an upgrade) it lists: tell the user about them; do another thing for them only with their yes.
+5. Tell the user in one or two plain sentences what was put back. Never say a value "was like that before" unless the journal line shows it.
+
+`preview` true only lists what it would do. A request that was itself an undo (`journal_undo` ran for it) is never taken back by a later undo: to have that thing again, do it again as asked. A change that was undone once is not undone again, and what `journal_undo` does is written in the journal like any change, with `undid` naming the line it took back.
+
+Example: "the screen is too blue in the evening" made three changes, `night-light-schedule-automatic: false -> true`, `night-light-temperature: uint32 2700 -> uint32 2000` and `org.gnome.system.location enabled: false -> true`. "Put the colours back" is one call, `journal_undo {"search": "night light"}`, and all three go back. A model that turned off only Night Light and called the rest "as it was" was wrong (2026-10-22): that is why the tool exists.
+
+By hand (no `journal_undo`, or it failed): undo each change by its "way back" line, the last one first; for a setting, the value before is the one on the left of `->`. Check each one with `settings_get` or `package_info`.
+
 ## What you have to do for it
 
 Almost nothing: the tools write the journal themselves. One thing is yours:
@@ -83,7 +99,8 @@ Say this to the user when it matters; do not let them think the journal is more 
 | Which request a conversation is on | `~/.local/state/mentor/requests/NAME.txt`, NAME being the conversation's sandbox (`tab-1a2b3c4d`, `repair`) | written by the assistant (`note_request` in `mentor-chat`) and by repair mode (`mentor_repair.py`) each time a message is handed to an engine |
 | Writing and reading | `/usr/local/lib/mentor/mentor_journal.py` | `note_request`, `request`, `record` (adds a line), `entries` (reads, searches), `readable` (the text for a person) |
 | When a line is written | `call_with_image` in `/usr/local/lib/mentor/mentor_tools.py`, through `_journal` | after every tool call. The table `JOURNAL` there gives, for each tool that changes something, the function that makes the line. A tool not in it only reads |
-| The tool | `journal_read` in `TOOLS` of `mentor_tools.py` | what you call |
+| The tools | `journal_read` and `journal_undo` in `TOOLS` of `mentor_tools.py` | what you call |
+| Undoing a request | `journal_undo`, `_undo_requests` (which lines), `_undo_call` (the call that takes one line back, read from its `undo` text) in `mentor_tools.py` | each way back is run through `call`, so it asks, checks and is journaled as if you had called it; `_undoing` adds `undid` to its line |
 | The command | `mentor journal` in `/usr/local/bin/mentor` (`cmd_journal`) | what the user calls |
 
 A line:
@@ -93,6 +110,8 @@ A line:
  "what": "installed packages: gimp", "ok": true, "undo": "package_remove, the same names",
  "request": "install gimp and make the desktop dark", "conversation": "tab-1a2b3c4d"}
 ```
+
+`undid` is there on a line written by `journal_undo`: the time, tool and `what` of the line it took back. Such lines are never undone as a request of their own, and the line they name is not undone again. `mentor-chat` does not offer a recipe for them.
 
 `after_reading` is there when the agent had read text from outside (a web page, a downloaded file) since the user's last message: the change was made with the warning shown (SECURITY.md). Such a line is the first to look at when something was changed that nobody asked for.
 
@@ -113,9 +132,12 @@ All of these files except the record itself and the requests are ones you cannot
 | `mentor call run_command '{"command": "true"}'`, then `mentor journal --all -n 1` | a line `(command) true` |
 | ask the assistant for a small change (the clock with seconds), then `mentor journal -n 1` | the change, under the words you typed |
 | `mentor call journal_read '{"search": "clock"}'` | the same lines as text |
+| `mentor call settings_set '{"schema": "org.gnome.desktop.interface", "key": "clock-show-seconds", "value": "true"}'`, then `mentor call journal_undo '{"search": "clock-show-seconds"}'` | `ok  setting … clock-show-seconds: false -> true  (back to false)`; `gsettings get org.gnome.desktop.interface clock-show-seconds` says `false`; a second `journal_undo` says it was undone already |
 | `tail -1 ~/.local/state/mentor/journal.jsonl \| python3 -m json.tool` | valid JSON with `time`, `tool`, `what` |
 
 ## When it is broken
+
+In the user's words: the journal is empty; changes are not written down; mentor journal shows an error; the record of changes is gone.
 
 1. **Changes are made but no line appears.** `mentor verify`: is `mentor_journal.py` or `mentor_tools.py` missing or changed? Then `python3 -c "import sys; sys.path.insert(0, '/usr/local/lib/mentor'); import mentor_journal; print(mentor_journal.PATH)"`: an error names the fault. `ls -ld ~/.local/state/mentor`: the folder must be the user's and writable. A full disk (`df -h /`) also stops the writing; the tools go on working without the journal, on purpose.
 2. **Lines appear but the request is empty or is an older one.** The file in `~/.local/state/mentor/requests/` for that conversation is not written: `ls -l ~/.local/state/mentor/requests/` after sending a message. Its time must be that of the message. If not, `note_request` in `mentor-chat` is not called (a damaged or older `mentor-chat`: `mentor verify`).
@@ -159,4 +181,4 @@ def _journal(name, a, code, out):
 # in call_with_image: `_noted.clear()` before the tool runs, `_journal(name, arguments or {}, code, out)` after
 ```
 
-A new tool that changes something gets an entry in `JOURNAL` in the same change. Then the checks above.
+A new tool that changes something gets an entry in `JOURNAL` in the same change. If its way back is a tool call, write the `undo` text as `TOOL ARGUMENTS` and teach `_undo_call` to read it, so that `journal_undo` can run it. Then the checks above.

@@ -69,7 +69,6 @@ class Choice : Painted
         }
     }
 
-    public Choice() { Cursor = Cursors.Hand; }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -276,7 +275,6 @@ class LauncherWindow : Form
         Func<Toggle, string, string, Label> named = (toggle, name, tip) => {
             Label word = Words(name, 9f, Theme.Text);
             word.TextAlign = ContentAlignment.MiddleLeft;
-            word.Cursor = Cursors.Hand;
             word.Click += (s, e) => { if (toggle.Enabled) toggle.Checked = !toggle.Checked; };
             tips.SetToolTip(word, tip);
             tips.SetToolTip(toggle, tip);

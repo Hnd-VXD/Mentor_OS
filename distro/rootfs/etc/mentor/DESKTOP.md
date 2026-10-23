@@ -79,6 +79,8 @@ Do not get around the checks: no upgrade with run_root_command, no switching off
 
 ## Mending one part, step by step
 
+In the user's words: the taskbar is gone or disappeared; a part of the desktop is missing or disappeared; a switch or a menu is gone; the desktop looks wrong after an update; mentor doctor says something is broken; an extension error.
+
 For a small model: do exactly this, one part at a time. **If, after one careful attempt, the check below still fails, or a step here no longer matches the system** (a class, a file, a function or a command GNOME changed): stop, tell the user in one sentence that the instructions for this part are out of date, and offer to report it (problem_report, AGENT.md): an update will bring instructions that fit. The part stays as GNOME draws it meanwhile.
 
 **1. Find the part that is broken.**
@@ -203,6 +205,8 @@ The packages the desktop needs: `gnome-shell`, `gdm`, `gnome-shell-extension-das
 
 ## The shared clipboard, for mending it
 
+In the user's words: copy and paste with Windows does not work; I cannot paste from Windows; copied files do not reach Windows; the clipboard is not shared.
+
 `/usr/local/lib/mentor/mentor-clipboard` talks to the launcher on Windows over the virtio port `org.mentor.clipboard` (`/dev/virtio-ports/org.mentor.clipboard`), one JSON object per line: `{"text": "..."}` for text; for copied files `{"files": id, "count": n, "bytes": total}`, then `{"dir": id, "name": path}` and `{"file": id, "name": path, "size": n}` with `{"chunk": id, "data": base64}` as many as needed, then `{"files-end": id}` (or `{"files-cancel": id}`; `{"files-refused": why}` when a copy is too large). It runs on X11 through Xwayland on purpose (`GDK_BACKEND=x11` in its autostart file): a Wayland program sees the clipboard only while it has the keyboard, an X11 one always, and GNOME mirrors the clipboard between the two. So it needs `xorg-xwayland` and GTK 3. Files that arrive are put on the clipboard by `mentor-clipboard-files` (GTK 4). The udev rule gives the logged-in user the two ports.
 
 Check: `pgrep -af lib/mentor/mentor-clipboard` (one line); `ls -l /dev/virtio-ports/` (the two ports, when started by the launcher; on a real computer there are none and the clipboard is simply not shared: `mentor-clipboard` then ends at once, quietly, and `mentor doctor` says "no host to share the clipboard with" instead of checking it); its errors: `journalctl -b --user -o cat | grep -i -A8 mentor-clipboard` (empty when it was never started or its file is gone: then `mentor verify` names the file).
@@ -258,6 +262,8 @@ If it says no picture is kept, they have logged out since: ask them to press Shi
 Tested headless 2026-10-17: the key and a drag over a text editor and a web page, English and Greek, Esc, an area with no text, a whole screen in about 5 seconds. A line mixing Greek and English can still come out with a word in the wrong alphabet.
 
 ## The game mouse
+
+In the user's words: the view does not turn with the mouse in a game; I cannot look around in a game; the pointer is caught in the window.
 
 **What the user has.** In 3D games (shooters such as QC:DE or GZDoom, anything that turns the view with the mouse) the view turns when they move the mouse. Nothing to switch on: it happens by itself while a game is in front **and Mentor is full screen** (Ctrl+Alt+F, or the Full screen switch), and the normal pointer is back as soon as they leave the game or full screen. In a normal window the pointer is never held, a game included (the user's wish, 2026-10-18): it always moves freely between Mentor and Windows, and the view of a game does not turn with it there.
 

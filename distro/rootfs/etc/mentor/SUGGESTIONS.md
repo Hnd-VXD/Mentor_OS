@@ -75,6 +75,8 @@ No bell is not a fault when nothing is waiting. To see a card on purpose, ask th
 
 ## When something here is broken
 
+In the user's words: the bell shows nothing; no news comes; suggestions are missing; a news card has not come for days.
+
 1. `mentor verify` (REBUILD.md). `mentor-advisor` and `mentor-watch` are in a folder you cannot write; the user puts them back with `sudo mentor restore PATH`. The units and the assistant you can.
 2. **A news source has changed** (the log says `mentor-advisor: arch_news: …`, or a card is missing for days): fetch the address yourself and look at what comes back.
 

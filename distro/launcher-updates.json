@@ -70,5 +70,17 @@
     "sha256": "d1dde4640e5ff4bd0bf30ab6bf1838cfc3ba3c3261f1714f4233c1d442d05572",
     "summary": "The loading window also shows Ctrl+Alt+Backspace: help, if Mentor gets stuck.",
     "published": "2026-10-22 13:31"
+  },
+  {
+    "version": 202610230428,
+    "sha256": "d8e1ec3234d6ef7ead209f54caef4d6efdf883a49b763230d4b2ced14ea9a69c",
+    "summary": "Mentor's owl icon stays on the taskbar: QEMU's icon no longer comes back when the window appears.",
+    "published": "2026-10-23 07:29"
+  },
+  {
+    "version": 202610231002,
+    "sha256": "a34181ee59538e33a99f297c5e7b312dcec5846c241caedc073c39f3e1be7686",
+    "summary": "Repair starts with the loading window, the mouse leaves the repair screen at every edge, and a few Repairs in a row no longer lead to a restore point.",
+    "published": "2026-10-23 13:02"
   }
 ]

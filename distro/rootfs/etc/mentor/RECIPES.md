@@ -306,6 +306,8 @@ It leans on the journal: a feature built before the journal existed cannot be wr
 
 ## When it is broken
 
+In the user's words: a recipe cannot be saved; the recipe is refused; the recipe material is empty; a downloaded recipe is not noticed.
+
 1. **`recipe_material` says nothing in the journal matches.** The change was made in another conversation, or by hand. Try `all_conversations` and `search` words from the request; `mentor journal --all` shows what there is.
 2. **The files in the material are not the current text.** They are read when the tool is called; a file changed since is shown as it is now, which is what the recipe should say.
 2a. **A tool answers "Not done yet" about a recipe and you have inspected it.** The file changed since (a new checksum): inspect it again. Or the user has not sent a message since the report: show it, and wait. It is not a fault; it is the guard. If it keeps coming for a file you never read, `~/.local/state/mentor/requests/NAME.recipes` names it; a file that is not a recipe is not in it, and removing a line there is for the user to say.

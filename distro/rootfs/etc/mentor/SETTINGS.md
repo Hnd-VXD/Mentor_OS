@@ -89,6 +89,8 @@ It leans on: `python-gobject`, `gtk4`, `libadwaita` (`Adw.PreferencesPage`, `Adw
 
 ## When it is broken
 
+In the user's words: Mentor Settings does not open; a switch does nothing; the safety row stays on Checking.
+
 1. **The window does not open.** Run `mentor-settings` in a terminal: a Python error names the line. A class of libadwaita that has gone after a new GNOME is replaced as ASSISTANT.md says for the assistant ("When it is broken").
 2. **A missing module** (`ModuleNotFoundError: mentor_settings`, `mentor_security`, `mentor_journal`): `mentor verify`; the user puts the file back.
 3. **A switch does nothing.** Read the file it writes (table above) before and after. Written but without effect: look at who reads it (table "How it is made").

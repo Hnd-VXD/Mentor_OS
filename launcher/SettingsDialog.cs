@@ -23,7 +23,6 @@ class Picker : Painted
 
     public string Selected { get { return selected >= 0 && selected < Items.Count ? Items[selected] : null; } }
 
-    public Picker() { Cursor = Cursors.Hand; }
 
     protected override void OnMouseEnter(EventArgs e) { hot = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hot = false; Invalidate(); base.OnMouseLeave(e); }

@@ -22,7 +22,8 @@
 //
 // --repair (the "Repair" button) starts the system without its desktop, on a text screen
 // where the user talks to the agent, for when the desktop no longer comes up: the kernel
-// is given systemd.unit=mentor-repair.target (through SMBIOS, which systemd-boot reads),
+// is given systemd.unit=mentor-repair.target (through SMBIOS, which systemd-boot reads) and the
+// window's size in real pixels (video=, so that the text screen is not stretched),
 // and the start is not watched for a desktop. A restart from there is an ordinary start.
 //
 // The QEMU it runs is Mentor's own when there is a qemu folder beside this program (the
@@ -285,9 +286,10 @@ static class Program
             // The loading window, in the Mentor window's place at once: there is still a moment of work
             // before QEMU starts (the sizes, the disk), and without it the window was gone for that moment.
             // HostBridge takes it over, or closes it when the start is not hidden.
-            if (!repair)
+            // A repair start has it too (the user's wish, 2026-10-23): until the repair screen is up.
             {
                 earlySplash = new StartSplash(fullscreen == true, Path.Combine(vmDir, "start-seconds"));
+                earlySplash.Repair = repair;
                 earlySplash.StopStart = null;
                 earlySplash.Show();
                 earlySplash.Update();
@@ -361,11 +363,17 @@ static class Program
             }
             points.Trim();
             var extraNow = new List<string>(extra);
+            bool fullscreenNow = File.Exists(modeFile);
             if (repair)
             {
                 // No desktop is coming, so none is waited for, and nothing draws but the text screen.
                 extraNow.Add("-smbios");
-                extraNow.Add("type=11,value=io.systemd.boot.kernel-cmdline-extra=systemd.unit=mentor-repair.target mentor.repair=1");
+                // The text screen in the window's real pixels (video=): stretched over a larger window, QEMU's
+                // edges were the picture's, and the pointer left the window only on the left (the user,
+                // 2026-10-23). mentor-repair-console picks the letters for the screen's scaling.
+                Size screen = fullscreenNow ? Screen.PrimaryScreen.Bounds.Size : VmWindow.Picture();
+                extraNow.Add("type=11,value=io.systemd.boot.kernel-cmdline-extra=systemd.unit=mentor-repair.target mentor.repair=1" +
+                             " video=Virtual-1:" + screen.Width + "x" + screen.Height);
                 timeout = 0;
             }
             // How much of the computer: worked out again at every start, as what Windows has free changes.
@@ -376,7 +384,7 @@ static class Program
             if (tray == null && Environment.GetEnvironmentVariable("MENTOR_NO_TRAY") != "1") tray = new Tray();
             SelfUpdate.RunStarting();
             again = RunVm(qemuDir, firmware, vars, disk, iso, cpu, cpusNow, memoryNow, accel, extraNow, modeFile,
-                          watch, points, timeout, gpu && !repair, sharp, own, vulkan && own && gpu && !repair);
+                          watch, points, timeout, gpu && !repair, sharp, own, vulkan && own && gpu && !repair, repair);
             SelfUpdate.RunEnded();
             repair = false;  // a restart from the repair screen is an ordinary start
         }
@@ -457,7 +465,7 @@ static class Program
     static bool RunVm(string qemuDir, string firmware, string vars, string disk, string iso,
                       string cpu, int cpus, int memoryGB, bool accel, List<string> extra, string modeFile,
                       BootWatch watch, RestorePoints points, int bootTimeout, bool gpu, bool sharp,
-                      bool own, bool vulkan)
+                      bool own, bool vulkan, bool repair)
     {
         int clipboardPort = FreePort(), controlPort = FreePort(), qmpPort = FreePort(), stopPort = FreePort(), hostPort = FreePort();
         string running = Path.Combine(Path.GetDirectoryName(modeFile), "running");
@@ -499,7 +507,9 @@ static class Program
             // QEMU's GTK window cannot show a GPU-drawn guest on Windows; its SDL one can.
             // The window's X does nothing: closing it would be pulling the plug on a running
             // system. It is shut down from inside, or by starting this program again (AlreadyRunning).
-            "-display", (own ? (gpu ? "sdl,gl=on" : "sdl") : gpu ? "sdl,gl=on"
+            // In a repair start the pointer stays on screen (show-cursor): the text screen inside draws
+            // none, and QEMU hid Windows' over its window, which looked like the mouse being caught.
+            "-display", (own ? (gpu ? "sdl,gl=on" : repair ? "sdl,show-cursor=on" : "sdl") : gpu ? "sdl,gl=on"
                             // With real pixels a window that fills the screen from the firmware on makes
                             // the start minutes long: there it goes full screen later (HostBridge.OnBoot).
                             : "gtk,show-menubar=off,grab-on-hover=on" + (File.Exists(modeFile) && !sharp ? ",full-screen=on" : ""))
@@ -551,9 +561,9 @@ static class Program
         // Mentor's own QEMU waits so too, for another reason (the user's wish, 2026-10-22, after Try Omarchy):
         // the firmware's logo, the start-up picture in a small window, the window growing and the desktop
         // changing its scale were all on screen. Now a loading window (StartSplash) is, until the desktop is
-        // up, and the window comes up as it stays. Not when no desktop is waited for (repair, an ISO, a
-        // system that failed twice): there the user is to see what happens.
-        bool waitMinimized = (gpu || own) && bootTimeout > 0 && !extra.Contains("-display");
+        // up, and the window comes up as it stays. Not when no desktop is waited for (an ISO, a system that
+        // failed twice): there the user is to see what happens. A repair start waits for its text screen.
+        bool waitMinimized = (gpu || own) && (bootTimeout > 0 || repair && own) && !extra.Contains("-display");
         if (gpu && !own && !waitMinimized && File.Exists(modeFile)) q.Add("-full-screen");
         if (!extra.Contains("-audiodev")) q.AddRange(Sound(own));
         var stderr = new StringBuilder();
@@ -581,7 +591,7 @@ static class Program
         var qmp = new Qmp(qmpPort);
         watch.Begin();
         var bridge = new HostBridge(clipboardPort, controlPort, hostPort, qemu, modeFile, qmp, watch, points, bootTimeout,
-                                    waitMinimized, File.Exists(modeFile), sharp, own);
+                                    waitMinimized, File.Exists(modeFile), sharp, own, repair);
         qemu.EnableRaisingEvents = true;
         // Closing the window ends Application.Run below. Not Application.Exit():
         // after it, a second Application.Run (guest reboot) returns immediately.
@@ -611,7 +621,10 @@ static class Program
             catch (IOException) { }
         }
         qmp.Reader.Join(2000);
-        watch.End(qmp.StopReason, bridge.TimedOut);
+        // A repair start never says "ok" (there is no desktop to come up), so it is not counted as a start
+        // that failed: two of them had a restore point offered, and the disk went back hours, to an
+        // older Claude sign-in that no longer worked (the user, 2026-10-23).
+        if (!repair) watch.End(qmp.StopReason, bridge.TimedOut);
         // What QEMU itself had to say, for when something goes wrong.
         try
         {
@@ -826,6 +839,7 @@ class HostBridge : Form
     readonly bool sharp;
     readonly bool late;  // the window is made full screen when the system has started, not from the firmware on
     readonly bool own;  // Mentor's own QEMU: its window waits hidden for another reason than freezing
+    readonly bool repair;  // a repair start: the window comes up with the repair screen, not the desktop
     bool sized;  // a sharp window has been given its size
     bool parked;  // the hidden window was brought up out of sight, to take its size (Park)
     StartSplash splash;
@@ -841,8 +855,9 @@ class HostBridge : Form
 
     public HostBridge(int clipboardPort, int controlPort, int hostPort, Process qemu, string modeFile,
                       Qmp qmp, BootWatch watch, RestorePoints points, int bootTimeout,
-                      bool waitMinimized, bool wantFullscreen, bool sharp, bool late)
+                      bool waitMinimized, bool wantFullscreen, bool sharp, bool late, bool repair)
     {
+        this.repair = repair;
         this.sharp = sharp;
         this.late = late;
         own = late;
@@ -860,6 +875,7 @@ class HostBridge : Form
             // Something to look at meanwhile: the system's own boot screen is in that window.
             // The one Program.Run opened at once after Start Mentor, or a new one (a restart from inside).
             splash = Program.TakeSplash() ?? new StartSplash(wantFullscreen, startFile);
+            splash.Repair = repair;
             splash.StopStart = CancelStart;
             splash.Show();
             FormClosed += (s, e) => splash.Dismiss();
@@ -896,6 +912,24 @@ class HostBridge : Form
             if (message.TryGetValue("restore-point", out value)) OnRestorePoint(value as string);
             if (message.TryGetValue("game-mouse", out value)) OnGameMouse(value is bool && (bool)value);
         });
+        // QEMU's name for its window, with its grab hint, comes again whenever the pointer enters it: put
+        // right at once, not at the next look two seconds on, where the hint was to be read.
+        var title = new System.Windows.Forms.Timer { Interval = 150 };
+        bool grabNoted = false;
+        title.Tick += (s, e) => {
+            if (qemu.HasExited) { title.Stop(); return; }
+            VmWindow.Brand(qemu);
+            // For the repair screen's mouse (the user, 2026-10-23: "it captures the mouse"): what it was, once.
+            if (repair && Revealed && VmWindow.GrabSeen && !grabNoted)
+            {
+                grabNoted = true;
+                object mice;
+                string error = qmp.Execute("query-mice", null, 1000, out mice);
+                Program.Note("repair screen took the pointer: " + VmWindow.Clip() + "; mice " +
+                             (error ?? json.Serialize(mice)));
+            }
+        };
+        title.Start();
         Link = new HostLink(this, hostPort, qemu, qmp);
         FormClosed += (s, e) => Link.Stop();  // a restart makes a new one; the old one stops watching
         power = new PowerWatch(this, qmp, qemu);
@@ -1047,8 +1081,16 @@ class HostBridge : Form
     void OnBoot(string how)
     {
         if (splash != null && !Revealed) splash.Phase(how);
+        if (how == "repair") { Reveal(); return; }  // the repair screen is up (mentor-repair-console)
         if (how == "starting")
         {
+            // A system from before it said when its repair screen is up: that comes some seconds after this.
+            if (repair && waitMinimized)
+            {
+                var anyway = new System.Windows.Forms.Timer { Interval = 20000 };
+                anyway.Tick += (s, e) => { anyway.Stop(); Reveal(); };
+                anyway.Start();
+            }
             Park();
             // With real pixels the window opens half as large as it used to. It gets a proper
             // size now, before the desktop inside starts, so that the desktop starts in that
@@ -1146,6 +1188,7 @@ class HostBridge : Form
         if (!foundGame) noGameMouse = true;
         if (wanted == null) return gameMouse ? "this QEMU has no game mouse" : "this QEMU has no tablet";
         if (wanted["current"] is bool && (bool)wanted["current"]) return null;
+        if (repair) Program.Note("pointer: " + wanted["name"] + " made the one in use");
         return qmp.Execute("human-monitor-command", new Dictionary<string, object> {
             { "command-line", "mouse_set " + Convert.ToInt32(wanted["index"]) } }, 2000);
     }
@@ -1585,6 +1628,18 @@ class StartSplash : Form
     DateTime finishedAt = DateTime.MinValue;
     float finishedFrom;
     bool dismissed;  // closed by HostBridge, not by the user
+    // A repair start: what comes is the repair screen, not the desktop, and the window says so.
+    public bool Repair
+    {
+        get { return repair; }
+        set
+        {
+            repair = value;
+            if (status.Text == "Starting Mentor…" || status.Text == "Starting Mentor in repair mode…")
+                status.Text = value ? "Starting Mentor in repair mode…" : "Starting Mentor…";
+        }
+    }
+    bool repair;
 
     // Where a control goes, in the units of a screen that is not scaled (as LauncherWindow.Place).
     void Place(Control control, int left, int top, int width, int height)
@@ -1656,8 +1711,8 @@ class StartSplash : Form
         Place(heading, 32, 156, 300, 22);
         parts.Add(heading);
         // The same keys as the start-up picture inside had (BOOT.md, hint.svg), and Ctrl+Alt+G (the user's wish, 2026-10-22).
-        string[,] keys = { { "Ctrl+Alt+F", "Full screen, and back" }, { "Ctrl+Alt+G", "Mouse and keyboard back to Windows" },
-                           { "Ctrl+Alt+Backspace", "Help, if Mentor gets stuck" } };
+        // Ctrl+Alt+G is no longer among them (the user, 2026-10-23): the pointer leaves the window by itself.
+        string[,] keys = { { "Ctrl+Alt+F", "Full screen, and back" }, { "Ctrl+Alt+Backspace", "Help, if Mentor gets stuck" } };
         for (int i = 0; i < keys.GetLength(0); i++)
         {
             Label key = Words(keys[i, 0], 9f, Theme.AccentHot, Theme.Back), what = Words(keys[i, 1], 9f, Theme.Dim, Theme.Back);
@@ -1667,7 +1722,7 @@ class StartSplash : Form
             parts.Add(what);
         }
         later = Words("Mentor opens by itself when it is ready.", 8.5f, Theme.Dim, Theme.Back);
-        Place(later, 32, 254, 496, 20);
+        Place(later, 32, 231, 496, 20);
 
         var stop = new PillButton { Text = "Back", Font = Theme.Font(11f, FontStyle.Regular) };
         Rectangle bottom = LauncherWindow.BottomButton;
@@ -1703,7 +1758,7 @@ class StartSplash : Form
     public void Phase(string how)
     {
         if (finishedAt != DateTime.MinValue) return;
-        if (how == "starting") status.Text = "Getting the desktop ready…";
+        if (how == "starting") status.Text = Repair ? "Getting the repair screen ready…" : "Getting the desktop ready…";
         else if (how == "trial") status.Text = "Trying the change from last time…";
         else if (how == "restoring") status.Text = "That change did not work. Going back…";
     }
@@ -1802,6 +1857,18 @@ static class VmWindow
 
     [StructLayout(LayoutKind.Sequential)] struct Edges { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Edges edges);
+    [DllImport("user32.dll")] static extern bool GetClipCursor(out Edges edges);
+    public static bool GrabSeen;  // QEMU's title has said it holds mouse and keyboard (Brand)
+
+    // Where Windows keeps the pointer, for launcher.log.
+    public static string Clip()
+    {
+        Edges e;
+        if (!GetClipCursor(out e)) return "unknown";
+        Rectangle all = SystemInformation.VirtualScreen;
+        if (e.Left <= all.Left && e.Top <= all.Top && e.Right >= all.Right && e.Bottom >= all.Bottom) return "free";
+        return "held in " + e.Left + "," + e.Top + "-" + e.Right + "," + e.Bottom;
+    }
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out Edges edges);
 
     // The size of the picture in a window of a proper size: four fifths of the screen, 16:10,
@@ -1809,7 +1876,8 @@ static class VmWindow
     public static Size Picture()
     {
         Rectangle area = Screen.PrimaryScreen.WorkingArea;
-        int width = Math.Min(area.Width * 8 / 10, area.Height * 8 / 10 * 16 / 10) / 4 * 4;
+        // A multiple of 8: the text screen of a repair start is that size exactly, and the kernel rounds up to 8.
+        int width = Math.Min(area.Width * 8 / 10, area.Height * 8 / 10 * 16 / 10) / 8 * 8;
         return new Size(width, width * 10 / 16 / 4 * 4);
     }
 
@@ -1941,13 +2009,17 @@ static class VmWindow
     // QEMU's window, dressed as Mentor: the launcher's own icon (the owl, compiled into Mentor.exe from
     // Mentor.ico) at the sizes Windows asks for, and the title "Mentor" in place of "QEMU (Mentor-0)".
     // QEMU sets its title again now and then (a hint while it holds the mouse, left out here), so this is
-    // done on every tick of the launcher's timer; the icon only once for each window.
+    // done on every tick of the launcher's timer. The icon too: set once for each window, QEMU's own came
+    // back on the taskbar (the user, 2026-10-23), most likely when GTK showed the window that started
+    // hidden; so the window is asked which icon it has (WM_GETICON) and given the owl again when it is
+    // another, and the window's class gets the owl as well, which Explorer falls back on.
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int most);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetWindowText(IntPtr hwnd, string text);
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] static extern IntPtr LoadImage(IntPtr instance, IntPtr name, uint type, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
-    static IntPtr branded = IntPtr.Zero;
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW")] static extern IntPtr SetClassLongPtr(IntPtr hwnd, int index, IntPtr value);
+    static IntPtr owlBig = IntPtr.Zero, owlSmall = IntPtr.Zero;
 
     public static void Brand(Process qemu)
     {
@@ -1957,15 +2029,22 @@ static class VmWindow
     public static void Brand(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return;
-        if (hwnd != branded)
+        if (owlBig == IntPtr.Zero)
         {
             // 32512: the icon the C# compiler puts into the program from /win32icon.
             IntPtr module = Marshal.GetHINSTANCE(typeof(VmWindow).Module);  // Mentor.exe, wherever it is loaded
-            IntPtr big = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(11), GetSystemMetrics(12), 0);  // SM_CXICON
-            IntPtr small = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(49), GetSystemMetrics(50), 0);  // SM_CXSMICON
-            if (big != IntPtr.Zero) SendMessage(hwnd, 0x0080, (IntPtr)1, big);  // WM_SETICON, ICON_BIG
-            if (small != IntPtr.Zero) SendMessage(hwnd, 0x0080, (IntPtr)0, small);  // ICON_SMALL
-            branded = hwnd;
+            owlBig = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(11), GetSystemMetrics(12), 0);  // SM_CXICON
+            owlSmall = LoadImage(module, (IntPtr)32512, 1, GetSystemMetrics(49), GetSystemMetrics(50), 0);  // SM_CXSMICON
+        }
+        if (owlBig != IntPtr.Zero && SendMessage(hwnd, 0x007F, (IntPtr)1, IntPtr.Zero) != owlBig)  // WM_GETICON, ICON_BIG
+        {
+            SendMessage(hwnd, 0x0080, (IntPtr)1, owlBig);  // WM_SETICON, ICON_BIG
+            SetClassLongPtr(hwnd, -14, owlBig);  // GCLP_HICON
+            if (owlSmall != IntPtr.Zero)
+            {
+                SendMessage(hwnd, 0x0080, (IntPtr)0, owlSmall);  // ICON_SMALL
+                SetClassLongPtr(hwnd, -34, owlSmall);  // GCLP_HICONSM
+            }
         }
         var text = new StringBuilder(256);
         GetWindowText(hwnd, text, text.Capacity);
@@ -1978,7 +2057,7 @@ static class VmWindow
             // Mentor's, the pointer leaves at the edges; the agent tells a user with a caught pointer
             // about Ctrl+Alt+G (DESKTOP.md, the game mouse).
             int hint = rest.IndexOf(" - Press ", StringComparison.Ordinal);
-            if (hint >= 0) rest = rest.Substring(0, hint);
+            if (hint >= 0) { rest = rest.Substring(0, hint); GrabSeen = true; }
             SetWindowText(hwnd, "Mentor" + rest);
         }
     }
@@ -2382,7 +2461,6 @@ class Toggle : Painted
         }
     }
 
-    public Toggle() { Cursor = Cursors.Hand; }
 
     protected override void OnClick(EventArgs e) { Checked = !Checked; Focus(); base.OnClick(e); }
 
@@ -2427,7 +2505,6 @@ class Slider : Painted
         }
     }
 
-    public Slider() { Cursor = Cursors.Hand; }
 
     float Knob { get { return Height * 0.72f; } }
 

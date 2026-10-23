@@ -114,6 +114,8 @@ def readable(found, left_out=0):
         out.append(f"  {clock}  {mark}{entry.get('what', '')}")
         if entry.get("undo") and entry.get("ok", True):
             out.append(f"         way back: {entry['undo']}")
+        if entry.get("undid"):
+            out.append("         (this took back an earlier change, with journal_undo)")
         if entry.get("after_reading"):
             out.append(f"         done after reading text from outside ({entry['after_reading']})")
     if not out:

@@ -47,18 +47,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Mentor's files in distro/rootfs: everything but the caches Python leaves when one of them is run on
+# the build PC (__pycache__, *.pyc). Those were in MANIFEST.sha256 and every Mentor's `mentor verify`
+# called them missing (2026-10-22).
+our_files() {
+    (cd "$SRC/distro/rootfs" && find . -type f -not -path '*/__pycache__/*' -not -name '*.pyc' -print0)
+}
+
 # Copy distro/rootfs over a root tree, normalising what a Windows checkout loses:
 # line endings, ownership and the executable bit.
 stage_overlay() {
     local dest=$1 f
     cp -r --no-preserve=mode,ownership "$SRC/distro/rootfs/." "$dest/"
     while IFS= read -r -d '' f; do
+        rm -rf "${dest:?}/$f"
+    done < <(cd "$SRC/distro/rootfs" && find . -type d -name __pycache__ -print0)
+    while IFS= read -r -d '' f; do
         # Text files only (grep -I): the same edit would corrupt a picture.
         if grep -Iq . "$dest/$f"; then
             sed -i 's/\r$//' "$dest/$f"
         fi
         chown root:root "$dest/$f"
-    done < <(cd "$SRC/distro/rootfs" && find . -type f -print0)
+    done < <(our_files)
     chmod 755 "$dest"/usr/local/bin/mentor "$dest"/usr/local/bin/mentor-mcp "$dest"/usr/local/bin/mentor-chat \
         "$dest"/usr/local/bin/mentor-agent "$dest"/usr/local/bin/mentor-settings "$dest"/usr/local/bin/mentor-recipes \
         "$dest"/usr/local/lib/mentor/mentor-helper "$dest"/usr/local/lib/mentor/mentor-root-shell \
@@ -98,8 +108,8 @@ stage_overlay() {
     rm -rf "$ref"
     install -d "$ref/rootfs" "$ref/build/splash"
     (cd "$dest" && while IFS= read -r -d '' f; do cp -a --parents "$f" "$ref/rootfs/"; done) \
-        < <(cd "$SRC/distro/rootfs" && find . -type f -print0)
-    (cd "$dest" && xargs -0 sha256sum) < <(cd "$SRC/distro/rootfs" && find . -type f -print0 | sort -z) \
+        < <(our_files)
+    (cd "$dest" && xargs -0 sha256sum) < <(our_files | sort -z) \
         | sed 's#  \./#  /#' > "$ref/MANIFEST.sha256"
     # How the rest of the system was set up when the image was built. Not the password.
     for f in customize.sh packages.x86_64 splash/mentor.plymouth splash/mentor.script splash/hint.svg; do

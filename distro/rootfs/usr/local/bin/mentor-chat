@@ -95,6 +95,16 @@ SYSTEM_PROMPT = (
     "Carry out what they ask with the mentor tools; the desktop already shows each tool call, so "
     "do not narrate them. Reply in the user's language, in a few plain sentences. Light Markdown "
     "only (bold, inline code, short lists); no tables or headings.\n\n"
+    "When your answer names something the user may want to open, write it as a link, and the chat "
+    "shows it with its icon, to click: a file or folder [391548.jpg](file:///home/USER/Pictures/391548.jpg) "
+    "(the full path), an installed app [Pinta](app:pinta.desktop) (its desktop file), a page of GNOME "
+    "Settings [Night Light](settings:display) (the page: display, sound, wifi, network, bluetooth, "
+    "background, notifications, power, printers, mouse, keyboard, privacy, users, datetime, region, "
+    "universal-access, applications, system, about), a web page [AccuWeather](https://...). Mentor "
+    "Settings is [Mentor Settings](app:org.mentor.Settings.desktop). The link is the name itself, in "
+    "the sentence: \"Your photo editor is [Pinta](app:pinta.desktop).\", never the name and then its link "
+    "(\"**Pinta**: [Pinta](...)\"). Only for what is there; not inside code, and not for what you only "
+    "talk about.\n\n"
     "Two things are specific to Mentor, and users name them loosely:\n"
     "- Desktop layout (desktop_layout tool): 'taskbar' is the permanent bar at the bottom, which "
     "people also call the dock or the panel; 'normal' is stock GNOME. Requests like 'normal GNOME', "
@@ -233,6 +243,179 @@ def launch(argv):
                          flags=GLib.SpawnFlags.SEARCH_PATH)
     except GLib.Error:
         pass
+
+
+# Links in an answer (the user's wish, 2026-10-22): the agent writes [name](target) for a file, an
+# installed app, a page of GNOME Settings or a web page; the chat draws the name in blue with that
+# thing's icon in front, as a picked app is drawn in the text box, and a click opens it. Only these
+# kinds are ever opened, and only what is there: a link to nothing is shown as its name.
+LINK = re.compile(r"\[([^\]\n]+)\]\(((?:file|app|settings|https?):[^)\s]+)\)")
+LINK_MARK = re.compile("(\\d+)")
+
+
+def link_target(target):
+    """(icon, what to open) for a link's target, or None when there is nothing there to open."""
+    kind, _, rest = target.partition(":")
+    if kind == "file":
+        try:
+            path = GLib.filename_from_uri(target)[0]
+        except GLib.Error:
+            return None
+        if not os.path.exists(path):
+            return None
+        if os.path.isdir(path):
+            return Gio.ThemedIcon.new("folder"), ("file", path)
+        return Gio.content_type_get_icon(Gio.content_type_guess(path, None)[0]), ("file", path)
+    if kind in ("app", "settings"):
+        name = rest.removesuffix(".desktop")
+        if not re.fullmatch(r"[\w.-]+", name):
+            return None
+        # a page of Settings has a desktop file of its own, with its icon: gnome-display-panel.desktop
+        desktop = f"gnome-{name}-panel.desktop" if kind == "settings" else name + ".desktop"
+        try:
+            info = Gio.DesktopAppInfo.new(desktop)
+        except TypeError:
+            info = None
+        if info is None:
+            return None
+        return info.get_icon(), (kind, name if kind == "settings" else desktop)
+    return Gio.ThemedIcon.new("web-browser-symbolic"), ("web", target)
+
+
+def with_links(text):
+    """The answer with each link that can be opened put as a mark (N), and the links:
+    [(name, icon, what to open)]."""
+    links = []
+
+    def put(found):
+        target = link_target(found.group(2))
+        if target is None:
+            return found.group(1)
+        links.append((found.group(1), *target))
+        return f"{len(links) - 1}"
+    return LINK.sub(put, text), links
+
+
+def open_link(what, widget):
+    kind, value = what
+    if kind == "file":
+        open_attachment(value, widget)
+    elif kind == "app":
+        launch(["gtk-launch", value])
+    elif kind == "settings":
+        launch(["gnome-control-center", value])
+    else:
+        launch(["gio", "open", value])
+
+
+class AnswerView(Gtk.TextView):
+    """An answer with links in it (LINK). Every other answer is a Gtk.Label, which cannot hold an
+    icon; this is text that can be selected in the same way, with each link's icon in front of its
+    blue name (a child anchor, as in AskBox). It answers to what the chat asks of an answer's label:
+    set_markup, get_text, get_selection_bounds."""
+
+    def __init__(self, links):
+        # Full width until fit narrows it: laid out first at the few pixels a text view asks for, it
+        # kept the height of a letter a line, the card reaching down to the text box (a restored
+        # conversation, 2026-10-22); it grows taller when narrowed, but never shrank back.
+        super().__init__(editable=False, cursor_visible=False, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                         hexpand=True, halign=Gtk.Align.FILL, valign=Gtk.Align.START)
+        self.links = links
+        self.opens = {}  # the tag of each link -> what it opens
+        click = Gtk.GestureClick()
+        click.connect("released", self.on_click)
+        self.add_controller(click)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", lambda _m, x, y: self.set_cursor_from_name("pointer" if self.link_at(x, y) else None))
+        self.add_controller(motion)
+        self.connect("map", lambda *_: GLib.idle_add(self.fit))
+        # The right-click menu of an answer's label (Copy, Select All, Quote), not a text view's, which
+        # would add Cut, Paste, Delete, Undo and Redo, all greyed out, to read-only text.
+        menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        menu_click.connect("pressed", self.on_menu)
+        self.add_controller(menu_click)
+
+    def on_menu(self, gesture, _n, x, y):
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        menu = Gio.Menu()
+        menu.append("Copy", "clipboard.copy")
+        menu.append("Select All", "selection.select-all")
+        menu.append("Quote", "message.quote")
+        popover = Gtk.PopoverMenu.new_from_model(menu)
+        popover.set_parent(self)
+        popover.set_has_arrow(False)
+        at = Gdk.Rectangle()
+        at.x, at.y, at.width, at.height = int(x), int(y), 1, 1
+        popover.set_pointing_to(at)
+        popover.connect("closed", lambda p: GLib.idle_add(p.unparent))
+        popover.popup()
+
+    def set_markup(self, markup):
+        buffer = self.get_buffer()
+        buffer.set_text("")
+        self.opens.clear()
+        buffer.insert_markup(buffer.get_end_iter(), markup, -1)
+        text = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        for found in reversed(list(LINK_MARK.finditer(text))):  # from the end, so the offsets before stay right
+            if int(found.group(1)) >= len(self.links):
+                continue
+            name, icon, what = self.links[int(found.group(1))]
+            at = buffer.get_iter_at_offset(found.start())
+            buffer.delete(at, buffer.get_iter_at_offset(found.end()))
+            tag = buffer.create_tag(None, foreground="#78aeed")
+            self.opens[tag] = what
+            anchor = buffer.create_child_anchor(at)  # at now stands after the icon
+            self.add_child_at_anchor(Gtk.Image(gicon=icon, pixel_size=16, margin_end=3), anchor)
+            buffer.insert_with_tags(at, name, tag)
+
+    def get_text(self):
+        buffer = self.get_buffer()
+        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+
+    def get_selection_bounds(self):
+        """As Gtk.Label's: (selected, start, end) in get_text, which has no character for an icon."""
+        buffer = self.get_buffer()
+        bounds = buffer.get_selection_bounds()
+        if not bounds:
+            return False, 0, 0
+        whole = buffer.get_slice(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        a, b = bounds[0].get_offset(), bounds[1].get_offset()
+        return True, a - whole[:a].count("￼"), b - whole[:b].count("￼")
+
+    def link_at(self, x, y):
+        bx, by = self.window_to_buffer_coords(Gtk.TextWindowType.WIDGET, int(x), int(y))
+        found, at = self.get_iter_at_location(bx, by)
+        if not found:
+            return None
+        after = at.copy()
+        after.forward_char()  # on an icon: the name after it
+        for spot in (at, after):
+            for tag in spot.get_tags():
+                if tag in self.opens:
+                    return self.opens[tag]
+        return None
+
+    def on_click(self, gesture, _n, x, y):
+        if self.get_buffer().get_has_selection():
+            return  # words were selected, not a link clicked
+        what = self.link_at(x, y)
+        if what:
+            open_link(what, self)
+
+    def fit(self):
+        """As wide as its longest line, as a label is, up to the column's width."""
+        column = self.get_ancestor(Adw.Clamp)
+        widest = column.get_maximum_size() if column else CHAT_WIDTH
+        # A text view lays its text out later, in the background, so its own measure says nearly
+        # nothing yet: the lines are measured in its font (bold a little wider), the icons and the
+        # card's padding added.
+        line = self.create_pango_layout(self.get_text()).get_pixel_size()[0]
+        natural = int(line * 1.04) + 20 * len(self.opens) + 32
+        if natural < widest - 32:
+            self.set_hexpand(False)
+            self.set_halign(Gtk.Align.START)
+            self.set_size_request(natural + 2, -1)
+        return GLib.SOURCE_REMOVE
 
 
 def clickable(widget, path):
@@ -395,6 +578,7 @@ CSS = """
 window.agent { background: none; border: none; outline: none; box-shadow: none; border-radius: 0; }
 .agent-card { background: rgba(20, 22, 27, 0.86); color: #ffffff; border-radius: 16px; padding: 12px 16px; }
 .agent-card.said { border-radius: 14px; padding: 10px 14px; }
+textview.agent-card > text { background: transparent; color: #ffffff; }
 .bubble { padding: 9px 14px; border-radius: 14px; }
 .bubble.user { background: var(--accent-bg-color); color: var(--accent-fg-color); }
 .history-card { padding: 10px 14px; border-radius: 14px; background: rgba(255, 255, 255, 0.05);
@@ -497,6 +681,7 @@ LOG_OUT = re.compile(r"(?i)\b(log[- ]?out)\b")
 def _inline(line):
     """One line of text, escaped, with `code`, **bold** and headings."""
     out = GLib.markup_escape_text(line, -1)
+    out = LINK.sub(r"\1", out)  # a link where it cannot be clicked (History, the bubble over a program): its name
     out = re.sub(r"`([^`\n]+)`", r"<tt>\1</tt>", out)
     out = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", out)
     out = re.sub(r"^#{1,6} +(.+)$", r"<b>\1</b>", out)
@@ -1669,14 +1854,18 @@ class Conversation(Gtk.Box):
         """`when` is for a message shown again from the history: the time it was sent, 0 if unknown.
         `apps`: name -> desktop id of the apps the user picked for this message (show_picked)."""
         self.end_steps()  # the user's words, or the answer: the steps before them fold; later ones get a card of their own
-        label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
-                          halign=Gtk.Align.END if user else Gtk.Align.START)
+        said, links = (text, []) if user or error else with_links(text)  # said: the links put as marks
+        if links:
+            label = AnswerView(links)
+        else:
+            label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, xalign=0, selectable=True,
+                              halign=Gtk.Align.END if user else Gtk.Align.START)
         if user:
             label.set_text(text)
             label.add_css_class("bubble")
             label.add_css_class("user")
         else:
-            label.set_markup(to_markup(text))
+            label.set_markup(to_markup(said))
             label.add_css_class("agent-card")
             label.add_css_class("said")
             if not error:  # in its right-click menu, under Copy
@@ -1708,11 +1897,11 @@ class Conversation(Gtk.Box):
             return self.add(bubble)
         # What the user is asked, at the end of an answer, is highlighted, and never folded away:
         # the last paragraph, when it is short and asks something.
-        lines = text.rstrip().split("\n")
+        lines = said.rstrip().split("\n")
         blank = max((i for i, line in enumerate(lines) if not line.strip()), default=-1)
         tail = "\n".join(lines[blank + 1:]).strip()
         question = tail if blank >= 0 and "?" in tail and len(lines) - blank - 1 <= 6 else ""
-        body = "\n".join(lines[:blank]).rstrip() if question else text
+        body = "\n".join(lines[:blank]).rstrip() if question else said
 
         def shown(part):
             markup = to_markup(part)
@@ -1867,7 +2056,7 @@ class Conversation(Gtk.Box):
         mine = [e for e in entries if e.get("conversation") == self.sandbox and str(e.get("time", "")) > self.offered_after]
         done = [e for e in mine if e.get("kind") == "change" and e.get("ok", True)
                 and not str(e.get("tool", "")).startswith("recipe_")
-                and e.get("tool") not in ("change_undo", "file_restore", "suggestions_restore")]
+                and e.get("tool") not in ("change_undo", "file_restore", "suggestions_restore") and not e.get("undid")]
         if not done:
             return
         if later:
@@ -2004,7 +2193,7 @@ class Conversation(Gtk.Box):
             return
         changed = [e for e in entries if e.get("conversation") == self.sandbox and str(e.get("time", "")) >= self.turn_stamp  # the same second counts: times are whole seconds
                    and e.get("kind") == "change" and e.get("ok", True)
-                   and not str(e.get("tool", "")).startswith("recipe_") and e.get("tool") not in ("change_undo", "file_restore")]
+                   and not str(e.get("tool", "")).startswith("recipe_") and e.get("tool") not in ("change_undo", "file_restore") and not e.get("undid")]
         if not changed:
             return
         # The recipes of someone else's that were inspected in this conversation, newest first. Not every
@@ -2447,6 +2636,11 @@ class Conversation(Gtk.Box):
         elif kind in ("assistant", "user"):
             content = event.get("message", {}).get("content")
             for block in content if isinstance(content, list) else []:
+                # A "user" event is the tools' answers. The CLI puts text of its own beside them, such
+                # as "[Image: original 3840x2160, displayed at …]" after a picture was read; drawn, it
+                # showed as Mentor's words and cut the steps card into pieces (2026-10-22).
+                if kind == "user" and block.get("type") == "text":
+                    continue
                 self.on_block(block)
         elif kind == "rate_limit_event":
             self.window.claude_usage(event.get("rate_limit_info"))

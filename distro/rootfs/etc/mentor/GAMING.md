@@ -61,6 +61,8 @@ Good answer: `multilib: on`, `installed: steam` (and the others), and both files
 
 ## When a game does not work
 
+In the user's words: a game does not start; a game is slow; Steam says a library is missing; a Windows game in Steam does not run.
+
 1. The game does not start, or is very slow: `bash /etc/mentor/extras/gaming/setup-gaming.sh --check`. `vulkan:` not Venus means the switches are off (step 1). Otherwise read the game's own log: Steam keeps one per game, `~/.local/share/Steam/logs/`; and `journalctl --user -n 50 -o cat`.
 2. A Windows game in Steam: in Steam, the game's Properties, Compatibility, "Force the use of a specific Steam Play compatibility tool" (Proton). Tell the user where to click; that is theirs.
 3. The view does not turn with the mouse: DESKTOP.md, "The game mouse". Never change the game's settings for it.

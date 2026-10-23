@@ -114,6 +114,8 @@ python3 ~/.local/lib/mentor-monitor/monitor.py --report 24
 
 ## When it does not work
 
+In the user's words: the system watch shows nothing; too many cards from the watch; the monitor service failed.
+
 | What you see | What it is | What to do |
 |---|---|---|
 | `Applications seen:` is empty | the folder of control groups is elsewhere on this system | `ls /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/` and look for where the `app-…` groups are; set `APPS` in your copy of the program to that folder |

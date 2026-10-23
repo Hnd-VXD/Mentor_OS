@@ -85,6 +85,8 @@ The model is one for all tabs: choosing it in one changes them all, from their n
 
 ## When an engine stops working
 
+In the user's words: the assistant says I am not signed in; Claude, Gemini or ChatGPT stopped answering; an engine stopped working; the usage limit is reached; the model refuses; I have to sign in again.
+
 An engine that is broken cannot mend itself: you are only reading this because some engine answers. If the user says one of the others has stopped, they have already switched to you; do the work below for the broken one, and tell them when to switch back and try it. If there is no engine left that answers, the free NVIDIA models need only a key.
 
 1. **Run it by hand** with the command from the table and read what it prints. Tell apart: not signed in; the maker refusing the account or the program ("no longer supported", "not eligible"); an option that no longer exists; the tools refused; an answer in a shape the reader does not know.
@@ -101,6 +103,8 @@ A change to mentor-chat takes effect when it is started again (at login, or `pki
 Add its models to `MODELS` and its submenu to `MENUS`; for an account, a row in `ACCOUNTS`, a case in `mentor-engine`, and what tells of its allowance (`USAGE_ASKED` and `mentor-usage`, or its own events); for a key, a row in `PROVIDERS` and its address in mentor-agent's `PROVIDERS`. Then the run in `Conversation.send`, a reader if it speaks in words of its own, a line in `ATTACHED` for how it gets at attached files, and a row in each table here. The first-start card (`show_choice`) takes its options from `MENUS` and needs a line saying what the engine needs.
 
 ## When the keyring is locked
+
+In the user's words: your saved sign-ins are locked; a keyring password is asked; it asks me to sign in to Google again; it says Connect the agent though I am signed in.
 
 The Antigravity CLI keeps the Google sign-in in the login keyring. A keyring that has a password (it gets one at a password login on systems built before that was turned off) is not opened by the automatic login. Asked while it was locked, the CLI took the user for signed out: at the start of the chat the usage check (`agy -p /usage`) opened a new Google sign-in in Chromium, and the sign-in check (`agy models`) made the chat show "Connect the agent" to someone who was signed in. Now `keyring_locked()` in `mentor-chat` is asked first (the `Locked` property of `/org/freedesktop/secrets/collection/login`): when it is locked the CLI is not run at all, and `show_keyring` shows a card instead, "Your saved sign-ins are locked", with **Unlock** (`unlock_keyring`: the Secret Service's `Unlock` and its prompt, GNOME's own password box; the sign-in is looked at again when it is answered) and **Open by itself from now on** (`keyring_for_good`: a password box of Mentor's own; `keyring_without_password` takes the password off the keyring with `ChangeWithMasterPassword` and opens it at once with `UnlockWithMasterPassword`, as `mentor keyring` does on a terminal; a wrong password says so and asks again). Never ask for the password in the chat. A keyring with no password is "locked" too until something first opens it (the automatic login does not): `keyring_locked()` opens such a one silently with the empty password (`UnlockWithMasterPassword`), and calls locked only one that has a password; without that, the card came up at every start of a system whose keyring opens by itself.
 

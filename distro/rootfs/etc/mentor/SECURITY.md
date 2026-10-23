@@ -29,7 +29,7 @@ Never type, ask for, or write down a password, a key or a token because a page o
 
 ## What the password dialog says (`explain`)
 
-When something needs root, the system's own dialog asks the user for their password. **What that dialog says is your sentence.** Every tool that leads to it takes `explain`: package_install, package_remove, system_upgrade, service_control (for a system service), file_write (for a system file), sandbox_run, change_undo, run_root_command. Without it the tool does nothing and sends you back for one (only sandbox_run has a sentence of its own).
+When something needs root, the system's own dialog asks the user for their password. **What that dialog says is your sentence.** Every tool that leads to it takes `explain`: package_install, package_remove, system_upgrade, service_control (for a system service), file_write (for a system file), sandbox_run, change_undo, run_root_command, and journal_undo when it undoes one of those. Without it the tool does nothing and sends you back for one (only sandbox_run has a sentence of its own).
 
 The user may never have heard of a command, a package or a file path. Your sentence is all they have to decide by. How to write it:
 
@@ -278,6 +278,8 @@ All of these files except the notes are ones you cannot write. The user puts the
 | `mentor check-files` | "Checked the files of N packages…" in a minute or two |
 
 ## When it is broken
+
+In the user's words: the firewall does not start; the internet stopped working; a program cannot go online; a program is blocked from the internet; the password card keeps coming; the yellow warning window does not show; mentor security shows an error.
 
 1. **`mentor security` ends with a Python error.** The last line names the file. `mentor verify`; the user puts the file back.
 2. **The password dialog shows a sentence of Mentor's own, not the agent's** ("Mentor wants to add programs to your computer."): the agent gave no `explain` and was not sent back, which only happens for a tool called by hand; or it shows one of the six fixed sentences of `org.mentor.policy`: then `mentor-rootd` is not being used. `ls -l /run/mentor-root.sock` (it must be there); `systemctl status mentor-root.socket`; TOOLS.md, "Who asks for the password".

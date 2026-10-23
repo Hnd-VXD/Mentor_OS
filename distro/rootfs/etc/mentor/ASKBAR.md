@@ -51,6 +51,8 @@ It leans on: in the shell, `Meta.Window.make_above`, `stick`, `move_frame`, `Mai
 
 ## When it is broken
 
+In the user's words: Alt+Space does nothing; Super+Z does nothing; the ask box does not come up; the box is behind the program; the box is stuck over the program; the answer is not in the bubble.
+
 1. **The box comes up behind the program, or is not where it should be.** The extension's `_float` did not take it: `mentor doctor`, and the shell's log (`journalctl -b -o cat _COMM=gnome-shell | grep -i mentor`). A new GNOME renamed something of `Meta.Window` (`make_above`, `move_frame`) or `Main`: DESKTOP.md, "Mending one part, step by step".
 2. **The key does nothing, `mentor ask` works.** First the key itself, as the user: `gsettings get org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/mentor-ask/ binding` must say `'<Alt>space'` (and `mentor-ask-2/` `'<Super>z'`). Empty or another key, and `mentor verify` does not list `00-mentor`: the user's own value hides the default; ask whether they changed it on purpose, and if not, `gsettings reset` that key's `binding` (same path); it works at once. DESKTOP.md, "Mentor's keys, for mending them", has the same for every key. Then the list: `dconf update` as root and a new login after mending `/etc/dconf/db/local.d/00-mentor`. A user who set their own key bindings in Settings has their own list, which hides ours: add the two there for them (settings_set), with their agreement.
 3. **Alt+Space does nothing in the window on Windows, Super+Z works.** Windows keeps Alt+Space for itself in some setups. Nothing to mend here; tell the user to use Super+Z.

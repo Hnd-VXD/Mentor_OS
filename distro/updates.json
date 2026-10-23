@@ -400,5 +400,23 @@
     "name": "22.10.26.02",
     "summary": "No more zoom jump when you maximize Mentor's window or make it full screen. Apps you added can be uninstalled from their icon's menu. The picture menu after Print Screen opens at once.",
     "published": "2026-10-22 13:11"
+  },
+  {
+    "version": 202610221445,
+    "name": "22.10.26.03",
+    "summary": "The assistant now finds settings, programs and your files from what you say, in your own words, and goes straight to the right repair instructions when something breaks.",
+    "published": "2026-10-22 17:55"
+  },
+  {
+    "version": 202610221802,
+    "name": "22.10.26.04",
+    "summary": "Names of files, programs and Settings pages in the assistant's answers are now links with icons: click to open. Undo now takes back everything the assistant changed for that request.",
+    "published": "2026-10-22 21:07"
+  },
+  {
+    "version": 202610231000,
+    "name": "23.10.26.00",
+    "summary": "Repair mode's screen has letters sized for your screen, so you always see where to type; and the Claude sign-in tells you what to do.",
+    "published": "2026-10-23 13:01"
   }
 ]

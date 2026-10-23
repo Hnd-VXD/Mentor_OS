@@ -1,5 +1,7 @@
 # When the desktop freezes, and when a program crashes
 
+In the user's words: the screen froze; the desktop hung; the mouse does not move; everything is stuck; it was very slow for a moment.
+
 This is for the agent. It says what Mentor does about a desktop that stops answering, how to read what it wrote down, and how to make each part again.
 
 **One program hangs while the rest of the desktop still answers** (the mouse moves, other windows work): that is not a desktop freeze and `freezes.jsonl` usually has nothing. GNOME Settings hanging (after Mouse & Touchpad, or any page) is DESKTOP.md, "Settings": start with `mentor verify`, which names a missing part of its fix. Any other program: `journalctl -b -o cat _COMM=NAME | tail -20` (NAME as in `pgrep -l`), and look up its error (AGENT.md: web_search).
@@ -56,6 +58,8 @@ What to tell the user: what was behind it in their words ("Settings was making p
 3. Check with the table above. To test without waiting for a real freeze: `kill -STOP $(pgrep -x gnome-shell); sleep 8; kill -CONT $(pgrep -x gnome-shell)` as root gives a `graphics` record and a card (the screen stands still for those 8 seconds: only with the user's agreement). The key: Ctrl+Alt+Backspace (in a test VM, QMP `send-key` ctrl, alt, backspace).
 
 ## When a program crashes
+
+In the user's words: a program crashed; an app closed by itself; an app closed unexpectedly.
 
 A crash is a program that stopped by itself because of a fault of its own (it touched memory it does not own, or gave up: SIGSEGV, SIGABRT, SIGBUS…). The system's own `systemd-coredump` writes each one down; Mentor only tells the user. The idea comes from Omarchy's `omarchy-crash-watch` (github.com/omacom/omarchy, MIT).
 
