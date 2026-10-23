@@ -1,6 +1,12 @@
-# In a repair start (the launcher's "Repair", see /etc/mentor/REPAIR.md) the first console
-# opens on the agent. Leaving it (/shell) gives the command line; `mentor repair` comes back.
-if [ "$(tty 2>/dev/null)" = /dev/tty1 ] && [ -z "$MENTOR_REPAIR_SHOWN" ] && grep -qw 'mentor.repair=1' /proc/cmdline 2>/dev/null; then
+# A login under kmscon (mentor-repair-console, mentor-emergency-console) runs on a pseudo-terminal.
+mentor_under_kmscon() {
+    [ "$(ps -o comm= -p "$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')" 2>/dev/null)" = kmscon ]
+}
+# In a repair start (the launcher's "Repair", see /etc/mentor/REPAIR.md) the first console, drawn
+# by kmscon or the kernel's tty1 without it, opens on the agent. Leaving it (/shell) gives the command
+# line; `mentor repair` comes back.
+if { [ "$(tty 2>/dev/null)" = /dev/tty1 ] || mentor_under_kmscon; } && [ -z "$MENTOR_REPAIR_SHOWN" ] &&
+   grep -qw 'mentor.repair=1' /proc/cmdline 2>/dev/null && [ -z "$(find /run/mentor/emergency -mmin -2 2>/dev/null)" ]; then
     export MENTOR_REPAIR_SHOWN=1
     /usr/local/bin/mentor repair || cat <<'EOF'
 
@@ -14,10 +20,7 @@ fi
 
 # The emergency console (Ctrl+Alt+Backspace, mentor-emergency-key; /etc/mentor/FREEZES.md): the
 # third console, opened by the key in the last two minutes, while the desktop runs on behind it.
-# Drawn by kmscon (the login runs on a pseudo-terminal under it), or the kernel's tty3 without it.
-mentor_under_kmscon() {
-    [ "$(ps -o comm= -p "$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')" 2>/dev/null)" = kmscon ]
-}
+# Drawn by kmscon, or the kernel's tty3 without it.
 if { [ "$(tty 2>/dev/null)" = /dev/tty3 ] || mentor_under_kmscon; } && [ -z "$MENTOR_REPAIR_SHOWN" ] && [ -n "$(find /run/mentor/emergency -mmin -2 2>/dev/null)" ]; then
     export MENTOR_REPAIR_SHOWN=1 MENTOR_EMERGENCY=1
     setfont 2>/dev/null  # the console's own letter size: the welcome and its logo fit on one screen

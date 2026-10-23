@@ -6,17 +6,11 @@ tty=${1:-tty1}
 user=$(sed -n 's/^ *AutomaticLogin *= *//p' /etc/gdm/custom.conf 2>/dev/null | head -1)
 id "$user" >/dev/null 2>&1 || user=$(id -nu 1000 2>/dev/null)
 if [ "$tty" = tty1 ]; then
-    # Letters as large as the host's screen scaling makes text on Windows: the launcher draws this screen
-    # in the window's real pixels (video= on the command line) and passes the scaling (opt/mentor/scale).
-    # Doubled always, and stretched over the window, they were too big to see where to write, and the
-    # pointer could not leave the window (the user, 2026-10-23).
+    # The host's screen scaling (opt/mentor/scale), for letters as large as text on Windows: the launcher
+    # draws this screen in the window's real pixels (video= on the command line). Doubled always, and
+    # stretched over the window, they were too big to see where to write (the user, 2026-10-23).
     modprobe -q qemu_fw_cfg 2>/dev/null
     scale=$(tr -d '\000' < /sys/firmware/qemu_fw_cfg/by_name/opt/mentor/scale/raw 2>/dev/null)
-    case "$scale" in
-        1.[0-2]*|1|"") setfont 2>/dev/null ;;  # 8x16: no scaling, or no launcher (a real machine)
-        1.*) setfont LatGrkCyr-12x22 2>/dev/null || setfont 2>/dev/null ;;
-        *) setfont -d 2>/dev/null ;;  # 16x32 from 2 up
-    esac
     # The launcher shows its loading window until now, then this screen (HostBridge.OnBoot). Best effort:
     # on a real machine there is no such port, and another may have it open for a moment.
     # In the background: with nobody listening on the other end the write waits, and the screen must not.
@@ -25,6 +19,23 @@ if [ "$tty" = tty1 ]; then
         timeout 2 sh -c 'echo "{\"boot\": \"repair\"}" > /dev/virtio-ports/org.mentor.control' 2>/dev/null && break
         sleep 0.5
     done </dev/null >/dev/null 2>&1 &
+    # Drawn by kmscon, as the emergency console is: it keeps what scrolled away (the mouse wheel, or
+    # Shift+PgUp), has a blinking cursor and a pointer of its own; the kernel's console has none of these
+    # (the user, 2026-10-23). 16 pixels times the scaling. If it cannot start, the kernel's console below.
+    if [ -x /usr/bin/kmscon ] && [ -n "$user" ]; then
+        size=$(awk -v s="${scale:-1}" 'BEGIN { s = s + 0; if (s < 1) s = 1; printf "%d", 16 * s }')
+        started=$(date +%s)
+        /usr/bin/kmscon --vt=1 --switchvt --font-size "$size" --login -- /bin/login -f "$user" && exit 0
+        # Ended at once: it could not take the screen. Anything later is the user leaving it.
+        [ $(( $(date +%s) - started )) -gt 5 ] && exit 0
+        echo "kmscon could not start; the kernel's console is used" >&2
+    fi
+    case "$scale" in
+        1.[0-2]*|1|"") setfont 2>/dev/null ;;  # 8x16: no scaling, or no launcher (a real machine)
+        1.*) setfont LatGrkCyr-12x22 2>/dev/null || setfont 2>/dev/null ;;
+        *) setfont -d 2>/dev/null ;;  # 16x32 from 2 up
+    esac
+    printf '\033[?25h' > /dev/tty1  # the cursor: the kernel's command line hides it (vt.global_cursor_default=0)
 fi
 if [ -n "$user" ]; then
     exec /usr/bin/agetty --autologin "$user" --noclear "$tty" linux
