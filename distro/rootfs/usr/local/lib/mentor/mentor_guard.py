@@ -76,6 +76,18 @@ def net_name(program):
     return os.path.basename(program), os.path.dirname(program)
 
 
+def net_names(programs):
+    """Names for a list of programs, told apart: one that shares its name with another gets its folder too, with ~
+    for the home ("evil (~/.local/bin)"); five "evil" in a row read as one program five times (2026-10-24)."""
+    names = [net_name(program) for program in programs]
+    count = {}
+    for name, _where in names:
+        count[name] = count.get(name, 0) + 1
+    home = os.path.expanduser("~")
+    return [f"{name} ({where.replace(home, '~', 1) if where.startswith(home) else where})" if count[name] > 1 else name
+            for name, where in names]
+
+
 # --- small helpers ---------------------------------------------------------------------------------
 
 def _load(path, empty):
@@ -161,14 +173,49 @@ def _mentor_journal_text():
     return "\n".join(text)
 
 
+def _appimage_mounts():
+    """The folders AppImages are mounted on now (/tmp/.mount_XXXXXX, a FUSE mount each)."""
+    found = set()
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) > 9 and fields[4].startswith("/tmp/.mount_") and " - fuse" in line:
+                    found.add(fields[4].replace("\\040", " "))
+    except OSError:
+        pass
+    return found
+
+
+def _steam_roots():
+    """Where Steam keeps its own programs and games: its folder in each home (also the Flatpak one) and the
+    libraries it lists itself (steamapps/libraryfolders.vdf, "path")."""
+    roots = []
+    for _name, home in _homes():
+        for steam in (".local/share/Steam", ".steam/steam", ".steam/root",
+                      ".var/app/com.valvesoftware.Steam/.local/share/Steam"):
+            folder = os.path.join(home, steam)
+            if os.path.isdir(folder):
+                roots.append(os.path.realpath(folder) + "/")
+                listed = _read(os.path.join(folder, "steamapps/libraryfolders.vdf"), 1 << 20).decode("utf-8", "replace")
+                roots += [m.group(1).replace("\\\\", "\\").rstrip("/") + "/steamapps/"
+                          for m in re.finditer(r'"path"\s+"([^"]+)"', listed)]
+    return roots
+
+
 def origin(exe, home_of_user=None):
     """Where a program comes from: package NAME, mentor, flatpak, steam, appimage, home (the user's own programs
-    in ~/.local and the like), or none (nowhere known)."""
+    in ~/.local and the like), or none (nowhere known). By the real places only: judged by words in the path,
+    a program in any folder named Steam, flatpak or /tmp/.mount_x counted as known and went online without
+    asking (tested 2026-10-24)."""
     if exe.startswith("/tmp/.mount_"):
-        return "appimage"
-    if "/flatpak/" in exe or exe.startswith(("/var/lib/flatpak/", "/app/")):
+        mount = "/".join(exe.split("/")[:3])
+        return "appimage" if mount in _appimage_mounts() else "none"
+    homes = [home for _name, home in _homes()]
+    if exe.startswith(("/var/lib/flatpak/", "/app/")) or any(
+            exe.startswith(os.path.join(home, ".local/share/flatpak/")) for home in homes):
         return "flatpak"
-    if "/Steam/" in exe or "/.steam/" in exe or "/steamapps/" in exe:
+    if any(exe.startswith(root) for root in _steam_roots()):
         return "steam"
     if exe.startswith(("/usr/", "/opt/", "/etc/")):
         if exe in _MENTOR:

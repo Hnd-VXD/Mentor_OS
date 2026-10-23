@@ -3198,6 +3198,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.net_watch = Gio.File.new_for_path(NET_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
         self.net_watch.connect("changed", lambda *_: GLib.timeout_add(500, self.follow_net))
         self.show_notices()
+        GLib.timeout_add(1500, self.remind_waiting)
         self.show_usage()
         if MODELS[self.model_index][1] in USAGE_ASKED:
             self.ask_usage(MODELS[self.model_index][1])
@@ -4719,6 +4720,42 @@ class DesktopWindow(Adw.ApplicationWindow):
             if not process.get_successful():
                 failed((err or "").strip())
         process.communicate_utf8_async(None, None, started)
+
+    def remind_waiting(self):
+        """Cards of programs waiting to go online are gone when the chat starts again (a login, an update): those
+        that tried since this start of the computer get theirs back, one card with Block and Allow, or for several
+        one card with Open Network…. Their own cards came once per start (mentor-watch), so after the chat was
+        restarted only Network… was left to answer them (tested 2026-10-24)."""
+        data = self.read_net() or {}
+        try:
+            with open("/proc/stat") as f:
+                began = next((float(line.split()[1]) for line in f if line.startswith("btime ")), 0.0)
+        except (OSError, ValueError, IndexError):
+            began = 0.0
+        waiting = [program for program, entry in data.get("unknown", {}).items()
+                   if self.net_state(data, program) == "waiting" and entry.get("last", 0) >= began]
+        if not waiting or not self.current:
+            return False
+        try:
+            import mentor_guard
+            names = mentor_guard.net_names(waiting)
+        except ImportError:
+            names = [net_name(program)[0] for program in waiting]
+        if len(waiting) == 1:
+            self.current.add_notice("warning", f"{names[0]} is waiting to go online",
+                                    "Mentor does not know this program, so it stays offline until you answer.",
+                                    f"Mentor's guard keeps {waiting[0]} offline until I answer. Find out what it is "
+                                    "(SECURITY.md, \"Programs going online\"), tell me in plain words, and allow or "
+                                    "block it only if I agree.", action="Ask Mentor", net=waiting[0])
+        else:
+            listed = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+            self.current.add_notice("warning", f"{len(waiting)} programs are waiting to go online",
+                                    f"{listed}. They stay offline until you answer.",
+                                    "Mentor's guard keeps these programs offline until I answer: "
+                                    + ", ".join(waiting[:12]) + ". Find out what they are (SECURITY.md, \"Programs "
+                                    "going online\"), tell me in plain words, and allow or block them only if I agree.",
+                                    action="Ask Mentor", network=True)
+        return False
 
     def show_notices(self):
         """Put what was left in NOTICES_DIR into the chat, oldest first, and take it from there."""

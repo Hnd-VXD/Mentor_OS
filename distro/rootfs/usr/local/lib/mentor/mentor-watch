@@ -254,7 +254,7 @@ def net_notices(waiting, raised, now):
             mentor_tools.leave_notice(level, title, text, request, action="Ask Mentor", net=program)
         return
     import mentor_guard
-    names = [mentor_guard.net_name(program)[0] for program, *_ in waiting]
+    names = mentor_guard.net_names([program for program, *_ in waiting])
     listed = ", ".join(names[:-1]) + " and " + names[-1] if len(names) <= 6 else ", ".join(names[:5]) + \
         f" and {len(names) - 5} more"
     text = (f"{listed}. Mentor does not know them, so they stay offline until you answer. Network\u2026 in the menu "

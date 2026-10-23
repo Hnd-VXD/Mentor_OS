@@ -325,8 +325,9 @@ def unblock(program):
 
 
 def answers():
-    """Answers from the user's session: one line, "allow PATH" or "block PATH", for a program that asked (net.json's
-    "unknown"). Who asks is checked by the socket's peer (SO_PEERCRED): root or a person's account (uid 1000 and
+    """Answers from the user's session: "allow PATH" or "block PATH", the whole message up to the end of what was
+    sent (a program's name can hold a line break or end in a space: read as one line, it could not be allowed,
+    tested 2026-10-24), for a program that asked (net.json's "unknown"). Who asks is checked by the socket's peer (SO_PEERCRED): root or a person's account (uid 1000 and
     up): the chat's card, its Network window, or the assistant's run_command."""
     os.makedirs(os.path.dirname(ANSWERS), mode=0o755, exist_ok=True)
     try:
@@ -343,17 +344,27 @@ def answers():
             link.settimeout(5)
             _pid, uid, _gid = struct.unpack("3i", link.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
                                                                   struct.calcsize("3i")))
-            what, _, program = link.makefile("r", encoding="utf-8", errors="replace").readline().strip().partition(" ")
+            said = b""
+            while len(said) < 65536 and (part := link.recv(65536)):
+                said += part
+            what, _, program = said.decode("utf-8", "surrogateescape").partition(" ")
             with LOCK:
                 asked = program in load()["unknown"]
-            if (uid != 0 and uid < 1000) or what not in ("allow", "block") or not asked:
+            # root (Mentor Settings' Unblock through run_root_command, the assistant's run_root_command) may also
+            # unblock, and block any program; a person's account only allow or block one that asked. All of it goes
+            # through here, so that the daemon is told (_tell): changed from a command of its own, an Unblock only
+            # touched the files and the program stayed offline (tested 2026-10-24).
+            mine = uid == 0 and what in ("unblock", "block")
+            if not mine and ((uid != 0 and uid < 1000) or what not in ("allow", "block") or not asked):
                 link.sendall(b"no: only allow or block, for a program that asked to go online\n")
                 continue
             if what == "allow":
                 allow(program)
+            elif what == "unblock":
+                unblock(program)
             else:
-                block(program, "the user's answer on Mentor's card")
-            link.sendall(f"{what}ed {program}\n".encode())
+                block(program, "the user's answer on Mentor's card" if asked else "")
+            link.sendall(f"{what}ed {program}\n".encode("utf-8", "surrogateescape"))
         except (OSError, ValueError, struct.error) as e:
             print(f"mentor-netguard: answer: {e}", file=sys.stderr)
         finally:
@@ -366,8 +377,9 @@ def ask_service(what, program):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as link:
             link.settimeout(10)
             link.connect(ANSWERS)
-            link.sendall(f"{what} {program}\n".encode())
-            return link.makefile("r", encoding="utf-8", errors="replace").readline().strip() or None
+            link.sendall(f"{what} {program}".encode("utf-8", "surrogateescape"))
+            link.shutdown(socket.SHUT_WR)  # the end of the message
+            return link.makefile("r", encoding="utf-8", errors="replace").read().strip() or None
     except OSError:
         return None
 
@@ -385,22 +397,38 @@ LAUNCHERS = re.compile(r"^(env|python3?(\.\d+)?|bash|sh|dash|zsh|perl|ruby|node|
 
 
 def _from_proc(pid, args, cwd):
-    """The command line and working folder of a process, from /proc when OpenSnitch sent none: it often sends no
-    working folder, and sometimes no arguments, and judged without them "python3 fetch.py" became a command of its
-    own (tested 2026-10-23)."""
-    if pid and not (args and cwd):
+    """The command line and working folder of a process, from /proc: OpenSnitch often sends no working folder, and
+    its arguments are the ones typed (["gnome-tweaks"], ["nettest"] for a Flatpak app started by name), while the
+    kernel's have the interpreter and the script's path (["/usr/bin/python3", "/usr/bin/gnome-tweaks"]). Judged by
+    OpenSnitch's, such a script became a command of its own and was kept offline (tested 2026-10-23/24). Its own
+    are kept when /proc cannot be read (the process is gone)."""
+    if pid:
         try:
-            if not args:
-                with open(f"/proc/{pid}/cmdline", "rb") as f:
-                    args = [a.decode("utf-8", "surrogateescape") for a in f.read().split(b"\0")[:-1]]
-            if not cwd:
-                cwd = os.readlink(f"/proc/{pid}/cwd")
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                found = [a.decode("utf-8", "surrogateescape") for a in f.read().split(b"\0")[:-1]]
+            args = found or args
         except OSError:
             pass
+        if not cwd:
+            try:
+                cwd = os.readlink(f"/proc/{pid}/cwd")
+            except OSError:
+                pass
     return list(args), cwd
 
 
-def program_of(path, args, cwd=""):
+def _sandboxed(pid):
+    """The folder a Flatpak app's process sees as / (/proc/PID/root), or "" for a process of the system itself:
+    Flatpak puts /.flatpak-info in every sandbox. Paths in a sandbox are its own: a Python app's script is
+    /app/bin/NAME there and nowhere on the system, so it was taken for code typed in and kept offline (2026-10-24)."""
+    root = f"/proc/{pid}/root"
+    try:
+        return root if pid and os.path.exists(root + "/.flatpak-info") else ""
+    except OSError:
+        return ""
+
+
+def program_of(path, args, cwd="", root=""):
     """What really goes online: for an interpreter (python3, bash, node…) the script it runs, when that is a file
     of its own (a path from where it was started resolved: `python3 fetch.py`, `./fetch.py`); for code given as text
     (`python3 -c …`, `-m`, a script on stdin, `bash -c` with /dev/tcp) the interpreter and that exact command line
@@ -417,8 +445,14 @@ def program_of(path, args, cwd=""):
         if arg.startswith("-") or LAUNCHERS.match(os.path.basename(arg)):
             continue
         script = os.path.normpath(os.path.join(cwd or "/", arg))
-        if os.path.isfile(script):
-            return script, True
+        if os.path.isfile(root + script):  # in a sandbox, inside it (root: _sandboxed)
+            # the file itself, not a link to it (~/.local/bin/tool -> ~/src/tool.py): allowed as the file, a link to it
+            # was another program (2026-10-24). In a sandbox its links point inside it: left as they are.
+            return (script if root else os.path.realpath(script)), True
+        if "/" not in arg:  # started by its name: where the search path finds it (a Flatpak app's /app/bin)
+            for folder in ("/app/bin", "/usr/local/bin", "/usr/bin", "/bin"):
+                if os.path.isfile(root + folder + "/" + arg):
+                    return (folder + "/" + arg if root else os.path.realpath(folder + "/" + arg)), True
         break
     return mentor_guard.command_key(path, list(args)[1:]), True
 
@@ -456,12 +490,35 @@ def keep_known(program, interpreter=None):
     """A known program outside the homes is allowed for good, by a rule file (KNOWN): asked about at the first
     connection only, not again after every start. In a home (the AI engines in ~/.local) it is asked again after a
     start, as anything there can be replaced by any program the user runs."""
-    if program.startswith("/home/") or os.path.exists(rule_path(program, KNOWN)):
+    if os.path.exists(rule_path(program, KNOWN)) or program.startswith("/tmp/") or (
+            program.startswith("/home/") and not ENGINES.match(program)):
+        # An AppImage is mounted on a new /tmp/.mount_XXXXXX each time: kept, its path could be made again. In a
+        # home only the AI engines Mentor sets up: they are known at every start anyway, and their first request
+        # after one could fail while another question was being answered.
         return
     try:
         _write_rule(program, KNOWN, "allow", "A program Mentor knows (a package, Mentor, an app store)", interpreter)
     except OSError as e:
         print(f"mentor-netguard: known: {e}", file=sys.stderr)
+
+
+# System programs that commonly go online at once with several connections: given their rule when the guard starts
+# (keep_known, if a package installed them), so that their first try never meets a moment when another question is
+# being answered (then the daemon refuses it). Flatpak's first look at Flathub failed so, "No remote refs found"
+# (tested 2026-10-24); it worked once it was known.
+EARLY = ("/usr/bin/flatpak", "/usr/lib/flatpak-system-helper", "/usr/lib/flatpak-oci-authenticator",
+         "/usr/bin/pacman", "/usr/bin/curl", "/usr/bin/wget", "/usr/bin/git", "/usr/lib/git-core/git-remote-http",
+         "/usr/lib/git-core/git-remote-https", "/usr/bin/ssh", "/usr/bin/rsync", "/usr/bin/gpg", "/usr/bin/dirmngr",
+         "/usr/lib/chromium/chromium", "/usr/lib/firefox/firefox", "/usr/bin/gnome-software", "/usr/lib/packagekitd",
+         "/usr/bin/NetworkManager", "/usr/lib/systemd/systemd-timesyncd", "/usr/lib/systemd/systemd-resolved",
+         "/usr/lib/geoclue", "/usr/lib/gvfsd-http", "/usr/bin/ostree")
+
+
+def keep_early():
+    for program in EARLY:
+        real = os.path.realpath(program)
+        if os.path.isfile(real) and owned(real):
+            keep_known(real)
 
 
 def known(program):
@@ -547,7 +604,8 @@ def serve():
             # Answered at once, always: the daemon asks one question at a time, and while one is open it gives
             # every other new connection its default answer without asking (tested 2026-10-23).
             args, cwd = _from_proc(request.process_id, request.process_args, request.process_cwd)
-            program, interpreter = program_of(request.process_path or "?", args, cwd)
+            sandbox = _sandboxed(request.process_id)
+            program, interpreter = program_of(request.process_path or "?", args, cwd, sandbox)
             place = f"{request.dst_host or request.dst_ip}:{request.dst_port}"
             try:
                 if program in blocked():  # blocked a moment ago, before the daemon read the new rule
@@ -559,6 +617,20 @@ def serve():
                     return rule("deny", "once", request.process_path, PREFIX + _slug(program))
                 if program in rules(ALLOW):  # allowed a moment ago, before the daemon read the new rule
                     return rule("allow", "once", request.process_path, ALLOW + _slug(program))
+                if sandbox and not mentor_guard.split_command(program) and program.startswith(("/app/", "/usr/")):
+                    # A Flatpak app running its own files or its runtime's (read only in the sandbox): known, as
+                    # every Flatpak. Until the next start, by that path; an interpreter only with that command line,
+                    # as a home program run inside a sandbox (flatpak run --command=…) must not pass for the app.
+                    if interpreter:
+                        command = " ".join(request.process_args or args)
+                        return pb.Rule(name="mentor-flatpak-" + _slug(command), enabled=True, precedence=False,
+                                       action="allow", duration="until restart", operator=pb.Operator(
+                                           type="list", operand="list", list=[
+                                               pb.Operator(type="simple", operand="process.path",
+                                                           data=request.process_path),
+                                               pb.Operator(type="regexp", operand="process.command", sensitive=True,
+                                                           data="^" + re.escape(command) + "$")]))
+                    return rule("allow", "until restart", request.process_path, "mentor-flatpak-" + _slug(program))
                 if known(program):
                     keep_known(program, request.process_path if interpreter else None)
                     if interpreter:  # never all of python3 or bash at once: this script, run by this interpreter
@@ -571,7 +643,10 @@ def serve():
                     entry.setdefault("args", " ".join(args)[:300])
                     if interpreter and not mentor_guard.split_command(program):
                         entry["via"] = request.process_path  # its Allow is for this interpreter running it
-                    newly = not os.path.exists(rule_path(program, WAIT))
+                    command = mentor_guard.split_command(program)
+                    # An interpreter with nothing after it (python3 typed in, a script on a pipe): no rule, which would
+                    # match too much; it is refused at each try instead, and asked about again.
+                    newly = not os.path.exists(rule_path(program, WAIT)) and not (command and not command[1].strip())
                     if newly:  # it waits for the user's answer; the daemon stops asking about it
                         _write_rule(program, WAIT, "deny", "Waiting for the user's answer on Mentor's card")
                     entry["refused"] = entry.get("refused", 0) + 1
@@ -587,7 +662,13 @@ def serve():
 
         def Notifications(self, request_iterator, context):
             # The daemon's replies are read, and dropped, in a thread of their own; what Mentor changes goes to it.
-            threading.Thread(target=lambda: [None for _ in request_iterator], daemon=True).start()
+            def replies():
+                try:
+                    for _ in request_iterator:
+                        pass
+                except grpc.RpcError:  # the daemon went (restarted): it opens a new stream when it comes back
+                    pass
+            threading.Thread(target=replies, daemon=True).start()
             while context.is_active():
                 try:
                     message = _to_daemon.get(timeout=1)
@@ -614,7 +695,7 @@ def serve():
         save(load())
     threading.Thread(target=flusher, daemon=True).start()
     threading.Thread(target=answers, daemon=True).start()
-    threading.Thread(target=owned, args=("/",), daemon=True).start()
+    threading.Thread(target=keep_early, daemon=True).start()  # reads the package lists too, before the first question
     threading.Thread(target=resolver, daemon=True).start()  # the package lists, before the first question
     server.wait_for_termination()
 
@@ -662,7 +743,7 @@ def main(argv):
         # Through the running guard, which keeps net.json (root too); as root without it, directly. Root may block
         # any program, asked about or not.
         reply = ask_service(argv[0], argv[1])
-        if os.geteuid() == 0 and (reply is None or (reply.startswith("no:") and argv[0] == "block")):
+        if os.geteuid() == 0 and reply is None:  # the guard is not running: the files, read at the daemon's start
             (allow if argv[0] == "allow" else block)(argv[1])
             reply = f"{argv[0]}ed {argv[1]}"
         ok = bool(reply) and not reply.startswith("no:")
@@ -673,9 +754,12 @@ def main(argv):
         if os.geteuid() != 0:
             print("mentor-netguard: as root (the rules are root's)", file=sys.stderr)
             return 1
-        unblock(argv[1])
-        print(f"unblocked {argv[1]}")
-        return 0
+        reply = ask_service("unblock", argv[1])
+        if reply is None:  # the guard is not running: the files, read at the daemon's start
+            unblock(argv[1])
+            reply = f"unblocked {argv[1]}"
+        print(reply)
+        return 0 if not reply.startswith("no:") else 1
     if argv[0] == "list":
         data = mentor_guard._load(NET, {})
         for program, since in sorted(data.get("blocked", {}).items()):
