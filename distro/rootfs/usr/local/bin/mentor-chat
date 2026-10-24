@@ -676,6 +676,11 @@ GLASS_CSS = """
 .zoom-level, tabbar.agent-tabs tab, dropdown.model > button, menubutton.model > button { backdrop-filter: blur(24px); }
 .agent-card, .steps, .ask, .subject, .attachment, dropdown.model > button, menubutton.model > button {
     background-color: rgba(20, 22, 27, 0.70); }
+/* The colored cards a little more solid than the answers: they must be read at once, over any wallpaper (the user,
+   2026-10-19, at a third of a color). With the blur behind them 0.78 still reads on a light one (2026-10-25). */
+.notice.warning { background-color: rgba(58, 47, 10, 0.78); }
+.notice.problem { background-color: rgba(66, 18, 16, 0.78); }
+.notice.idea { background-color: rgba(14, 52, 34, 0.78); }
 window.ask-over .agent-card, window.ask-over .ask, window.ask-over .attachment, window.ask-over .attachment-note,
 window.ask-over dropdown.model > button, window.ask-over menubutton.model > button {
     background-color: rgb(24, 26, 32); backdrop-filter: none; }

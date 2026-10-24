@@ -78,7 +78,7 @@ vm\                   your own disk, created on the first start
 - **It can be rebuilt.** Every file Mentor adds to the system is kept as it was built, with step-by-step instructions for the assistant in `/etc/mentor/`. `mentor verify` says what is missing or changed; `sudo mentor restore` puts it back. A watch on memory, processor and network can be set up on request from the same place.
 - **With Windows.** Text, files and folders copy and paste both ways (up to 256 MB at a time). A picture you take with Windows' own PrtScr (Snipping Tool) pastes into Mentor, into the chat too. Memory the system no longer needs goes back to Windows. Closing Mentor from the launcher shuts the system down properly, and Mentor keeps working after Windows has been asleep.
 - **Screenshots and files.** Shift+Super+S: drag out an area of the screen (Alt+Print: the window in front); it opens in Gradia to draw on, copy or save. In Files, select a file and press Space to preview it, as on a Mac.
-- **Graphics.** The desktop can be drawn by the computer's graphics card, with Vulkan for the applications that want it.
+- **Graphics.** The desktop can be drawn by the computer's graphics card, with Vulkan for the applications that want it. With the graphics card, the assistant's cards, menus and windows look like frosted glass: what is behind them shows through softly blurred.
 
 ## Going back
 

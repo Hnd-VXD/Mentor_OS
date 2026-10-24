@@ -466,5 +466,17 @@
     "name": "24.10.26.02",
     "summary": "The assistant's menus, History, Network and Important warnings look like frosted glass too, in your window colors.",
     "published": "2026-10-25 00:07"
+  },
+  {
+    "version": 202610242151,
+    "name": "24.10.26.03",
+    "summary": "The yellow, red and green cards in the chat look like frosted glass too.",
+    "published": "2026-10-25 00:52"
+  },
+  {
+    "version": 202610242153,
+    "name": "24.10.26.04",
+    "summary": "The assistant's own notes now describe the frosted glass. Nothing changes in how Mentor looks.",
+    "published": "2026-10-25 00:53"
   }
 ]
