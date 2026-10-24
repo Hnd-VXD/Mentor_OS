@@ -420,6 +420,16 @@ If a part cannot be mended, it fails alone: the windows keep their colors, and t
 
 **Check.** `gdbus call --session --dest org.gnome.Shell --object-path /org/mentor/Shell --method org.mentor.Shell.Status` has `"animations": "on"` (or why not). A user who wants none: `gsettings set org.gnome.desktop.interface enable-animations false` (Settings, Accessibility, Reduce Animation); that is theirs and wins.
 
+## Frosted glass
+
+**What the user has.** The chat's cards on the desktop (answers, steps, the text box, the tabs, notices, suggestions, the model button) are frosted glass: the wallpaper behind them is blurred and shows through a dark tint, `rgba(20, 22, 27, 0.70)` instead of the solid look's 0.86. The notices keep their tint at 0.92 and only get the blur. Over a program (Super+Z, Alt+Space) the answer and the box stay solid, with no blur (`window.ask-over`), as before. With no graphics card everything looks as it did before 2026-10-24: no blur, tint 0.86.
+
+**How.** `GLASS_CSS` in `mentor-chat`, added after `CSS` at startup (`do_startup`) unless `drawn_without_graphics_card()` says only the processor draws. That is the same test as the extension's part `animations` (above): a virtio-gpu with feature bit 0 off, or no `/dev/dri/renderD*`. GTK 4.24 sees `backdrop-filter` on a part and asks the compositor, through the Wayland protocol `ext-background-effect-v1` (mutter 51, GNOME 51), to blur what is under that part. Mutter blurs at its own radius: the `24px` in the CSS does not change it. Nothing in the extension is involved. Why not without a graphics card: there the shell used about seven times its usual processor time while a card changed (the steps card's turning gear), 40 s of CPU in 20 s against 5.7 s (measured 2026-10-24, 4 cores, llvmpipe).
+
+**When it breaks.** A GTK older than 4.23.3, or a compositor without the protocol (GNOME before 51, an X11 session): GTK ignores the blur and the cards are just more see-through. If text is then hard to read over a light wallpaper, put the tint back up to 0.86 in `GLASS_CSS`, or leave `GLASS_CSS` out. If GNOME or GTK renames the mechanism, check the GTK NEWS for `backdrop-filter` and mutter for `ext-background-effect`. The look is only the CSS: nothing else depends on it.
+
+**Check.** `pacman -Q gtk4 mutter` gives 4.24 or later and 51 or later. With a graphics card, the wallpaper's detail behind a card is soft (a screenshot of a busy wallpaper shows it plainly); without one, it is sharp. In a Python shell, the function `drawn_without_graphics_card` from `/usr/local/bin/mentor-chat` gives the answer the chat went by.
+
 ## Memory
 
 **What the user has.** When memory runs short, what has not been used for a while is compressed in memory itself (zram) instead of a program being closed; Chromium puts tabs to sleep that have not been looked at for a while (Memory Saver, table above). Together they keep many open tabs from slowing the desktop down.

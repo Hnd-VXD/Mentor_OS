@@ -454,5 +454,11 @@
     "name": "24.10.26.00",
     "summary": "If Mentor ever gets stuck while starting, it now keeps a record of how far it got, to help find the cause. Nothing else changes.",
     "published": "2026-10-24 14:13"
+  },
+  {
+    "version": 202610242042,
+    "name": "24.10.26.01",
+    "summary": "The assistant's cards on the desktop look like frosted glass where a graphics card draws the screen.",
+    "published": "2026-10-24 23:43"
   }
 ]

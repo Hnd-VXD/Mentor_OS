@@ -666,6 +666,44 @@ tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
 .zoom-level { padding: 4px 14px; border-radius: 99px; font-weight: 700;
               background: rgba(20, 22, 27, 0.92); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.14); }
 """
+# Frosted glass: the wallpaper behind the cards blurred, so they can be a little more see-through and still
+# be read. GTK (4.24) asks mutter (51, ext-background-effect-v1) to blur what is behind the parts with a
+# backdrop-filter; mutter's own radius is used, not this one. Only where a graphics card draws the screen
+# (drawn_without_graphics_card): with the processor alone the shell used seven times its time while the gear
+# turned (40 s in 20 s against 5.7 s, 2026-10-24). DESKTOP.md, "Frosted glass".
+GLASS_CSS = """
+.agent-card, .steps, .ask, .notice, .suggest, .subject, .attachment, .attachment-note, .tool-row, .steps-header,
+.zoom-level, tabbar.agent-tabs tab, dropdown.model > button, menubutton.model > button { backdrop-filter: blur(24px); }
+.agent-card, .steps, .ask, .subject, .attachment, dropdown.model > button, menubutton.model > button {
+    background-color: rgba(20, 22, 27, 0.70); }
+window.ask-over .agent-card, window.ask-over .ask, window.ask-over .attachment, window.ask-over .attachment-note,
+window.ask-over dropdown.model > button, window.ask-over menubutton.model > button {
+    background-color: rgb(24, 26, 32); backdrop-filter: none; }
+"""
+
+
+def drawn_without_graphics_card():
+    """True when nothing draws the screen but the processor: a virtio-gpu without 3D (its feature bit 0,
+    VIRTIO_GPU_F_VIRGL, is off), or no render node of any GPU driver. The same test as the extension's."""
+    try:
+        if not any(name.startswith("renderD") for name in os.listdir("/dev/dri")):
+            return True
+    except OSError:
+        return True
+    try:
+        devices = os.listdir("/sys/bus/virtio/devices")
+    except OSError:
+        devices = []
+    for device in devices:
+        path = f"/sys/bus/virtio/devices/{device}"
+        try:
+            if os.readlink(f"{path}/driver").endswith("/virtio_gpu"):
+                with open(f"{path}/features") as f:
+                    if not f.read().startswith("1"):
+                        return True
+        except OSError:
+            continue
+    return False
 # The conversation can be shown larger or smaller (Ctrl and the mouse wheel, Ctrl + + - 0), in these
 # steps of percent; the column of cards (CHAT_WIDTH pixels at 100%) widens and narrows with the text.
 ZOOM_LEVELS = tuple(range(70, 201, 10))
@@ -5351,7 +5389,7 @@ class AssistantApp(Adw.Application):
         show.connect("activate", lambda *_: self.shell("Show"))
         self.add_action(show)
         provider = Gtk.CssProvider()
-        provider.load_from_string(CSS)
+        provider.load_from_string(CSS if drawn_without_graphics_card() else CSS + GLASS_CSS)
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.follow_colors()
