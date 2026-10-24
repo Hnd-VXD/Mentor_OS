@@ -102,7 +102,7 @@ It is worked out again at every start. Here, `nproc` and `free -g` show what thi
 
 ## 7. The diagnostics file
 
-The tray icon's **Make a diagnostics file** puts `Mentor diagnostics DATE TIME.zip` on the user's Windows Desktop. It holds Mentor.exe's records (launcher.log, qemu.log, the self-update's log, the restore points' list, the settings, a description of the computer) and, asked over the link, this system's: `system-inside.tar.gz` with this start's journal and the one before, the failed services, `/var/log/mentor/*` and the versions. Nothing is sent anywhere: the user decides whether to share it. When the user asks how to send their problem to Mentor's maker, the problem report (`problem_report`, UPDATES.md) is the way; the diagnostics file is for when someone asks them for it.
+The tray icon's **Make a diagnostics file** puts `Mentor diagnostics DATE TIME.zip` on the user's Windows Desktop. It holds Mentor.exe's records (launcher.log, qemu.log, the self-update's log, the restore points' list, the settings, a description of the computer, and what the last starts said: `start-trace.log`, `start-trace.previous.log` and the starts that stood still, `stalls-start-*.log`; BOOT.md "When a start stalls") and, asked over the link, this system's: `system-inside.tar.gz` with this start's journal and the one before, the failed services, `/var/log/mentor/*` and the versions. Nothing is sent anywhere: the user decides whether to share it. When the user asks how to send their problem to Mentor's maker, the problem report (`problem_report`, UPDATES.md) is the way; the diagnostics file is for when someone asks them for it.
 
 ## 8. Windows Hello for passwords
 

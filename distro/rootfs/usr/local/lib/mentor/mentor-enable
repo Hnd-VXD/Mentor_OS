@@ -32,6 +32,9 @@ systemctl --global mask user-dirs-update-gtk.service
 systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 # Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
+# What each start says, to the launcher's file on Windows until the desktop is up (etc/mentor/BOOT.md,
+# "When a start stalls").
+systemctl enable mentor-start-trace.service
 systemctl enable mentor-advisor.timer
 # Updates of Mentor's own files, signed by its maker (etc/mentor/UPDATES.md).
 systemctl enable mentor-update-check.timer

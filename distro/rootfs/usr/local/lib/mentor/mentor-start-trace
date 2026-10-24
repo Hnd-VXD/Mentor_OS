@@ -1,0 +1,34 @@
+#!/bin/bash
+# The start's own words, for the launcher on Windows (/etc/mentor/BOOT.md, "When a start stalls"), run by
+# mentor-start-trace.service at the very beginning of every start. A start once stood still for eight
+# minutes after an update and left nothing in the journal (2026-10-24): what it said never reached the
+# disk. So it is written as it comes to the launcher's port org.mentor.trace, which it keeps in a file on
+# Windows (vm\start-trace.log), until the desktop is up. The kernel's messages from power on (dmesg), and
+# once the journal runs, those of systemd and the services. A virtio port, not the serial port: through
+# that one every letter cost the processor a trip out of the VM, and the start took 17 s instead of 10.
+# The port is there from the first moment (virtio_console is built into the kernel), before udev names
+# it, so it is found by its name in /sys. Nothing when there is no such port (an older launcher, a PC).
+port=
+for named in /sys/class/virtio-ports/*/name; do
+    [ "$(cat "$named" 2>/dev/null)" = org.mentor.trace ] && port=/dev/$(basename "$(dirname "$named")")
+done
+[ -n "$port" ] && [ -c "$port" ] || exit 0
+exec >"$port" 2>/dev/null || exit 0
+echo "=== Mentor $(cat /etc/mentor/version-name 2>/dev/null) starting, $(date '+%F %T %Z'), boot $(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+# The kernel's ring from the first line on, then as it comes (systemd writes there too until the journal runs).
+dmesg --follow &
+# The journal's, from the start of this boot on, without the kernel's lines (dmesg has them).
+(
+    until [ -S /run/systemd/journal/stdout ]; do sleep 0.2; done
+    journalctl -b -f --no-tail -o short-monotonic --no-hostname | grep --line-buffered -v '^\[[ 0-9.]*\] kernel: '
+) &
+# Until the desktop is up (mentor-boot-confirm's file), fifteen minutes at most; then systemd stops the rest.
+for _ in $(seq 900); do
+    if [ -e /run/mentor/desktop-ok ]; then
+        sleep 2  # the last lines of the way there
+        echo "=== the desktop is up, $(date '+%T'); the rest is in the journal"
+        exit 0
+    fi
+    sleep 1
+done
+echo "=== no desktop after 15 minutes, $(date '+%T'); the trace stops here"

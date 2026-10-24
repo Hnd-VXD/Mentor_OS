@@ -82,5 +82,11 @@
     "sha256": "a34181ee59538e33a99f297c5e7b312dcec5846c241caedc073c39f3e1be7686",
     "summary": "Repair starts with the loading window, the mouse leaves the repair screen at every edge, and a few Repairs in a row no longer lead to a restore point.",
     "published": "2026-10-23 13:02"
+  },
+  {
+    "version": 202610241113,
+    "sha256": "bc1f997bb8f8b889d5ea4489572c2c72be6c6c143c1457bd346d3c51b4ada6b2",
+    "summary": "Keeps a record of each start of Mentor, so a start that gets stuck can be understood.",
+    "published": "2026-10-24 14:13"
   }
 ]

@@ -55,8 +55,14 @@ static class Diagnostics
         using (var zip = new ZipArchive(file, ZipArchiveMode.Create))
         {
             Text(zip, "about.txt", About());
-            foreach (string name in new[] { "launcher.log.old", "launcher.log", "qemu.log", "qemu-said.txt", "boot-failures", @"restore\points.json" })
+            foreach (string name in new[] { "launcher.log.old", "launcher.log", "qemu.log", "qemu-said.txt", "boot-failures", @"restore\points.json",
+                                            "start-trace.log", "start-trace.previous.log" })
                 Copy(zip, Path.Combine(Program.VmDir, name), name.Replace('\\', '-'));
+            // the starts that stood still or crashed (Program.KeepStall)
+            string stalls = Path.Combine(Program.VmDir, "stalls");
+            if (Directory.Exists(stalls))
+                foreach (string stall in Directory.GetFiles(stalls, "start-*.log"))
+                    Copy(zip, stall, "stalls-" + Path.GetFileName(stall));
             Copy(zip, Path.Combine(Program.Root, @"launcher-update\log.txt"), "launcher-update.log");
             Copy(zip, Program.SettingsFile, "Mentor.settings");
             if (guest != null)

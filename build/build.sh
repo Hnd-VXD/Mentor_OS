@@ -87,7 +87,7 @@ stage_overlay() {
         "$dest"/usr/local/lib/mentor/mentor-host-link "$dest"/usr/local/lib/mentor/mentor-hello \
         "$dest"/usr/local/lib/mentor/mentor-volume "$dest"/usr/local/lib/mentor/mentor-guard \
         "$dest"/usr/local/lib/mentor/mentor-netguard "$dest"/usr/local/lib/mentor/mentor-execlog \
-        "$dest"/usr/local/lib/mentor/mentor-apps
+        "$dest"/usr/local/lib/mentor/mentor-apps "$dest"/usr/local/lib/mentor/mentor-start-trace
     echo "$VERSION" > "$dest/etc/mentor/version"
     echo "$VERSION_NAME" > "$dest/etc/mentor/version-name"
     # Every update published before this build (distro/updates.json, kept by publish-update.ps1) is in it

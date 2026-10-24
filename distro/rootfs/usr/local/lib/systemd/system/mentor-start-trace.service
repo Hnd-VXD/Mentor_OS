@@ -1,0 +1,19 @@
+[Unit]
+Description=Mentor: what the start says, to the launcher on Windows, until the desktop is up
+Documentation=file:///etc/mentor/BOOT.md
+# At the very beginning: a start that stands still early is the one to read.
+DefaultDependencies=no
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+# Only in a virtual machine, where the launcher keeps the port org.mentor.trace in a file; never on a PC.
+ConditionVirtualization=vm
+# Not in a repair start: its screen is the user's to read.
+ConditionKernelCommandLine=!mentor.repair=1
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-start-trace
+# When the script ends, its readers end with it.
+KillMode=control-group
+
+[Install]
+WantedBy=sysinit.target

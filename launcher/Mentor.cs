@@ -529,6 +529,11 @@ static class Program
             // The root-only link to the system inside: Windows' time zone (mentor-host-link there).
             "-chardev", "socket,id=host,host=127.0.0.1,port=" + hostPort + ",server=on,wait=off",
             "-device", "virtserialport,chardev=host,name=org.mentor.host",
+            // What the start says (mentor-start-trace inside, until the desktop is up), in a file: a start once
+            // stood still for eight minutes and its journal never reached the disk (2026-10-24). A virtio port,
+            // not the serial one, through which the start took 17 s instead of 10.
+            "-chardev", "file,id=trace,path=" + StartTrace(Path.GetDirectoryName(modeFile)).Replace(",", ",,"),
+            "-device", "virtserialport,chardev=trace,name=org.mentor.trace",
             "-no-reboot",
             "-qmp", "tcp:127.0.0.1:" + qmpPort + ",server=on,wait=off",
             "-qmp", "tcp:127.0.0.1:" + stopPort + ",server=on,wait=off",
@@ -633,6 +638,7 @@ static class Program
                 "\r\n" + Tail(stderr.ToString(), 4000) + "\r\n");
         }
         catch (IOException) { }
+        if (bridge.TimedOut || qmp.StopReason == "guest-panic") KeepStall(Path.GetDirectoryName(modeFile), qmp.StopReason);
         if (bridge.Froze)
         {
             Freezes++;
@@ -652,6 +658,40 @@ static class Program
         if (qemu.ExitCode != 0 && !bridge.TimedOut)
             throw new LauncherException("QEMU stopped with an error:\n\n" + Tail(stderr.ToString(), 1500));
         return qmp.StopReason == "guest-reset" || bridge.TimedOut;
+    }
+
+    // vm\start-trace.log, for this start: the one before it kept as start-trace.previous.log (QEMU empties
+    // the file when it opens it), so that a start that failed is still there after the one that followed.
+    static string StartTrace(string vmFolder)
+    {
+        string trace = Path.Combine(vmFolder, "start-trace.log");
+        try
+        {
+            if (File.Exists(trace) && new FileInfo(trace).Length > 0)
+                File.Copy(trace, Path.Combine(vmFolder, "start-trace.previous.log"), true);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return trace;
+    }
+
+    // A start that stood still (stopped by the launcher) or crashed: its trace kept in vm\stalls, the newest
+    // five, and named in launcher.log (and in the diagnostics file).
+    static void KeepStall(string vmFolder, string reason)
+    {
+        try
+        {
+            string stalls = Path.Combine(vmFolder, "stalls");
+            Directory.CreateDirectory(stalls);
+            string kept = Path.Combine(stalls, "start-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".log");
+            File.Copy(Path.Combine(vmFolder, "start-trace.log"), kept, true);
+            var old = new DirectoryInfo(stalls).GetFiles("start-*.log");
+            Array.Sort(old, (a, b) => b.Name.CompareTo(a.Name));
+            for (int i = 5; i < old.Length; i++) old[i].Delete();
+            Note("a start " + (reason == "guest-panic" ? "crashed" : "stood still and was stopped") + "; what it said: " + kept);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     // QEMU opens its sockets a moment after the process starts; on a busy or just-started Windows that
