@@ -679,6 +679,17 @@ GLASS_CSS = """
 window.ask-over .agent-card, window.ask-over .ask, window.ask-over .attachment, window.ask-over .attachment-note,
 window.ask-over dropdown.model > button, window.ask-over menubutton.model > button {
     background-color: rgb(24, 26, 32); backdrop-filter: none; }
+/* The menus (the bell, the model, the desktop's right click) and the side windows (History, Network, Important
+   warnings) as glass too, in the tones of the user's window colors (the user, 2026-10-24: "all our elements").
+   Not the dialogs over the chat (a picture, a suggestion): they are drawn inside the desktop window, where GTK
+   does not blur, and the chat's own text showed through their title sharp. */
+popover.background > contents, popover.background > arrow {
+    background-color: color-mix(in srgb, var(--popover-bg-color) 78%, transparent); backdrop-filter: blur(24px); }
+/* A menu of an "osd" button (All conversations) has white text: dark glass, as the cards, or a light set left it
+   white on white (the user, 2026-10-24). */
+.osd popover.background > contents, .osd popover.background > arrow { background-color: rgba(20, 22, 27, 0.70); }
+window.glass { background-color: color-mix(in srgb, var(--window-bg-color) 84%, transparent); backdrop-filter: blur(24px); }
+window.glass headerbar { background: none; box-shadow: none; }
 """
 
 
@@ -3581,6 +3592,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             return
         dialog = Adw.Window(application=self.get_application(), title="History", default_width=760,
                             default_height=680)
+        dialog.add_css_class("glass")
         self.history_window = dialog
 
         def gone(*_):
@@ -3646,6 +3658,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         """A window of its own beside the desktop, as History: minimize, maximize and close, Esc closes, one at a
         time (`slot` is the attribute that holds it). Its title must be in the extension's PLAIN_TITLES."""
         dialog = Adw.Window(application=self.get_application(), title=title, default_width=760, default_height=680)
+        dialog.add_css_class("glass")
         setattr(self, slot, dialog)
 
         def gone(*_):

@@ -460,5 +460,11 @@
     "name": "24.10.26.01",
     "summary": "The assistant's cards on the desktop look like frosted glass where a graphics card draws the screen.",
     "published": "2026-10-24 23:43"
+  },
+  {
+    "version": 202610242106,
+    "name": "24.10.26.02",
+    "summary": "The assistant's menus, History, Network and Important warnings look like frosted glass too, in your window colors.",
+    "published": "2026-10-25 00:07"
   }
 ]
