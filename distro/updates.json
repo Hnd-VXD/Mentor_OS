@@ -496,5 +496,11 @@
     "name": "25.10.26.02",
     "summary": "Long answers with links in them use the chat's whole width again, instead of a narrow column one word wide.",
     "published": "2026-10-25 13:53"
+  },
+  {
+    "version": 202610251247,
+    "name": "25.10.26.03",
+    "summary": "The assistant's notes now explain a rare crash of the chat caused by GTK with the frosted glass, so it can tell you plainly what happened. Nothing else changes.",
+    "published": "2026-10-25 14:48"
   }
 ]
