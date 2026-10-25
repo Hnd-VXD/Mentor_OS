@@ -2020,7 +2020,11 @@ class Conversation(Gtk.Box):
             label.set_markup(shown(body if opened["all"] else short))
             more.set_label("Show less" if opened["all"] else "Show more")
         more.connect("clicked", toggle)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, halign=Gtk.Align.START)
+        # An answer with links is a text view, which asks for almost no width of its own: in a box at the
+        # start, which takes only what it asks for, it was a column one word wide (2026-10-25). Its box spans
+        # the column, and the view narrows itself to its text (AnswerView.fit).
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                      halign=Gtk.Align.FILL if links else Gtk.Align.START)
         box.append(label)
         box.append(more)
         self.add(box)

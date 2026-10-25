@@ -490,5 +490,11 @@
     "name": "25.10.26.01",
     "summary": "When Groq's free allowance for a model runs out, the assistant now says so at once and when it is back, instead of waiting minutes. Another Groq model usually works right away.",
     "published": "2026-10-25 13:43"
+  },
+  {
+    "version": 202610251152,
+    "name": "25.10.26.02",
+    "summary": "Long answers with links in them use the chat's whole width again, instead of a narrow column one word wide.",
+    "published": "2026-10-25 13:53"
   }
 ]
