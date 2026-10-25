@@ -152,6 +152,7 @@ AGY_PROMPT = (
 # The picker, a menu in two levels: label on the button, engine, model, name in its provider's submenu.
 # The engines:
 #   nvidia   our own (mentor-agent) against NVIDIA's API, with the user's key
+#   groq     the same against Groq's, in light mode (mentor-agent's LIGHT: its free plan takes little a minute)
 #   claude   the Claude Code CLI, with the user's Claude account; models are its aliases
 #   codex    the Codex CLI, with the user's ChatGPT account; its models are added from its own catalog
 #   gemini   Google's Antigravity CLI (agy), with the user's Google account; its models are added
@@ -167,6 +168,10 @@ MODELS = [
     ("Muse Glimmer 30B", "nvidia", "meta/muse-glimmer-30b", "Muse Glimmer 30B"),
     ("Kimi K2.6", "nvidia", "moonshotai/kimi-k2.6", "Kimi K2.6"),
     ("GPT OSS 20B", "nvidia", "openai/gpt-oss-20b", "GPT OSS 20B"),
+    # Groq's free models that call tools; "(Groq)" keeps the names apart from NVIDIA's of the same model.
+    ("GPT OSS 120B (Groq)", "groq", "openai/gpt-oss-120b", "GPT OSS 120B"),
+    ("Qwen 3.8 27B (Groq)", "groq", "qwen/qwen3.8-27b", "Qwen 3.8 27B"),
+    ("GPT OSS 20B (Groq)", "groq", "openai/gpt-oss-20b", "GPT OSS 20B"),
     ("Claude", "claude", None, "Automatic"),
     ("Claude Fable", "claude", "fable", "Fable"),
     ("Claude Opus", "claude", "opus", "Opus"),
@@ -175,7 +180,8 @@ MODELS = [
     ("ChatGPT", "codex", None, "Automatic"),
     ("Gemini", "gemini", None, "Automatic"),
 ]
-MENUS = (("NVIDIA (free)", "nvidia"), ("Claude", "claude"), ("ChatGPT", "codex"), ("Gemini", "gemini"))
+MENUS = (("NVIDIA (free)", "nvidia"), ("Groq (free, fast)", "groq"), ("Claude", "claude"), ("ChatGPT", "codex"),
+         ("Gemini", "gemini"))
 # What Codex and the Antigravity CLI said their models are, kept from one start of the assistant to the next.
 MODELS_PATHS = {provider: os.path.join(GLib.get_user_cache_dir(), "mentor", f"{provider}-models.json")
                 for provider in ("codex", "gemini")}
@@ -214,10 +220,14 @@ PROVIDERS = {
     "nvidia": ("NVIDIA", "https://build.nvidia.com/models",
                "Mentor's assistant can run on models that NVIDIA hosts free of charge. Sign in on NVIDIA's "
                "page, open a model, choose \u201cGet API Key\u201d, and paste the key here. It stays on this computer."),
+    "groq": ("Groq", "https://console.groq.com/keys",
+             "Groq runs models free of charge, and fast. Its free plan takes only so much a minute, so on a long task "
+             "the assistant may pause a few seconds between steps. Sign in on Groq's page, choose \u201cCreate API "
+             "Key\u201d, and paste the key here. It stays on this computer."),
 }
 # What a provider's key looks like, whole: copied while its page is open, it brings the desktop and the key
 # card back by itself, and the card takes it from the clipboard (show_connect, the extension's AwaitCopy).
-KEY_SHAPES = {"nvidia": r"nvapi-[A-Za-z0-9_-]{20,}"}
+KEY_SHAPES = {"nvidia": r"nvapi-[A-Za-z0-9_-]{20,}", "groq": r"gsk_[A-Za-z0-9]{40,}"}
 KEYS_DIR = os.path.join(GLib.get_user_config_dir(), "mentor", "keys")
 SETTINGS_PATH = os.path.join(GLib.get_user_config_dir(), "mentor", "chat.json")
 PASTED_DIR = os.path.join(GLib.get_user_cache_dir(), "mentor", "attachments")
@@ -5042,6 +5052,7 @@ class DesktopWindow(Adw.ApplicationWindow):
             "beside the text box changes it at any time."))
         options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER, margin_top=6)
         needs = {"nvidia": "Models NVIDIA hosts free of charge, with a key from its page",
+                 "groq": "Fast models Groq hosts free of charge, with a key from its page",
                  "claude": "With your Claude account", "codex": "With your ChatGPT account",
                  "gemini": "With your Google account"}
         for label, provider in MENUS:

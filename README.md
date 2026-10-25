@@ -56,7 +56,7 @@ vm\                   your own disk, created on the first start
 ## First start
 
 - The launcher window offers memory, processors, full screen, the graphics card and Vulkan.
-- The assistant asks which engine to use, and nothing is picked for you: free models hosted by NVIDIA, with a key from build.nvidia.com that you paste in, or your own Claude, ChatGPT or Google account (Claude Code, Codex or Google's Antigravity CLI is then downloaded for you). Nothing is preconfigured, and keys and sign-ins stay on your computer.
+- The assistant asks which engine to use, and nothing is picked for you: free models hosted by NVIDIA or Groq (Groq's answer in a second or two), with a free key from build.nvidia.com or console.groq.com that you paste in, or your own Claude, ChatGPT or Google account (Claude Code, Codex or Google's Antigravity CLI is then downloaded for you). Nothing is preconfigured, and keys and sign-ins stay on your computer.
 - The user is `admin` and its first password is `admin`. Change it: open Console and run `passwd`. Mentor reminds you with a card in the chat until you do.
 
 ## What is in it

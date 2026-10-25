@@ -478,5 +478,11 @@
     "name": "24.10.26.04",
     "summary": "The assistant's own notes now describe the frosted glass. Nothing changes in how Mentor looks.",
     "published": "2026-10-25 00:53"
+  },
+  {
+    "version": 202610251042,
+    "name": "25.10.26.00",
+    "summary": "The assistant can now run on Groq's fast free models (choose Groq in the model menu and paste a free key), and its web search finds real pages instead of unrelated news.",
+    "published": "2026-10-25 12:42"
   }
 ]

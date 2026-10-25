@@ -1,11 +1,16 @@
 #!/usr/bin/python3
 """The assistant's own engine: a model behind an OpenAI-compatible API, given the Mentor tools.
 
-For the models NVIDIA hosts (build.nvidia.com) and for OpenAI's. One run is one
+For the models NVIDIA hosts (build.nvidia.com), Groq's and OpenAI's. One run is one
 turn of a conversation: the message goes to the model, the tools it asks for are
 run here (mentor_tools, so approvals and the sandbox work as for any agent), and
 that repeats until it answers. The conversation so far is kept in a file, named
 by a session id, so the next turn can go on from it.
+
+A provider whose free plan takes little a minute (LIGHT: Groq, 8,000 tokens, where the
+whole of Mentor's instructions and tools is about 16,500) is spoken to in light mode:
+a short note in place of AGENT.md, the main tools, tool_find for the others, and a
+conversation shortened to fit (light_fit), at the pace the provider's limit allows.
 
 What happens is printed as one JSON object per line, in the shape the Claude Code
 CLI uses for --output-format stream-json, so the assistant (mentor-chat) reads
@@ -19,8 +24,10 @@ The API key comes in the environment (MENTOR_API_KEY), never on the command line
 import argparse
 import base64
 import json
+import math
 import mimetypes
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -32,15 +39,46 @@ import mentor_tools
 
 PROVIDERS = {
     "nvidia": "https://integrate.api.nvidia.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
     "openai": "https://api.openai.com/v1",
 }
+LIGHT = {"groq"}
+# What a model in light mode has from the start; tool_find adds the others as it needs them.
+LIGHT_TOOLS = ("docs_find", "file_read", "file_search", "run_command", "run_root_command", "package_search",
+               "package_install", "apps_find", "app_open", "settings_find", "settings_set", "web_search")
+# Bytes of one request in light mode. Groq's free plan takes 8,000 tokens a minute for GPT OSS and 7,000 for
+# Qwen, which counts 3.7 bytes a token: 26,000 was 7,027 of them (2026-10-25). A 413 says the real limit (Too large).
+# Well under it: a request that needs nearly a whole minute's worth was still refused after three waits.
+LIGHT_BUDGET = 19000
+LIGHT_KEPT = 400      # characters an older tool answer is cut to in light mode
+# A step takes up to 40 s at the free plan's pace, and a model that has lost its first steps may go round
+# in circles: from the first it is told to answer with what it has, at the second it is given no tools.
+LIGHT_STEPS = (16, 24)
+LIGHT_NOTE = (
+    "\n\nYou run in light mode: this provider takes little text a minute, so you have only the main Mentor "
+    "tools and not Mentor's instructions (/etc/mentor/AGENT.md and the other /etc/mentor/*.md).\n"
+    "- Before you change anything of the system, and whenever something of Mentor's is wrong or you do not know "
+    "how Mentor does a thing, call docs_find with it in a few English words: it gives the part of the instructions "
+    "that fits. Read more of a file with file_read, start_line and lines; never a whole file.\n"
+    "- For what your tools do not cover (services, logs, the sandbox for system changes, undo, reminders, web apps, "
+    "Flathub, the screen, windows, sound, network, wallpaper, recipes, updates), call tool_find with what you want "
+    "to do; the tools it names are yours from then on.\n"
+    "- Keep what tools give back small: search or read a part, not whole files or long lists. Older tool answers "
+    "are cut short in what you see. Answer briefly.")
+TOOL_FIND = {"type": "function", "function": {
+    "name": "tool_find",
+    "description": "Find more Mentor tools by what you want to do (\"restart a service\", \"set a reminder\", "
+                   "\"undo a change\"). The tools it names can be called from then on.",
+    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+USER_AGENT = "mentor-agent/1"  # Groq's front (Cloudflare) refuses Python's own with "error code: 1010"
+limits = {}  # what the provider last said of its limit a minute (tokens left, the most, when) and its bytes a token
 GUIDE = "/etc/mentor/AGENT.md"
 SESSIONS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "mentor", "sessions")
 TOOL_PREFIX = "mcp__mentor__"  # how the assistant knows a Mentor tool, whichever engine called it
 MAX_STEPS = 60
 MAX_HISTORY_CHARS = 400_000    # older turns are dropped beyond this
 MAX_PICTURE_BYTES = 4 << 20
-BUSY_WAITS = (5, 15, 30)       # seconds, when the provider says to slow down
+BUSY_WAITS = (5, 15, 30, 60, 60)  # seconds, when the provider says to slow down (or as long as it says)
 ANSWER_WITHIN = 240            # seconds for one answer; free endpoints queue requests
 
 
@@ -82,18 +120,54 @@ def waiting(text):
     emit({"type": "system", "subtype": "status", "text": text})
 
 
+def keep_limits(headers):
+    """What the provider says of its limit a minute, for pace()."""
+    try:
+        limits.update(left=int(headers["x-ratelimit-remaining-tokens"]), most=int(headers["x-ratelimit-limit-tokens"]),
+                      at=time.time())
+    except (KeyError, TypeError, ValueError):
+        pass
+
+
+def pace(size):
+    """Wait, before a request of `size` bytes, until the provider's limit a minute has room for it. What was
+    used comes back little by little (a minute's worth over a minute), so only the part missing is waited for."""
+    if "left" not in limits:
+        return
+    # A token is 3.7 (Qwen) to 5 (GPT OSS) bytes of what is sent; the provider's own count of the last
+    # request says which (ask): guessed short, the wait ended in a 429 and a second wait (2026-10-25).
+    wanted = min(size / limits.get("bytes_a_token", 3.5), limits["most"])
+    now = limits["left"] + (time.time() - limits["at"]) * limits["most"] / 60
+    if wanted > now:
+        wait = (wanted - now) * 60 / limits["most"]
+        waiting(f"The free plan takes only so much a minute; going on in {math.ceil(wait)} s.")
+        time.sleep(wait + 0.5)
+        waiting("Waiting for the model.")
+    for told in ("left", "most", "at"):
+        limits.pop(told, None)
+
+
 def ask(base, key, body):
     """One request to the model. Returns its message."""
+    data = json.dumps(body).encode()
     request = urllib.request.Request(
-        base.rstrip("/") + "/chat/completions", json.dumps(body).encode(),
-        {"Content-Type": "application/json", "Authorization": f"Bearer {key}", "Accept": "application/json"})
+        base.rstrip("/") + "/chat/completions", data,
+        {"Content-Type": "application/json", "Authorization": f"Bearer {key}", "Accept": "application/json",
+         "User-Agent": USER_AGENT})
     for wait in (*BUSY_WAITS, None):
+        pace(len(data))
         try:
             with urllib.request.urlopen(request, timeout=ANSWER_WITHIN) as response:
                 answer = json.load(response)
+                keep_limits(response.headers)
+            counted = (answer.get("usage") or {}).get("prompt_tokens")
+            if isinstance(counted, int) and counted > 100:
+                limits["bytes_a_token"] = len(data) / counted
             return answer["choices"][0]["message"]
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:600]
+            if e.code == 413:  # more than the provider takes a minute, whatever the wait
+                raise Failed("too large", f"The request is larger than the provider takes: {detail}")
             if e.code in (401, 403):
                 raise Failed("auth", "The provider did not accept the key.")
             if e.code in (429, 502, 503, 529) and wait is not None:
@@ -101,8 +175,10 @@ def ask(base, key, body):
                     wait = min(60.0, float(e.headers.get("Retry-After") or wait))
                 except ValueError:
                     pass
-                waiting(("The provider's limit for this key is reached" if e.code == 429 else "The provider is busy")
-                        + f"; trying again in {round(wait)} s.")
+                # The same words as pace(): Groq's free plan refills more slowly than it tells, and "the limit
+                # is reached" after every wait looked like something was wrong (2026-10-25).
+                waiting((f"The free plan takes only so much a minute; going on in {round(wait)} s." if e.code == 429
+                         else f"The provider is busy; trying again in {round(wait)} s."))
                 time.sleep(wait)
                 waiting("Waiting for the model.")
                 continue
@@ -129,6 +205,72 @@ def trimmed(history):
             break
         history = history[later[0]:]
     return history
+
+
+def light_fit(history, room):
+    """In light mode, the conversation as it is sent: at most `room` bytes. The tools' older answers
+    are cut short first (the last two stay whole), then the oldest turns go, then the last answers
+    are cut to 2,000 characters, then the oldest steps of a long turn go (a request of 20 steps was
+    too large with every answer cut, 2026-10-25), then the last answers are cut to 400. What is kept
+    in the session file stays whole."""
+    def size(messages):
+        return len(json.dumps(messages))
+
+    def cut(message, most):
+        content = message.get("content")
+        if message["role"] != "tool" or not isinstance(content, str) or len(content) <= most:
+            return message
+        return {**message, "content": content[:most] + f"\n[... {len(content) - most} characters cut here]"}
+
+    answers = [i for i, m in enumerate(history) if m["role"] == "tool"]
+    sent = [cut(m, LIGHT_KEPT) if i in answers[:-2] else m for i, m in enumerate(history)]
+    while size(sent) > room:
+        later = [i for i, m in enumerate(sent) if m["role"] == "user" and i > 0]
+        if not later:
+            break
+        sent = sent[later[0]:]
+    if size(sent) > room:
+        sent = [cut(m, 2000) for m in sent]
+    # A step is one message of the model's and the tools' answers after it, up to its next; the last two stay.
+    gone = []  # what each step left out called, in a few words
+    while size(sent) > room:
+        steps = [i for i, m in enumerate(sent) if m["role"] == "assistant" and i > 0]
+        if len(steps) <= 2:
+            break
+        gone += [f"{(c.get('function') or {}).get('name')} {str((c.get('function') or {}).get('arguments'))[:70]}"
+                 for c in sent[steps[0]].get("tool_calls") or [] if isinstance(c, dict)]
+        sent = sent[:steps[0]] + sent[steps[1]:]
+    # The model is told what it did there: without it, it searched the same again and again (26 steps, 2026-10-25).
+    if gone and sent[0]["role"] == "user":
+        note = ("\n\n[Mentor: your first steps for this were left out here, to fit the provider's limit. You already "
+                "called: " + "; ".join(gone[-15:]) + ". Do not do them again; go on from what follows, and answer soon.]")
+        content = sent[0]["content"]
+        sent[0] = {**sent[0], "content": content + note if isinstance(content, str)
+                   else [*content, {"type": "text", "text": note}]}
+    if size(sent) > room:
+        sent = [cut(m, LIGHT_KEPT) for m in sent]
+    return sent
+
+
+def tool_find(query, tools, offered):
+    """The tools that fit what the model wants to do, made its own from then on (added to `offered`)."""
+    words = [w[:5] for w in re.findall(r"[a-z]+", str(query).lower()) if len(w) > 2]
+    scored = []
+    for tool in tools:
+        name, description = tool["function"]["name"], tool["function"]["description"].lower()
+        if tool in offered:
+            continue
+        score = sum(3 * (w in name) + (w in description) for w in words)
+        if score:
+            scored.append((-score, name, tool))
+    scored.sort(key=lambda found: found[:2])
+    found = [tool for _, _, tool in scored[:6]]
+    if not found:
+        return ("Nothing fits those words. The other tools there are: "
+                + ", ".join(t["function"]["name"] for t in tools if t not in offered) + ". Ask again with a name.")
+    offered.extend(found)
+    return "These are yours now:\n" + "\n".join(
+        f"- {t['function']['name']}: {t['function']['description'].split('. ')[0]}" for t in found)
 
 
 def main():
@@ -170,12 +312,18 @@ def main():
             json.dump(history, f)  # what was said is the user's own
         os.replace(path + ".new", path)
 
+    light = args.provider in LIGHT
     try:
         with open(GUIDE) as f:
             guide = f.read()
     except OSError:
         guide = ""
-    system = {"role": "system", "content": f"{guide}\n\n{args.system}".strip()}
+    # Asked which model it is, a model guessed ("ChatGPT (gpt-4o)", from GPT OSS on Groq, 2026-10-25).
+    itself = f"\n\nYou are the model {args.model}, through {args.provider}'s service."
+    if light:  # the instructions are read a part at a time, with docs_find
+        system = {"role": "system", "content": (args.system + LIGHT_NOTE + itself).strip()}
+    else:
+        system = {"role": "system", "content": f"{guide}\n\n{args.system}{itself}".strip()}
 
     parts = [{"type": "text", "text": args.prompt}]
     for attached in args.file:
@@ -190,6 +338,12 @@ def main():
 
     tools = [{"type": "function", "function": {"name": name, "description": description, "parameters": schema}}
              for name, (description, schema, _) in mentor_tools.TOOLS.items()]
+    # In light mode also the tools it found in this conversation's turns before (tool_find's are not kept)
+    used = {str((c.get("function") or {}).get("name")) for m in history for c in m.get("tool_calls") or []
+            if isinstance(c, dict)}
+    offered = [t for t in tools if t["function"]["name"] in (*LIGHT_TOOLS, *used)] + [TOOL_FIND] if light else tools
+    budget = LIGHT_BUDGET
+    mistaken, slips = "", 0  # a call of a tool the provider refused as not fitting it, and how many so far
     extras = {"reasoning_effort": args.effort} if args.effort else {}
     sees_pictures = True
     said = ""
@@ -198,14 +352,57 @@ def main():
     for step in range(MAX_STEPS):
         history = trimmed(history)
         while True:
-            sent = [system, *(history if sees_pictures else without_pictures(history))]
+            sent = history if sees_pictures else without_pictures(history)
+            now, given = system, offered
+            if mistaken:  # the provider refused its last call of a tool as not fitting the tool (below)
+                now = {**now, "content": now["content"] + f"\n\nYour last call of a tool was refused: {mistaken}. "
+                                                           "Call it again with the parameters it asks for."}
+            if light and step >= LIGHT_STEPS[0]:
+                now = {**system, "content": system["content"] + (
+                    f"\n\nYou have taken {step} steps for this request, and each is slow on this provider. Answer "
+                    "now with what you have found, and say what is left undone; call a tool only to finish.")}
+                if step >= LIGHT_STEPS[1]:
+                    given = []
+            if light:
+                sent = light_fit(sent, budget - len(json.dumps([now, given])))
+            body = {"model": args.model, "messages": [now, *sent], **({"tools": given} if given else {}), **extras}
             try:
-                message = ask(base, key, {"model": args.model, "messages": sent, "tools": tools, **extras})
+                message = ask(base, key, body)
+                mistaken = ""
                 break
             except Failed as e:
+                # Groq refuses a call of a tool it was not given (one the model knew of from the
+                # instructions, without tool_find): given now, the request goes again.
+                wanted = re.search(r"call tool '([\w-]+)' which was not in request\.tools", str(e))
+                known = [t for t in tools if wanted and t["function"]["name"] == wanted.group(1) and t not in offered]
+                # Groq also checks the model's call against the tool's parameters and refuses one that does
+                # not fit (400 "tool call validation failed"): a slip of the model's, told to it and tried again.
+                slip = re.search(r"tool call validation failed: ([^\"]{0,300})", str(e))
+                if light and known:
+                    offered += known
+                elif slip and slips < 3:
+                    slips += 1
+                    mistaken = slip.group(1)
+                elif light and e.kind == "too large" and budget > LIGHT_BUDGET // 3:
+                    # It says how much it takes and how much this was ("Limit 7000, Requested 7027"):
+                    # the budget is made to fit that, with room to spare; otherwise a guess. Smaller each
+                    # time, whatever it says: a request that could not get smaller asked the same again.
+                    told = re.search(r"Limit (\d+), Requested (\d+)", str(e))
+                    fits = int(len(json.dumps(body)) * int(told.group(1)) / int(told.group(2)) * 0.85) if told else budget
+                    budget = min(fits, int(budget * 0.85))
+                elif light and not given:  # given no tools, it called one all the same (Groq: 400 "tool_use_failed")
+                    save()
+                    return finish(f"I stopped after {step} steps without a finished answer: on this model long work is "
+                                  "slow, and I was going round in circles. Ask again in smaller parts, or choose "
+                                  "another model for it.", "error")
+                elif e.kind == "too large":
+                    save()
+                    return finish("This grew too long for the provider's free plan, which takes only so much at once. "
+                                  "Ask again in a new conversation, in smaller parts, or choose another model for it.",
+                                  "error")
                 # A request the provider calls malformed is usually one of the two things
                 # not every model has: a level of effort, or eyes.
-                if e.kind == "request" and extras:
+                elif e.kind == "request" and extras:
                     extras = {}
                 elif e.kind == "request" and sees_pictures and any(isinstance(m.get("content"), list) for m in history):
                     sees_pictures = False
@@ -243,6 +440,10 @@ def main():
                 arguments, bad = {}, True
             else:
                 bad = False
+            if light and name == "tool_find":  # ours, not a Mentor tool: not shown in the chat
+                history.append({"role": "tool", "tool_call_id": call.get("id"),
+                                "content": tool_find(arguments.get("query", ""), tools, offered)})
+                continue
             emit({"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "id": call.get("id"), "name": TOOL_PREFIX + name, "input": arguments}]}})
             if bad:

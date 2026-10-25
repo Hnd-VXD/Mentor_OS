@@ -26,6 +26,7 @@ MAX_TOTAL = 90000
 # What must never be in a file that goes to other people.
 SECRETS = [
     (re.compile(r"nvapi-[A-Za-z0-9_-]{16,}"), "an NVIDIA key"),
+    (re.compile(r"\bgsk_[A-Za-z0-9]{20,}"), "a Groq key"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"), "an API key"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), "a GitHub token"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"), "a Google key"),

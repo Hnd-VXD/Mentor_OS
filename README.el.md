@@ -49,11 +49,12 @@ Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
 - "Ask Mentor" στο δεξί κλικ εφαρμογών και αρχείων, και στην αναζήτηση του GNOME.
 - Αν τελειώσει ενώ μια εφαρμογή τον καλύπτει, βγαίνει ειδοποίηση.
 
-Ο βοηθός τρέχει σε όποιον από τέσσερις «κινητήρες» διαλέξει ο χρήστης από το κουμπί του μοντέλου:
+Ο βοηθός τρέχει σε όποιον από πέντε «κινητήρες» διαλέξει ο χρήστης από το κουμπί του μοντέλου:
 
 | Επιλογή | Τρέχει μέσω | Τι χρειάζεται |
 |---|---|---|
 | GLM 5.3, Kimi K3, DeepSeek V4.1 Flash (προεπιλογή) | `mentor-agent`, δικός μας κινητήρας πάνω στο API της NVIDIA (build.nvidia.com) | Δωρεάν κλειδί NVIDIA, που ο χρήστης επικολλά στην κάρτα πρώτης εκκίνησης |
+| GPT OSS 120B, Qwen 3.8 27B, GPT OSS 20B (Groq) | ο ίδιος `mentor-agent` πάνω στο API της Groq, σε «ελαφριά λειτουργία» που χωράει στο δωρεάν όριο της Groq ανά λεπτό | Δωρεάν κλειδί Groq (console.groq.com) |
 | Claude | Claude Code CLI | Σύνδεση με λογαριασμό Claude |
 | ChatGPT | Codex CLI | Σύνδεση με λογαριασμό ChatGPT |
 | Gemini | Antigravity CLI της Google (`agy`) | Σύνδεση με λογαριασμό Google |
@@ -66,7 +67,7 @@ Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
 
 - `mentor-chat`: διάφανο παράθυρο GTK χωρίς πλαίσιο, που ξεκινά στην είσοδο. Τρέχει το Claude Code CLI χωρίς τερματικό, μία φορά ανά μήνυμα (`claude -p ... --output-format stream-json`), με τα εργαλεία του Mentor μέσω MCP (`/etc/mentor/mcp.json`). Τα δικά του εργαλεία shell και εγγραφής αρχείων είναι κλειστά, ώστε κάθε αλλαγή να περνά από το agent layer.
 - Η επέκταση `mentor@mentor.local` του GNOME Shell το δηλώνει ως παράθυρο τύπου desktop (`Meta.Window.set_type`), το απλώνει στο work area και δίνει τα `Show` / `Restore` / `Toggle` και το `Screenshot` μέσω D-Bus (`/org/mentor/Shell`).
-- Πρώτη χρήση: κάρτα «Connect the agent» για τον κινητήρα του επιλεγμένου μοντέλου (πεδίο για το κλειδί NVIDIA, ή σύνδεση σε τερματικό για Claude / ChatGPT / Gemini· το Claude Code, το Codex και το Antigravity CLI δεν είναι μέσα στο image, τα κατεβάζει το `mentor-engine` στο `~/.local` του χρήστη την πρώτη φορά), με κουμπιά για τους άλλους.
+- Πρώτη χρήση: κάρτα «Connect the agent» για τον κινητήρα του επιλεγμένου μοντέλου (πεδίο για το κλειδί NVIDIA ή Groq, ή σύνδεση σε τερματικό για Claude / ChatGPT / Gemini· το Claude Code, το Codex και το Antigravity CLI δεν είναι μέσα στο image, τα κατεβάζει το `mentor-engine` στο `~/.local` του χρήστη την πρώτη φορά), με κουμπιά για τους άλλους.
 - Το Gemini τρέχει μέσω του Antigravity CLI (`agy -p ... --output-format stream-json`), μία φορά ανά μήνυμα· το Gemini CLI δεν εξυπηρετεί προσωπικούς λογαριασμούς από τον Ιούνιο του 2026. Κάθε συνομιλία έχει δικό της φάκελο εργασίας (`~/.local/state/mentor/agy/`) με τις οδηγίες του Mentor (`AGENTS.md`) και τα εργαλεία του μέσω MCP (`.agents/mcp_config.json`). Στις ρυθμίσεις του `agy` μπαίνει ένας μόνο κανόνας, `mcp(mentor/*)`· τα δικά του εργαλεία shell μένουν κλειστά, γιατί χωρίς τερματικό ό,τι θέλει έγκριση απορρίπτεται. Τα μοντέλα διαβάζονται από το `agy models` και τα όρια από το `agy -p /usage`.
 - Το `mentor-agent` μιλά το πρωτόκολλο chat completions με κλήση εργαλείων, εκτελεί τα εργαλεία του Mentor απευθείας (`mentor_tools`) και τυπώνει τα ίδια γεγονότα JSON με το Claude Code, ώστε ο βοηθός να διαβάζει όλους τους κινητήρες με τον ίδιο τρόπο.
 - Το Chromium έρχεται με το uBlock Origin Lite (`/etc/chromium/policies/managed/mentor.json`)· με τον ίδιο τρόπο ο agent εγκαθιστά άλλα πρόσθετα.

@@ -2566,46 +2566,188 @@ class _PageText:
         return "\n".join(out).strip()
 
 
+# Searching (2026-10-25): the pages without scripts that search engines keep for simple clients let one
+# computer through only a few searches in a row, and an agent searches in bursts. DuckDuckGo then answers
+# 202 with a page that asks if one is a robot, for minutes; Brave 429 with a captcha. Bing, the second way
+# before, answered every English query from Greece with Greek news: the agent took that for results and
+# searched again and again. Now: two engines in turn, one that refuses rests (WEB_REST), searches are a
+# few seconds apart (WEB_GAP), the same search is answered again from the cache, and results that share no
+# word with the query are not results.
+WEB_SEARCH_STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "mentor",
+                                "web-search.json")
+WEB_REST = 600   # seconds an engine that refused is left alone
+WEB_GAP = 3      # seconds between two searches, at least
+WEB_KEPT = 900   # seconds a search's results are given again for the same words
+_WEB_FILLER = {"the", "and", "for", "with", "how", "what", "from", "this", "that", "site", "www", "com", "http", "https"}
+
+
+class _Refused(Exception):
+    """A search engine that asks whether we are a robot."""
+
+
+def _web_clean(text):
+    import html
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html.unescape(text or ""))).strip()
+
+
+def _search_brave(query):
+    """[(title, address, line)] from Brave's page."""
+    import html
+    try:
+        page, _url, _kind = _web_get("https://search.brave.com/search?" + urllib.parse.urlencode({"q": query, "source": "web"}))
+    except OSError as e:
+        if "429" in str(e) or "403" in str(e):
+            raise _Refused("Brave")
+        raise
+    found = []
+    for block in re.split(r'<div class="snippet [^"]*" data-pos="\d+" data-type="web"', page)[1:]:
+        link = re.search(r'<a href="(https?://[^"]+)"', block)
+        title = re.search(r'search-snippet-title[^"]*" title="([^"]*)"', block)
+        line = re.search(r'class="content desktop-default-regular[^"]*"[^>]*>(.*?)</div>', block, re.S)
+        if link and title:
+            found.append((_web_clean(title.group(1)), html.unescape(link.group(1)), _web_clean(line.group(1) if line else "")))
+    if not found and "captcha" in page.lower():
+        raise _Refused("Brave")
+    return found
+
+
+def _search_duckduckgo(query):
+    """[(title, address, line)] from DuckDuckGo's page without scripts."""
+    page, _url, _kind = _web_get("https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query}))
+    found = []
+    for m in re.finditer(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
+                         page, re.S):
+        target = urllib.parse.parse_qs(urllib.parse.urlparse(m.group(1)).query).get("uddg", [m.group(1)])[0]
+        if "duckduckgo.com/y.js" in target:  # an advertisement
+            continue
+        line = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', m.group(3), re.S)
+        found.append((_web_clean(m.group(2)), target, _web_clean(line.group(1) if line else "")))
+    if not found and "anomaly" in page:  # "Unfortunately, bots use DuckDuckGo too", answered 202
+        raise _Refused("DuckDuckGo")
+    return found
+
+
+_WEB_ENGINES = (("brave", _search_brave), ("duckduckgo", _search_duckduckgo))
+
+
+def _search_open(query):
+    """[(title, address, line)] from the search interfaces made for programs, when both engines refuse: the
+    ArchWiki's (full text; its pages in other languages left out), GitHub's repositories (ten a minute
+    without an account) and Wikipedia's. They cover most of what is asked here: programs, Linux, GNOME."""
+    q = urllib.parse.quote(query)
+    found = []
+
+    def get(url):
+        try:
+            return json.loads(_web_get(url, timeout=15)[0])
+        except (OSError, ValueError):
+            return {}
+    # The ArchWiki's full-text search put laptops first for "pipewire bluetooth": the pages named after the
+    # query's own words come first (PipeWire, Bluetooth), its full-text hits after.
+    words = [w for w in re.findall(r"\w+", query.lower()) if len(w) > 2 and w not in _WEB_FILLER
+             and w not in ("arch", "linux", "install", "use", "using", "fix", "error", "not", "work", "working")]
+    titles = []
+    for word in words[:3]:
+        listed = get(f"https://wiki.archlinux.org/api.php?action=opensearch&search={urllib.parse.quote(word)}"
+                     "&limit=2&namespace=0&format=json")
+        titles += listed[1] if isinstance(listed, list) and len(listed) > 1 else []
+    for item in get(f"https://wiki.archlinux.org/api.php?action=query&list=search&srsearch={q}&srwhat=text"
+                    "&format=json&srlimit=6").get("query", {}).get("search", []):
+        titles.append(item.get("title", ""))
+    seen = set()
+    for title in titles:
+        if (title and not re.search(r" \([^)]*\)$", title) and title.lower() not in seen  # not a translation
+                and len(seen) < 4):
+            seen.add(title.lower())
+            found.append((title + " - ArchWiki", "https://wiki.archlinux.org/title/" + title.replace(" ", "_"), ""))
+    for item in get(f"https://api.github.com/search/repositories?q={q}&per_page=4").get("items", [])[:4]:
+        found.append((item.get("full_name", "") + " - GitHub", item.get("html_url", ""),
+                      f"{item.get('description') or ''} ({item.get('stargazers_count', 0)} stars, updated "
+                      f"{str(item.get('pushed_at', ''))[:10]})"))
+    for item in get(f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={q}&format=json"
+                    "&srlimit=3").get("query", {}).get("search", [])[:3]:
+        found.append((item["title"] + " - Wikipedia", "https://en.wikipedia.org/wiki/" + item["title"].replace(" ", "_"),
+                      _web_clean(item.get("snippet"))))
+    return found
+
+
+def _fitting(query, found):
+    """The results that share at least one word of the query: what does not is a page's own idea, not a result."""
+    words = {w for w in re.findall(r"\w+", query.lower()) if len(w) > 2 and w not in _WEB_FILLER}
+    if not words:
+        return found
+    return [r for r in found if words & set(re.findall(r"\w+", " ".join(r).lower()))]
+
+
 def web_search(a):
-    """Search the web (DuckDuckGo's page without scripts): titles, addresses and a line each."""
-    import urllib.parse
+    """Search the web: titles, addresses and a line each, from Brave or DuckDuckGo, in turn."""
     query = " ".join(str(a.get("query") or "").split())
     if not query:
         return 1, "`query`: what to look for"
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "web_search", {"query": query})
     most = max(1, min(int(a.get("results") or 8), 20))
     try:
-        html, _url, _kind = _web_get("https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query}))
-    except OSError:
-        html = ""
-    results = []
-    for m in re.finditer(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
-                         html, re.S):
-        link, title, rest = m.group(1), m.group(2), m.group(3)
-        target = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("uddg", [link])[0]
-        if "duckduckgo.com/y.js" in target:  # an advertisement
-            continue
-        snippet = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
-        clean = lambda t: re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", __import__("html").unescape(t or ""))).strip()
-        results.append(f"{len(results) + 1}. {clean(title)}\n   {target}\n   {clean(snippet.group(1) if snippet else '')[:300]}")
-        if len(results) >= most:
-            break
-    if not results:  # refused or changed: Bing's page as a second way
-        try:
-            html, _url, _kind = _web_get("https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "setlang": "en"}))
-        except OSError:
-            html = ""
-        clean = lambda t: re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", __import__("html").unescape(t or ""))).strip()
-        for m in re.finditer(r'<li class="b_algo".*?<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)</li>', html, re.S):
-            snippet = re.search(r"<p[^>]*>(.*?)</p>", m.group(3), re.S)
-            results.append(f"{len(results) + 1}. {clean(m.group(2))}\n   {__import__('html').unescape(m.group(1))}\n   "
-                           f"{clean(snippet.group(1) if snippet else '')[:300]}")
-            if len(results) >= most:
+        with open(WEB_SEARCH_STATE) as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            raise ValueError
+    except (OSError, ValueError):
+        state = {}
+    resting, kept = state.setdefault("resting", {}), state.setdefault("kept", {})
+    now = time.time()
+    again = kept.get(query.lower())
+    if again and now - again[0] < WEB_KEPT:
+        found = [tuple(r) for r in again[1]]
+        said = " (the same search a little earlier)"
+    else:
+        found, said, refused = [], "", []
+        # The engine after the one used last first, so that the searches are shared between them.
+        order = sorted(_WEB_ENGINES, key=lambda e: e[0] == state.get("last"))
+        for name, search in order:
+            if resting.get(name, 0) > now:
+                refused.append(name)
+                continue
+            wait = state.get("at", 0) + WEB_GAP - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            state["at"], state["last"] = time.time(), name
+            try:
+                found = _fitting(query, search(query))
+            except _Refused:
+                resting[name] = time.time() + WEB_REST
+                refused.append(name)
+                continue
+            except OSError:
+                continue
+            if found:
                 break
-    if not results:
-        return 1, ("no results came back (the search pages may have changed or refused): try other words, or "
-                   "web_read a page you know")
-    return 0, f"Results for \u201c{query}\u201d (read one with web_read):\n" + "\n".join(results)
+        if not found:
+            found = _fitting(query, _search_open(query))
+            if found:
+                said = (" (from the ArchWiki, GitHub and Wikipedia: the search engines refuse this computer for a while"
+                        if len(refused) == len(_WEB_ENGINES) else " (from the ArchWiki, GitHub and Wikipedia") + ")"
+        if found:
+            kept[query.lower()] = [now, found[:20]]
+            for old in sorted(kept, key=lambda q: kept[q][0])[:-30]:
+                del kept[old]
+    try:
+        os.makedirs(os.path.dirname(WEB_SEARCH_STATE), exist_ok=True)
+        with open(WEB_SEARCH_STATE + ".new", "w") as f:
+            json.dump(state, f)
+        os.replace(WEB_SEARCH_STATE + ".new", WEB_SEARCH_STATE)
+    except OSError:
+        pass
+    if not found:
+        if refused and len(refused) == len(_WEB_ENGINES):
+            back = max(1, round((min(resting[name] for name in refused) - time.time()) / 60))
+            return 1, (f"the search engines refuse this computer for now, after many searches in a short time; one "
+                       f"is back in about {back} minute(s). Meanwhile web_read a page you know (for software: "
+                       "https://github.com/OWNER/NAME, https://api.github.com/search/repositories?q=WORDS, "
+                       "https://wiki.archlinux.org/title/NAME; flatpak_search for apps), or tell the user and go on "
+                       "without it. Do not search again before then.")
+        return 1, "nothing was found for those words: try fewer or other words, or web_read a page you know"
+    lines = [f"{n}. {title}\n   {link}\n   {line[:300]}" for n, (title, link, line) in enumerate(found[:most], 1)]
+    return 0, f"Results for \u201c{query}\u201d{said} (read one with web_read):\n" + "\n".join(lines)
 
 
 def web_read(a):

@@ -39,7 +39,8 @@ CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or f"{HOME}/.config", "m
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or f"{HOME}/.local/state", "mentor")
 SANDBOX = "repair"
 TOOL_PREFIX = "mcp__mentor__"
-NVIDIA_MODEL = "z-ai/glm-5.3"  # when the assistant's own choice is not one of NVIDIA's
+# The engines that run on a key (mentor-agent): the model when the assistant's own choice is not one of theirs.
+KEY_MODELS = {"nvidia": "z-ai/glm-5.3", "groq": "openai/gpt-oss-120b"}
 ALLOWED_TOOLS = "mcp__mentor,Read,Glob,Grep,WebSearch,WebFetch"
 DISALLOWED_TOOLS = "Bash,Edit,Write,NotebookEdit"
 
@@ -254,9 +255,9 @@ def settings():
         return {}
 
 
-def nvidia_key():
+def saved_key(provider):
     try:
-        with open(os.path.join(CONFIG, "keys", "nvidia")) as f:
+        with open(os.path.join(CONFIG, "keys", provider)) as f:
             return f.read().strip()
     except OSError:
         return ""
@@ -280,7 +281,8 @@ ENGINES = {
     "claude": ("Claude", lambda: succeeds("claude", "auth", "status", wanted="loggedIn")),
     "codex": ("ChatGPT", lambda: succeeds("codex", "login", "status")),
     "gemini": ("Gemini", lambda: succeeds("agy", "models")),
-    "nvidia": ("NVIDIA (free models)", lambda: bool(nvidia_key())),
+    "nvidia": ("NVIDIA (free models)", lambda: bool(saved_key("nvidia"))),
+    "groq": ("Groq (free, fast models)", lambda: bool(saved_key("groq"))),
 }
 
 
@@ -339,10 +341,11 @@ class Engine:
             if self.session:
                 argv += ["--conversation", self.session]
             return argv, folder, {}
-        argv = [AGENT, "--prompt=" + message, "--provider", "nvidia", "--model", self.model or NVIDIA_MODEL, "--system", PROMPT]
+        argv = [AGENT, "--prompt=" + message, "--provider", self.provider,
+                "--model", self.model or KEY_MODELS[self.provider], "--system", PROMPT]
         if self.session:
             argv += ["--resume", self.session]
-        return argv, HOME, {"MENTOR_API_KEY": nvidia_key()}
+        return argv, HOME, {"MENTOR_API_KEY": saved_key(self.provider)}
 
     def ask(self, message, carried=False):
         """Send one message and print what comes back as it comes. True if it answered."""
@@ -413,7 +416,7 @@ class Engine:
 
     def read(self, event):
         """Print what one event of the engine's tells. Returns (it has answered, what went wrong)."""
-        if self.provider in ("claude", "nvidia"):
+        if self.provider in ("claude", *KEY_MODELS):
             if event.get("session_id"):
                 self.session = event["session_id"]
             kind = event.get("type")
@@ -557,6 +560,7 @@ def no_engine():
     say("No engine is ready to answer, so there is nobody to talk to yet. To make one ready:")
     say("NVIDIA, with a free key (build.nvidia.com, any model, Get API Key):", indent="    ")
     say("mkdir -p ~/.config/mentor/keys; nano ~/.config/mentor/keys/nvidia", indent="      ")
+    say("Groq, the same with a key from console.groq.com/keys, in ~/.config/mentor/keys/groq", indent="    ")
     say("Claude:   /usr/local/lib/mentor/mentor-engine claude", indent="    ")
     say("ChatGPT:  /usr/local/lib/mentor/mentor-engine codex", indent="    ")
     say("Then: mentor repair")

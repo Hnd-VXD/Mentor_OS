@@ -13,7 +13,7 @@ This is for the agent, and written so that a small model can follow it step by s
 | `REBUILD.md` | this one: every file, how to check them, how to put one back |
 | `DESKTOP.md` | what is added to GNOME: the shell extension, key bindings, the taskbar; a new GNOME version |
 | `ASSISTANT.md` | the assistant itself (mentor-chat): the window on the desktop, conversations, attachments, the bell |
-| `ENGINES.md` | the models the assistant runs on: NVIDIA, Claude, ChatGPT, Gemini; picker, sign-in, usage |
+| `ENGINES.md` | the models the assistant runs on: NVIDIA, Groq, Claude, ChatGPT, Gemini; picker, sign-in, usage |
 | `TOOLS.md` | the tools the agent has, approval, the sandbox, undo, the rules it runs under |
 | `BOOT.md` | starting safely after a change: trial start, going back by itself, the start-up picture; a new kernel |
 | `SUGGESTIONS.md` | what the system brings up by itself: updates, disk, failed services, Arch and GNOME news, new apps, GitHub |
@@ -113,7 +113,7 @@ This is the case after a new GNOME, kernel, Python or other program: the file is
 | `/usr/local/bin/mentor-chat` | the assistant: the window that is the desktop; also the cards of programs going online (`net_card`, `follow_net`, `answer_net`, `remind_waiting`, `globe`), the menu's Network… and Important warnings… (`show_network`, `show_warnings`, `side_window`) and the card log (`log_card`, `~/.local/state/mentor/cards.jsonl`) | yes | at login, or start it again | ASSISTANT.md, ENGINES.md, SECURITY.md |
 | `/usr/share/icons/hicolor/scalable/actions/mentor-thumb-up-symbolic.svg`, `mentor-thumb-down-symbolic.svg` | the thumbs in the Recipes app and in the "Did it work?" card | user | next start of the app | RECIPES.md |
 | `/usr/share/icons/hicolor/scalable/actions/mentor-globe-symbolic.svg` | the small globe beside a place on the internet: cards of programs going online, Network… | user | next start of the chat (`gtk-update-icon-cache /usr/share/icons/hicolor` as root first) | SECURITY.md, "Programs going online" |
-| `/usr/local/bin/mentor-agent` | the engine for the NVIDIA and OpenAI models | yes | next message | ENGINES.md |
+| `/usr/local/bin/mentor-agent` | the engine for the NVIDIA, Groq (light mode) and OpenAI models | yes | next message | ENGINES.md |
 | `/etc/xdg/autostart/mentor-desktop.desktop` | starts mentor-chat at login | yes | login | ASSISTANT.md |
 | `/usr/local/bin/mentor-settings` | Mentor Settings: the window for the user's choices about safety, suggestions, warnings, and the journal to read | yes | next time it is opened | SETTINGS.md |
 | `/usr/local/bin/mentor-recipes` | the Recipes app: used recipes (thumbs, take away), written here (open, share), downloaded and not used, and a button to the site | user | next start | RECIPES.md |
