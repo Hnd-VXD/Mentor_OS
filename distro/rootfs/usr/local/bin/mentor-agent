@@ -203,7 +203,8 @@ def ask(base, key, body):
             told = message_of(detail) if e.code == 429 else ""
             later = seconds(re.search(r"try again in ([\d.hms]+)", told).group(1)) if "try again in" in told else None
             if e.code == 429 and (re.search(r"per day|\(TPD\)|\(RPD\)", told) or (later or 0) > 120):
-                back = f" It is back in about {max(1, round((later or 0) / 60))} minutes." if later else ""
+                minutes = max(1, round((later or 0) / 60))
+                back = f" It is back in about {minutes} minute{'s' if minutes > 1 else ''}." if later else ""
                 raise Failed("busy", f"The provider's free allowance for this model is used up for now ({limit_named(told)})."
                                      f"{back} Meanwhile choose another of its models, which count apart, or another engine.")
             if e.code in (429, 502, 503, 529) and wait is not None:

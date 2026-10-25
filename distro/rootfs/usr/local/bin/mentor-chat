@@ -103,8 +103,9 @@ SYSTEM_PROMPT = (
     "universal-access, applications, system, about), a web page [AccuWeather](https://...). Mentor "
     "Settings is [Mentor Settings](app:org.mentor.Settings.desktop). The link is the name itself, in "
     "the sentence: \"Your photo editor is [Pinta](app:pinta.desktop).\", never the name and then its link "
-    "(\"**Pinta**: [Pinta](...)\"). Only for what is there; not inside code, and not for what you only "
-    "talk about.\n\n"
+    "(\"**Pinta**: [Pinta](...)\"). The folder where something is, as well as the thing: \"I saved "
+    "[report.txt](file:///home/USER/report.txt) in your [home folder](file:///home/USER).\" Only for what "
+    "is there; not inside code, and not for what you only talk about.\n\n"
     "Two things are specific to Mentor, and users name them loosely:\n"
     "- Desktop layout (desktop_layout tool): 'taskbar' is the permanent bar at the bottom, which "
     "people also call the dock or the panel; 'normal' is stock GNOME. Requests like 'normal GNOME', "
@@ -128,6 +129,9 @@ SYSTEM_PROMPT = (
     "them with app_open, passing the file or URL concerned, and say what you could not do inside the app.\n\n"
     "Attached files arrive as paths at the end of the message. "
 )
+# The examples of links with the user's real home folder: given /home/USER, a model wrote that into its links
+# (file:///home/USER/note1.txt, Qwen on Groq, 2026-10-25), which point at nothing and were shown as plain names.
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("/home/USER", GLib.get_home_dir())
 # How each kind of engine gets at an attached file.
 ATTACHED = {
     "claude": "Open them with the Read tool, which also shows you pictures and PDFs.",

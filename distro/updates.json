@@ -502,5 +502,11 @@
     "name": "25.10.26.03",
     "summary": "The assistant's notes now explain a rare crash of the chat caused by GTK with the frosted glass, so it can tell you plainly what happened. Nothing else changes.",
     "published": "2026-10-25 14:48"
+  },
+  {
+    "version": 202610251312,
+    "name": "25.10.26.04",
+    "summary": "When the assistant says where something is, the folder is a link too: a click opens it in Files. Links to your files always point to the right place.",
+    "published": "2026-10-25 15:13"
   }
 ]
