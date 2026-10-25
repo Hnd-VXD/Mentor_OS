@@ -120,6 +120,32 @@ def waiting(text):
     emit({"type": "system", "subtype": "status", "text": text})
 
 
+def seconds(told):
+    """A time as Groq writes it ("7m12.48s", "1h2m", "850ms", "14.7s") in seconds; None if it is not one."""
+    found = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?(?:([\d.]+)ms)?", str(told or "").strip().rstrip("."))
+    if not found or not any(found.groups()):
+        return None
+    hours, minutes, whole, thousandths = found.groups()
+    return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(whole or 0) + float(thousandths or 0) / 1000
+
+
+def message_of(detail):
+    """The provider's own words in an error's body ({"error": {"message": …}}), or the body itself."""
+    try:
+        return str(json.loads(detail)["error"]["message"])
+    except (ValueError, KeyError, TypeError):
+        return detail.strip()
+
+
+def limit_named(told):
+    """Which limit a 429 names, in plain words."""
+    for words, plain in (("tokens per day", "the words it may read in a day"), ("requests per day", "the questions in a day"),
+                         ("tokens per minute", "the words it may read in a minute"), ("requests per minute", "the questions in a minute")):
+        if words in told:
+            return plain
+    return "its limit"
+
+
 def keep_limits(headers):
     """What the provider says of its limit a minute, for pace()."""
     try:
@@ -170,9 +196,19 @@ def ask(base, key, body):
                 raise Failed("too large", f"The request is larger than the provider takes: {detail}")
             if e.code in (401, 403):
                 raise Failed("auth", "The provider did not accept the key.")
+            # A 429 says which limit and for how long ("…on tokens per day (TPD): Limit 200000, Used 199870,
+            # Requested 5404. Please try again in 7m12.48s"). A user once waited 5½ minutes for "used up"
+            # with no reason given (2026-10-25): a limit a day, or one that is back only in minutes, is said
+            # at once, with when, and the waiting is left to the user.
+            told = message_of(detail) if e.code == 429 else ""
+            later = seconds(re.search(r"try again in ([\d.hms]+)", told).group(1)) if "try again in" in told else None
+            if e.code == 429 and (re.search(r"per day|\(TPD\)|\(RPD\)", told) or (later or 0) > 120):
+                back = f" It is back in about {max(1, round((later or 0) / 60))} minutes." if later else ""
+                raise Failed("busy", f"The provider's free allowance for this model is used up for now ({limit_named(told)})."
+                                     f"{back} Meanwhile choose another of its models, which count apart, or another engine.")
             if e.code in (429, 502, 503, 529) and wait is not None:
                 try:
-                    wait = min(60.0, float(e.headers.get("Retry-After") or wait))
+                    wait = min(60.0, later or float(e.headers.get("Retry-After") or wait))
                 except ValueError:
                     pass
                 # The same words as pace(): Groq's free plan refills more slowly than it tells, and "the limit
@@ -183,7 +219,8 @@ def ask(base, key, body):
                 waiting("Waiting for the model.")
                 continue
             if e.code == 429:
-                raise Failed("busy", "The provider's limit for this key is used up for now. Try again in a little while.")
+                raise Failed("busy", "The provider's limit for this key is used up for now. Try again in a little while"
+                                     + (f" (it said: {told[:240]})." if told else "."))
             raise Failed("request" if e.code == 400 else "error", f"The provider answered {e.code}: {detail}")
         except TimeoutError:
             raise Failed("error", f"The model did not answer within {ANSWER_WITHIN // 60} minutes. "

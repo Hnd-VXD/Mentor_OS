@@ -484,5 +484,11 @@
     "name": "25.10.26.00",
     "summary": "The assistant can now run on Groq's fast free models (choose Groq in the model menu and paste a free key), and its web search finds real pages instead of unrelated news.",
     "published": "2026-10-25 12:42"
+  },
+  {
+    "version": 202610251142,
+    "name": "25.10.26.01",
+    "summary": "When Groq's free allowance for a model runs out, the assistant now says so at once and when it is back, instead of waiting minutes. Another Groq model usually works right away.",
+    "published": "2026-10-25 13:43"
   }
 ]
