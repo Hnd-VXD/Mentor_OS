@@ -1412,7 +1412,11 @@ class Conversation(Gtk.Box):
             hscrollbar_policy=Gtk.PolicyType.NEVER, vscrollbar_policy=Gtk.PolicyType.EXTERNAL,
             propagate_natural_height=True, propagate_natural_width=True, max_content_height=420,
             visible=False)
-        self.scroller.get_vadjustment().connect("value-changed", lambda *_: self.mark_tick())
+        # The view follows the end while it is there: as steps, answers and cards come in or
+        # grow it stays on the newest, and once the user scrolls up it stays where they put it.
+        self.following = True
+        self.scroller.get_vadjustment().connect("value-changed", self.on_scrolled)
+        self.scroller.get_vadjustment().connect("changed", self.follow)
         self.current_tick = None  # the tick of the message the view is at
         wave = Gtk.EventControllerMotion()
         wave.connect("motion", lambda _c, _x, y: self.swell(y))
@@ -1460,7 +1464,8 @@ class Conversation(Gtk.Box):
         self.suggest.connect("row-activated", lambda _list, row: self.use_suggestion(row))
         self.suggest_word = ""
         self.picked = {}  # name -> desktop id of the apps picked from the list, while they are in the text box
-        self.entry.connect("changed", lambda *_: GLib.idle_add(self.update_suggestions))
+        self.suggest_wait = 0  # the pending update_suggestions: one per pause in the typing, not one per letter
+        self.entry.connect("changed", lambda *_: self.suggest_soon())
         self.entry.connect("changed", lambda *_: self.show_action())
 
         # Shown while the next message is about one application.
@@ -1609,12 +1614,26 @@ class Conversation(Gtk.Box):
                 pass  # cancelled
         dialog.open_multiple(self.window, None, chosen)
 
+    def suggest_soon(self):
+        """update_suggestions once the typing pauses: rebuilding the list on every letter made typing lag."""
+        if self.suggest_wait:
+            GLib.source_remove(self.suggest_wait)
+        self.suggest_wait = GLib.timeout_add(120, self.update_suggestions)
+
     def update_suggestions(self):
         """Offer the installed apps that match the word before the cursor (apps_matching)."""
+        self.suggest_wait = 0
         self.show_picked()
         text = self.entry.get_text()
         word, apps = apps_matching(text[:self.entry.get_position()]) if self.entry.get_sensitive() else ("", [])
         self.suggest_word = word
+        shown = []
+        row = self.suggest.get_first_child()
+        while row:
+            shown.append(row.app_id)
+            row = row.get_next_sibling()
+        if apps and self.suggest.get_visible() and shown == [app_id for _, _, app_id in apps]:
+            return GLib.SOURCE_REMOVE  # the same apps as already offered: the rows stay as they are
         while row := self.suggest.get_first_child():
             self.suggest.remove(row)
         for name, icon, app_id in apps:
@@ -1676,6 +1695,9 @@ class Conversation(Gtk.Box):
     def on_entry_key(self, _controller, keyval, _keycode, state):
         """Tab, the arrows and Esc while installed apps are offered (update_suggestions).
         Ctrl+V with a picture or copied files in the clipboard attaches them; text pastes as usual."""
+        if self.suggest_wait and keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab, Gdk.KEY_Down, Gdk.KEY_Up, Gdk.KEY_Escape):
+            GLib.source_remove(self.suggest_wait)
+            self.update_suggestions()  # a key pressed right after typing: the list for the word as it is now
         if self.suggest.get_visible() and not state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK):
             if keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab):
                 self.use_suggestion()
@@ -1847,7 +1869,17 @@ class Conversation(Gtk.Box):
     def scroll_to_end(self):
         adjustment = self.scroller.get_vadjustment()
         adjustment.set_value(adjustment.get_upper())
+        self.following = True
         return GLib.SOURCE_REMOVE
+
+    def on_scrolled(self, adjustment):
+        self.following = adjustment.get_value() + adjustment.get_page_size() >= adjustment.get_upper() - 8
+        self.mark_tick()
+
+    def follow(self, adjustment):
+        """The conversation grew or the view changed size: keep the end in view if it was."""
+        if self.following:
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
     def add_tick(self, message, item):
         """The mark on the timeline for something the user asked."""

@@ -508,5 +508,11 @@
     "name": "25.10.26.04",
     "summary": "When the assistant says where something is, the folder is a link too: a click opens it in Files. Links to your files always point to the right place.",
     "published": "2026-10-25 15:13"
+  },
+  {
+    "version": 202610281528,
+    "name": "28.10.26.00",
+    "summary": "The chat now stays on the newest message while Mentor works, and typing no longer lags when app names are suggested.",
+    "published": "2026-10-28 17:29"
   }
 ]
