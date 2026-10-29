@@ -561,6 +561,10 @@ CARDS_KEPT = 1 << 20  # bytes of it; past that the older half goes
 # Programs going online (mentor-netguard, SECURITY.md "Programs going online"): those waiting for the user's answer,
 # allowed and blocked. The cards' Allow and Block and the menu's "Network…" answer through NETGUARD, no password.
 NET_PATH = "/var/lib/mentor/guard/net.json"
+# A program still waiting to go online that keeps trying, with no card of its left in the chat (dismissed, cleared,
+# its tab closed), gets one again where the user looks, at most this often (remind_unseen).
+NET_REMIND_EVERY = 15 * 60
+NET_REMIND_AFTER = 90  # seconds after net.json changed: mentor-watch's own card of a new try comes first
 NETGUARD = "/usr/local/lib/mentor/mentor-netguard"
 # What mentor-advisor found worth bringing up, and what this user has said about hearing of it.
 ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
@@ -1787,6 +1791,7 @@ class Conversation(Gtk.Box):
         self.set_quote()
         self.entry.set_text("")
         self.window.tabs.get_page(self).set_title("New conversation")
+        self.window.place_cards()  # a card still waiting for an answer is not cleared with what was said
         self.window.save_conversations()
         self.entry.grab_focus()
 
@@ -2067,14 +2072,16 @@ class Conversation(Gtk.Box):
         return label
 
     def add_notice(self, level, title, text, prompt=None, auto=False, action="Let Mentor look", silence=None, update=None,
-                   net=None, network=False):
+                   net=None, network=False, stays=False, programs=()):
         """Something the system tells of by itself: a card, yellow for a warning, red for a
         problem, green for an idea (something it suggests, such as writing down what was just
         built), with a way to hand it to the agent. Not part of what was said to the agent.
         `silence` is a function: the user does not want ideas of this kind (a button for it).
         `update` is the version of a Mentor update waiting to be installed: the card asks first,
         and its Update button starts the install (mentor_update, UPDATES.md). `net` is a program
-        waiting to go online: the card gets Block and Allow (net_card); `network`, several of them: Open Network…."""
+        waiting to go online: the card gets Block and Allow (net_card); `network`, several of them: Open Network….
+        `stays`: the card is about this conversation and stays in it; others go with the user (place_cards).
+        `programs`: those waiting to go online that the card is about (with `net`), for remind_unseen."""
         heading = Gtk.Label(label=title, xalign=0, wrap=True, max_width_chars=64)
         heading.add_css_class("heading")
         body = Gtk.Label(label=text, xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=64,
@@ -2082,17 +2089,20 @@ class Conversation(Gtk.Box):
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, halign=Gtk.Align.START)
         card.add_css_class("notice")
         card.add_css_class(level if level in ("problem", "idea") else "warning")
+        card.programs = set(programs) | ({net} if net else set())
+        for program in card.programs:
+            self.window.net_shown[program] = time.time()
         card.append(heading)
         card.append(body)
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.END, margin_top=2)
         dismiss = Gtk.Button(label="Not now" if update else "Dismiss")
         dismiss.add_css_class("flat")
-        dismiss.connect("clicked", lambda *_: self.messages.remove(card))
+        dismiss.connect("clicked", lambda *_: self.window.drop_card(card))
         buttons.append(dismiss)
         if silence:
             quiet = Gtk.Button(label="Don't suggest this")
             quiet.add_css_class("flat")
-            quiet.connect("clicked", lambda *_: (silence(), self.messages.remove(card)))
+            quiet.connect("clicked", lambda *_: (silence(), self.window.drop_card(card)))
             buttons.append(quiet)
         # Every card can be taken into a conversation (the user's wish, 2026-10-16): one with nothing of its
         # own to send gets a plain request about what it says. It goes to a new conversation (for_request).
@@ -2112,7 +2122,15 @@ class Conversation(Gtk.Box):
 
             def hand_over(*_):
                 look.set_sensitive(False)
-                self.window.for_request().send(prompt, shown=title)
+                # The card goes into the conversation about it, above the request, and stays there: its Allow
+                # and Block are then beside what the agent finds out. Settled first, or place_cards would
+                # move it again as the new tab comes to the front.
+                self.window.settle_card(card)
+                conversation = self.window.for_request()
+                if card.get_parent() is not None and card.get_parent() is not conversation.messages:
+                    card.get_parent().remove(card)
+                    conversation.messages.append(card)
+                conversation.send(prompt, shown=title)
             look.connect("clicked", hand_over)
             buttons.append(look)
             # One the system wants looked at now (the firewall turned somebody away): sent on
@@ -2131,8 +2149,8 @@ class Conversation(Gtk.Box):
             # One update card at a time: the newest is the one installed (it holds all of Mentor's files),
             # so the card of an older one goes when a newer one comes.
             older = getattr(self.window, "update_card", None)
-            if older and older[1] is not card and older[1].get_parent() is older[0].messages:
-                older[0].messages.remove(older[1])
+            if older and older[1] is not card:
+                self.window.drop_card(older[1])
             self.window.update_card = (self, card)
         if net:
             self.window.net_card(card, body, buttons, net, text)
@@ -2144,10 +2162,20 @@ class Conversation(Gtk.Box):
             buttons.append(show)
         card.append(buttons)
         self.window.note(self, f"{title}. {text}".strip(), False)
-        if self.first_run and self.welcome:  # the card of a first start stays where it is
-            self.messages.append(card)
-            return card
-        return self.add(card)
+        # A card goes with the user from tab to tab until one of its buttons is used (place_cards): put in the
+        # tab in front, it was missed once the user went back to another (2026-10-29). Only one about this
+        # conversation (the offer of a recipe of what was built here) stays in it.
+        if not stays:
+            button = buttons.get_first_child()
+            while button:
+                button.connect("clicked", lambda *_: self.window.settle_card(card))
+                button = button.get_next_sibling()
+            self.window.open_cards.append(card)
+        # Under the welcome, not in its place: a card alone leaves the tab one that nothing was asked in yet,
+        # for for_request, and the first start keeps its welcome.
+        self.messages.append(card)
+        GLib.idle_add(self.scroll_to_end)
+        return card
 
     def follow_update(self, card, version, install, dismiss, body, text):
         """The card shows what Mentor Settings started too: its Update button there and here are one.
@@ -2221,7 +2249,7 @@ class Conversation(Gtk.Box):
             "material with recipe_material, keep only what ended up working, show me in a few plain sentences what "
             "it says, and save it with recipe_save.",
             action="Write it down",
-            silence=lambda: mentor_settings.put("offer_recipes", False))
+            silence=lambda: mentor_settings.put("offer_recipes", False), stays=True)
 
     def offer_share(self):
         """A recipe of the user's own was written down in this turn: a green card with what it
@@ -3126,6 +3154,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         # shell says which one is in front (go_to_workspace).
         self.workspace = 0
         self.last_on = {}  # workspace -> the conversation last looked at there
+        self.open_cards = []  # the system's cards none of whose buttons was used yet (place_cards)
+        self.net_shown = {}  # program waiting to go online -> when a card of it was last shown (remind_unseen)
+        self.remind_timer = 0  # remind_unseen to come, after net.json changed (follow_net)
 
         # Top left: the conversations. Top right: the model.
         new_tab = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="New conversation",
@@ -3320,7 +3351,7 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.net_watch = Gio.File.new_for_path(NET_PATH).monitor_file(Gio.FileMonitorFlags.NONE, None)
         self.net_watch.connect("changed", lambda *_: GLib.timeout_add(500, self.follow_net))
         self.show_notices()
-        GLib.timeout_add(1500, self.remind_waiting)
+        GLib.timeout_add(1500, self.remind_unseen)  # cards of programs still waiting are gone after a restart
         self.show_usage()
         if MODELS[self.model_index][1] in USAGE_ASKED:
             self.ask_usage(MODELS[self.model_index][1])
@@ -3907,6 +3938,36 @@ class DesktopWindow(Adw.ApplicationWindow):
         current = self.current
         if current and current.workspace == self.workspace:
             self.last_on[self.workspace] = current
+        self.place_cards()
+
+    def place_cards(self):
+        """The system's cards still waiting for an answer are in the tab the user looks at: moved to its end
+        when another tab is chosen, opened, or the one they were in is closed or cleared. Once one of a card's
+        buttons is used it stays where it is (settle_card); Dismiss takes it away (drop_card)."""
+        current = self.current
+        if current is None:
+            return False
+        moved = False
+        for card in self.open_cards:
+            parent = card.get_parent()
+            if parent is current.messages:
+                continue
+            if parent is not None:
+                parent.remove(card)
+            current.messages.append(card)
+            moved = True
+        if moved:
+            GLib.idle_add(current.scroll_to_end)
+        return False
+
+    def settle_card(self, card):
+        if card in self.open_cards:
+            self.open_cards.remove(card)
+
+    def drop_card(self, card):
+        self.settle_card(card)
+        if card.get_parent() is not None:
+            card.get_parent().remove(card)
 
     # --- suggestions ----------------------------------------------------------
 
@@ -4451,9 +4512,13 @@ class DesktopWindow(Adw.ApplicationWindow):
             return Gdk.EVENT_STOP
         closed.stop()
         closed.process = None  # what it may still say is no longer listened to
+        for card in self.open_cards:  # not closed with the tab: they go to the one in front (place_cards)
+            if card.get_parent() is closed.messages:
+                closed.messages.remove(card)
         tabs.close_page_finish(page, True)
         # There is always a place to type. Checked once the page is really gone.
         GLib.idle_add(lambda: tabs.get_n_pages() == 0 and bool(self.new_conversation()) and False)
+        GLib.idle_add(self.place_cards)
         GLib.idle_add(lambda: self.save_conversations() and False)
         return Gdk.EVENT_STOP
 
@@ -4845,19 +4910,19 @@ class DesktopWindow(Adw.ApplicationWindow):
                 failed((err or "").strip())
         process.communicate_utf8_async(None, None, started)
 
-    def remind_waiting(self):
+    def remind_waiting(self, only=None):
         """Cards of programs waiting to go online are gone when the chat starts again (a login, an update): those
         that tried since this start of the computer get theirs back, one card with Block and Allow, or for several
         one card with Open Network…. Their own cards came once per start (mentor-watch), so after the chat was
-        restarted only Network… was left to answer them (tested 2026-10-24)."""
+        restarted only Network… was left to answer them (tested 2026-10-24). `only`: these programs (remind_unseen)."""
         data = self.read_net() or {}
         try:
             with open("/proc/stat") as f:
                 began = next((float(line.split()[1]) for line in f if line.startswith("btime ")), 0.0)
         except (OSError, ValueError, IndexError):
             began = 0.0
-        waiting = [program for program, entry in data.get("unknown", {}).items()
-                   if self.net_state(data, program) == "waiting" and entry.get("last", 0) >= began]
+        waiting = only or [program for program, entry in data.get("unknown", {}).items()
+                           if self.net_state(data, program) == "waiting" and entry.get("last", 0) >= began]
         if not waiting or not self.current:
             return False
         try:
@@ -4878,7 +4943,37 @@ class DesktopWindow(Adw.ApplicationWindow):
                                     "Mentor's guard keeps these programs offline until I answer: "
                                     + ", ".join(waiting[:12]) + ". Find out what they are (SECURITY.md, \"Programs "
                                     "going online\"), tell me in plain words, and allow or block them only if I agree.",
-                                    action="Ask Mentor", network=True)
+                                    action="Ask Mentor", network=True, programs=waiting)
+        return False
+
+    def remind_unseen(self):
+        """A program still waiting to go online that tried again since its last card, while no card of it is left in
+        the chat (dismissed, cleared away, its tab closed, or never shown), gets its card back where the user looks:
+        robotd and tofd tried ~190 and ~22 times with no card in sight and were found only in Network… (2026-10-29,
+        the user's wish). At most every NET_REMIND_EVERY a program. Called when net.json changes (follow_net)."""
+        data = self.read_net()
+        if not data or not self.current:
+            return False
+        try:
+            with open("/proc/stat") as f:
+                began = next((float(line.split()[1]) for line in f if line.startswith("btime ")), 0.0)
+        except (OSError, ValueError, IndexError):
+            began = 0.0
+        shown = set()
+        for conversation in self.conversations():
+            child = conversation.messages.get_first_child()
+            while child:
+                shown |= getattr(child, "programs", set())
+                child = child.get_next_sibling()
+        for card in self.open_cards:  # between tabs, while one closes
+            shown |= card.programs
+        now = time.time()
+        due = [program for program, entry in data.get("unknown", {}).items()
+               if self.net_state(data, program) == "waiting" and program not in shown
+               and entry.get("last", 0) >= max(began, self.net_shown.get(program, 0))
+               and now - self.net_shown.get(program, 0) >= NET_REMIND_EVERY]
+        if due:
+            self.remind_waiting(sorted(due, key=lambda program: -data["unknown"][program].get("last", 0)))
         return False
 
     def show_notices(self):
@@ -4910,7 +5005,8 @@ class DesktopWindow(Adw.ApplicationWindow):
                                     auto=notice.get("auto") is True,
                                     update=notice.get("update") if isinstance(notice.get("update"), str) else None,
                                     action=notice.get("action") if isinstance(notice.get("action"), str) else "Let Mentor look",
-                                    net=net, network=notice.get("network") is True)
+                                    net=net, network=notice.get("network") is True,
+                                    programs=[p for p in notice.get("programs") or [] if isinstance(p, str)])
             shown.append((title, text))
         if shown:
             self.show_chat()
@@ -5042,7 +5138,15 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.net_cards = kept
         if self.network_window is not None:
             self.network_window.refill()
+        # Looked at a while later: a program's first card comes from mentor-watch some seconds after its try
+        # (NET_GATHER), and looked at at once it was shown twice (tested 2026-10-29).
+        if not self.remind_timer:
+            self.remind_timer = GLib.timeout_add_seconds(NET_REMIND_AFTER, self.remind_later)
         return False
+
+    def remind_later(self):
+        self.remind_timer = 0
+        return self.remind_unseen()
 
     def on_finished(self, conversation):
         """An answer nobody is looking at (the desktop is covered) is announced."""

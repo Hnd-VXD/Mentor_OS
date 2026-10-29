@@ -37,6 +37,11 @@ xorg-xwayland
 pipewire
 pipewire-pulse
 wireplumber
+# Programs that play through ALSA itself (aplay, older games, tools that fork aplay) reach PipeWire
+# through its PulseAudio server: /etc/alsa/conf.d/99-zz-mentor-default.conf. Not pipewire-alsa:
+# with PipeWire 1.6.10 its aplay played and then never exited (WINDOWS.md, section 5).
+alsa-plugins
+alsa-utils
 
 # GNOME
 gdm

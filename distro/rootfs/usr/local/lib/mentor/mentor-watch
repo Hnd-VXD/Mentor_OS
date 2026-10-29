@@ -267,9 +267,11 @@ def net_notices(waiting, raised, now):
     title = f"{len(waiting)} programs want to go online"
     if look:
         mentor_tools.leave_notice("warning", title, text + " Mentor is having a look.",
-                                  request + by_itself.replace("what it is", "what they are"), auto=True, network=True)
+                                  request + by_itself.replace("what it is", "what they are"), auto=True,
+                                  network=[program for program, *_ in waiting])
     else:
-        mentor_tools.leave_notice("warning", title, text, request, action="Ask Mentor", network=True)
+        mentor_tools.leave_notice("warning", title, text, request, action="Ask Mentor",
+                                  network=[program for program, *_ in waiting])
 
 
 main()

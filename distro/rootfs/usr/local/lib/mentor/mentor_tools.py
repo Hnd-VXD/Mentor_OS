@@ -96,7 +96,8 @@ def leave_notice(level, title, text="", prompt=None, auto=False, update=None, ac
     update waiting to be installed: the card gets an Update button (mentor_update). `action` names the
     button that hands `prompt` over ("Let Mentor look" when not given). `quiet`: only the card, never GNOME's
     pop-up notification too. `net` is a program waiting to go online (mentor-netguard): the card gets Allow and Block;
-    `network`: several of them, and the card gets Open Network… (the chat's Network window).
+    `network`: several of them, and the card gets Open Network… (the chat's Network window); given as their list,
+    the chat also knows which they are (remind_unseen in mentor-chat).
     Returns where it was left."""
     os.makedirs(NOTICES, exist_ok=True)
     path = os.path.join(NOTICES, f"{time.time():.3f}-{os.getpid()}.json")
@@ -106,7 +107,8 @@ def leave_notice(level, title, text="", prompt=None, auto=False, update=None, ac
                    **({"update": str(update)} if update else {}),
                    **({"action": str(action)[:40]} if action and prompt else {}),
                    **({"quiet": True} if quiet else {}), **({"net": str(net)} if net else {}),
-                   **({"network": True} if network else {})}, f)
+                   **({"network": True} if network else {}),
+                   **({"programs": [str(p) for p in network]} if isinstance(network, (list, tuple)) else {})}, f)
     os.replace(path + ".new", path)  # whole when it is seen
     return path
 
