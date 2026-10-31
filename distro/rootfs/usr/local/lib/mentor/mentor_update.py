@@ -412,13 +412,23 @@ def _restore_point(reason):
                 pass
         except BlockingIOError:
             pass
-        os.write(fd, (json.dumps({"restore-point": reason[:200]}) + "\n").encode())
+        for tries_left in range(30, -1, -1):  # the launcher may be connecting again (WINDOWS.md)
+            try:
+                os.write(fd, (json.dumps({"restore-point": reason[:200]}) + "\n").encode())
+                break
+            except BlockingIOError:
+                if not tries_left:
+                    raise
+                time.sleep(0.5)
         answer, end = b"", time.monotonic() + 60
         while b"\n" not in answer:
             left = end - time.monotonic()
             if left <= 0 or not select.select([fd], [], [], left)[0]:
                 return "no restore point: the launcher did not answer"
-            answer += os.read(fd, 65536)
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return "no restore point: the link to the launcher dropped"
+            answer += chunk
         reply = json.loads(answer.split(b"\n")[0])
         return f"restore point {reply.get('name')}" if reply.get("ok") else f"no restore point: {reply.get('error')}"
     except (OSError, ValueError) as e:

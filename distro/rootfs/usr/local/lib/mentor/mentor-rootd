@@ -75,6 +75,8 @@ FACTS = {
                      lambda a: f"File: {short(a.get('path'), 120)}"),
     "run_root": ("Mentor wants to run a command with full power over your system.",
                  lambda a: f"Command, with full power: {short(a.get('command'), 140)}"),
+    "investigate": ("Mentor wants to look closely at a program, without changing anything.",
+                    lambda a: f"Program: {short(a.get('path'), 120)}"),
 }
 
 

@@ -63,6 +63,8 @@ def classify(name, arguments):
     the search or the path. Empty for a call that reads nothing from outside. Goes by what the
     tool is called and what it is given, so that a tool nobody listed here is still caught."""
     low = str(name).lower()
+    if "security_investigate" in low:  # the suspect program's own words, not the internet's
+        return [("program", str(arguments.get("program", "") if isinstance(arguments, dict) else arguments))]
     if isinstance(arguments, dict):
         values = [str(v) for v in arguments.values() if isinstance(v, (str, int, float))]
     else:
@@ -134,12 +136,15 @@ def said(found):
     """What was read, as a line or two for a person."""
     pages = [what for kind, what in found if kind == "web"]
     files = [what for kind, what in found if kind == "file"]
+    programs = [what for kind, what in found if kind == "program"]
     parts = []
     if pages:
         parts.append("from the internet: " + "; ".join(p if len(p) <= 80 else p[:79] + "…" for p in pages[:3])
                      + (f" and {len(pages) - 3} more" if len(pages) > 3 else ""))
     if files:
         parts.append("files: " + ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else ""))
+    if programs:
+        parts.append("what a program looked at says about itself: " + ", ".join(programs[:3]))
     return "; ".join(parts)
 
 

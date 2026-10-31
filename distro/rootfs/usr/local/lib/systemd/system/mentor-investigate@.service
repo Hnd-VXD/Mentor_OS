@@ -1,0 +1,13 @@
+[Unit]
+Description=Mentor: a closer look at one program the guard flagged
+Documentation=file:///etc/mentor/SECURITY.md
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/local/lib/mentor/mentor-investigate
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+Nice=10
+TimeoutStopSec=30
+RuntimeMaxSec=600

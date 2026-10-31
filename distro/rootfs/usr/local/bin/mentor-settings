@@ -529,7 +529,6 @@ class SettingsWindow(Adw.ApplicationWindow):
             add(self.online_group, Adw.ActionRow(title="None", subtitle="Every program that went online is one Mentor knows"))
         # the watch for unusual programs, and the weekly check of the system's programs
         try:
-            import mentor_guard
             found = list(mentor_guard.findings())
             when = mentor_guard.last_look()
             row = Adw.ActionRow(

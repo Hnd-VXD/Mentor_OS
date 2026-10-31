@@ -1,0 +1,22 @@
+# Who touches passwords and what starts by itself (/etc/mentor/SECURITY.md, "Who touched passwords and keys").
+# The same for the homes and the browsers' profiles: added at each look (mentor_audit.refresh).
+# -D: start clean when loaded again. -i: a path that cannot be watched must not stop the rest.
+-D
+-i
+-w /etc/shadow -p rwa -k mentor-secrets
+-w /etc/gshadow -p rwa -k mentor-secrets
+-w /etc/sudoers -p wa -k mentor-starts
+-w /etc/sudoers.d -p wa -k mentor-starts
+-w /etc/ld.so.preload -p wa -k mentor-starts
+-w /etc/environment -p wa -k mentor-starts
+-w /etc/systemd/system -p wa -k mentor-starts
+-w /etc/xdg/autostart -p wa -k mentor-starts
+-w /etc/cron.d -p wa -k mentor-starts
+# Who changed Mentor's own files; `mentor verify`'s list says whether they differ (mentor_guard.own_findings).
+# Writes that worked only: every Python program of Mentor's tries in vain to write its __pycache__ here.
+-a always,exit -F arch=b64 -F dir=/usr/local/lib/mentor -F perm=wa -F success=1 -k mentor-own
+-a always,exit -F arch=b64 -F dir=/usr/local/bin -F perm=wa -F success=1 -k mentor-own
+-a always,exit -F arch=b64 -F dir=/usr/local/share/mentor -F perm=wa -F success=1 -k mentor-own
+-a always,exit -F arch=b64 -F dir=/usr/local/lib/systemd -F perm=wa -F success=1 -k mentor-own
+-a always,exit -F arch=b64 -F dir=/etc/mentor -F perm=wa -F success=1 -k mentor-own
+-a always,exit -F arch=b64 -F dir=/etc/audit -F perm=wa -F success=1 -k mentor-own

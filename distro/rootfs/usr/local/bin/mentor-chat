@@ -23,6 +23,7 @@ Started at login. Later invocations hand their request to the running one:
     mentor-chat --ask                      bring the text box up over whatever is in front
                                            (Alt+Space, Super+Z), or put it back
 """
+import glob
 import json
 import math
 import signal
@@ -186,6 +187,8 @@ MODELS = [
 ]
 MENUS = (("NVIDIA (free)", "nvidia"), ("Groq (free, fast)", "groq"), ("Claude", "claude"), ("ChatGPT", "codex"),
          ("Gemini", "gemini"))
+# The free engines, one group in the picker and on the first-start card: what they are called inside it.
+FREE_MENUS = (("NVIDIA", "nvidia"), ("Groq (fast)", "groq"))
 # What Codex and the Antigravity CLI said their models are, kept from one start of the assistant to the next.
 MODELS_PATHS = {provider: os.path.join(GLib.get_user_cache_dir(), "mentor", f"{provider}-models.json")
                 for provider in ("codex", "gemini")}
@@ -2515,6 +2518,8 @@ class Conversation(Gtk.Box):
         if not described:
             self.tool_icons[tool_id] = icon
         self.add_step(row, restored=described)
+        if name == "security_investigate" and not described:
+            self.steps["look"] = tool_id
 
     STEPS_SHOWN = 3      # while the agent works, the last few steps are seen; all of them on asking
     LONG_ANSWER = 15     # lines of an answer shown before "Show more"
@@ -2581,6 +2586,34 @@ class Conversation(Gtk.Box):
             steps["words"].set_label(f"{count} {word}{dot}" + (f"took {took}{dot}" if took else "") + "show them")
         else:
             steps["words"].set_label(f"{count} {word} so far{dot}{took}" + (f"{dot}show all" if folded else ""))
+        if steps.get("look") is not None:
+            self.show_look(steps)
+
+    def show_look(self, steps):
+        """While security_investigate works: what it is doing and for how long, with the most it may take (the user's
+        wish, 2026-10-31: a look of minutes seemed stuck). mentor-investigate writes /run/mentor-investigate/progress-PID.json."""
+        label, now, said = steps.get("look_label"), time.time(), None
+        if not steps["done"] and steps["look"] in self.tool_items:
+            newest = 0
+            for path in glob.glob("/run/mentor-investigate/progress-*.json"):
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        look = json.load(f)
+                    if look["start"] > newest and now < look["until"] + 60:
+                        newest, said = look["start"], look
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+        if said is None:
+            if label is not None:
+                label.set_visible(False)
+            return
+        if label is None:
+            label = steps["look_label"] = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+            label.add_css_class("caption")
+            steps["card"].append(label)
+        passed, most = int(now - said["start"]), int(said["until"] - said["start"])
+        label.set_label(f"{said['stage']}: {passed // 60}:{passed % 60:02d} (up to {most // 60}:{most % 60:02d})")
+        label.set_visible(True)
 
     def end_steps(self):
         """The answer is there: this turn's steps fold down to their button."""
@@ -4592,6 +4625,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         place.set_attribute_value("custom", GLib.Variant.new_string("usage"))
         top.append_item(place)
         self.model_menu.append_section(None, top)
+        free = Gio.Menu()
+        self.model_menu.append_submenu("Free models", free)
+        free_names = dict((provider, title) for title, provider in FREE_MENUS)
         for title, provider in MENUS:
             submenu = Gio.Menu()
             for label, engine, _, name in MODELS:
@@ -4611,7 +4647,10 @@ class DesktopWindow(Adw.ApplicationWindow):
                 item.set_action_and_target_value("win.change-key", GLib.Variant.new_string(provider))
                 extra.append_item(item)
                 submenu.append_section(None, extra)
-            self.model_menu.append_submenu(title, submenu)
+            if provider in free_names:
+                free.append_submenu(free_names[provider], submenu)
+            else:
+                self.model_menu.append_submenu(title, submenu)
         # Always there, though Claude Code has no such setting and Gemini's models carry theirs in their names: a menu that changed with the
         # model would have to be rebuilt while it is open.
         choices = Gio.Menu()
@@ -5184,38 +5223,63 @@ class DesktopWindow(Adw.ApplicationWindow):
                 pass
         self.spawn(["kgx", "-e", ACCOUNTS[provider][4]])
 
-    def show_choice(self):
-        """The card of a first start: the engines there are, none of them picked yet."""
-        if getattr(self, "connect_showing", None) == "choice" and self.stack.get_visible_child_name() == "sign-in":
+    def choice_option(self, label, what, clicked):
+        """One row of the first-start card."""
+        name = Gtk.Label(label=label, xalign=0)
+        name.add_css_class("heading")
+        what = Gtk.Label(label=what, xalign=0)
+        what.add_css_class("caption")
+        what.add_css_class("dim-label")
+        inside = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=4, margin_bottom=4,
+                         margin_start=8, margin_end=8)
+        inside.append(name)
+        inside.append(what)
+        option = Gtk.Button(child=inside, width_request=380)
+        option.connect("clicked", lambda _button: clicked())
+        return option
+
+    def show_choice(self, free=False):
+        """The card of a first start: the engines there are, none of them picked yet.
+        With `free`, its second page: the free engines of the "Free models" row."""
+        showing = getattr(self, "connect_showing", None)
+        if showing in ("choice", "choice-free") and self.stack.get_visible_child_name() == "sign-in" and (
+                free == (showing == "choice-free") or not free and not getattr(self, "choice_back", False)):
             return
-        self.connect_showing = "choice"
-        title = Gtk.Label(label="Connect the agent")
+        self.choice_back = False
+        self.connect_showing = "choice-free" if free else "choice"
+        title = Gtk.Label(label="Free models" if free else "Connect the agent")
         title.add_css_class("title-2")
         text = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, max_width_chars=44, label=(
+            "Both are free of charge, with a key from their page. The button beside the text box changes "
+            "it at any time." if free else
             "Mentor’s assistant runs on the model you choose. Pick one to start with; the button "
             "beside the text box changes it at any time."))
         options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, halign=Gtk.Align.CENTER, margin_top=6)
-        needs = {"nvidia": "Models NVIDIA hosts free of charge, with a key from its page",
-                 "groq": "Fast models Groq hosts free of charge, with a key from its page",
+        needs = {"nvidia": "Models NVIDIA hosts free of charge", "groq": "Fast models Groq hosts free of charge",
                  "claude": "With your Claude account", "codex": "With your ChatGPT account",
                  "gemini": "With your Google account"}
+        free_names = dict((provider, title) for title, provider in FREE_MENUS)
+        indexes = [p for _, p, _, _ in MODELS]
+        if not free:
+            options.append(self.choice_option("Free models", "NVIDIA or Groq, with a free key",
+                                              lambda: self.show_choice(free=True)))
         for label, provider in MENUS:
-            name = Gtk.Label(label=label, xalign=0)
-            name.add_css_class("heading")
-            what = Gtk.Label(label=needs[provider], xalign=0)
-            what.add_css_class("caption")
-            what.add_css_class("dim-label")
-            inside = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=4, margin_bottom=4,
-                             margin_start=8, margin_end=8)
-            inside.append(name)
-            inside.append(what)
-            option = Gtk.Button(child=inside, width_request=380)
-            index = [p for _, p, _, _ in MODELS].index(provider)
-            option.connect("clicked", lambda _button, index=index: self.choose_model(index))
-            options.append(option)
+            if (provider in free_names) != free:
+                continue
+            options.append(self.choice_option(free_names.get(provider, label), needs[provider],
+                                              lambda index=indexes.index(provider): self.choose_model(index)))
+        widgets = [Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title, text, options]
+        if free:
+            back = Gtk.Button(label="Back", halign=Gtk.Align.CENTER)
+            back.add_css_class("flat")
+            def go_back(_button):
+                self.choice_back = True
+                self.show_choice()
+            back.connect("clicked", go_back)
+            widgets.append(back)
         while child := self.connect_page.get_first_child():
             self.connect_page.remove(child)
-        self.connect_page.append(card(Gtk.Image(icon_name=CARD_ICON, pixel_size=72), title, text, options))
+        self.connect_page.append(card(*widgets))
         self.stack.set_visible_child_name("sign-in")
 
     def show_keyring(self):

@@ -520,5 +520,35 @@
     "name": "29.10.26.00",
     "summary": "Sound for programs that play through ALSA; warning cards follow you between conversations and come back while a program still waits",
     "published": "2026-10-29 21:36"
+  },
+  {
+    "version": 202610302204,
+    "name": "30.10.26.00",
+    "summary": "Restore points before updates and system changes are more reliable: Mentor now waits a few seconds if its link to Windows has dropped.",
+    "published": "2026-10-31 00:05"
+  },
+  {
+    "version": 202610302255,
+    "name": "30.10.26.02",
+    "summary": "Mentor can now look much more closely at a suspicious program, and tells you if an unknown program opens your passwords or keys. NVIDIA and Groq are together under Free models.",
+    "published": "2026-10-31 00:55"
+  },
+  {
+    "version": 202610310008,
+    "name": "31.10.26.00",
+    "summary": "You can now ask Mentor to look closely at any program you are unsure about. It asks for your password first and changes nothing.",
+    "published": "2026-10-31 02:10"
+  },
+  {
+    "version": 202610310018,
+    "name": "31.10.26.01",
+    "summary": "Mentor Settings opens again on computers where it would not.",
+    "published": "2026-10-31 02:20"
+  },
+  {
+    "version": 202610310450,
+    "name": "31.10.26.02",
+    "summary": "A closer look at a program now shows what it is doing and answers in seconds, and two false warnings are gone.",
+    "published": "2026-10-31 06:51"
   }
 ]

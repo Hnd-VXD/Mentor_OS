@@ -1,0 +1,560 @@
+#!/usr/bin/python3
+"""A closer look at one program the guard has already flagged (tool security_investigate; /etc/mentor/SECURITY.md,
+"A closer look at a flagged program"). Started by systemd for each connection to /run/mentor-investigate.sock, as
+root, with no password: it changes nothing, and it answers only about a program on the guard's lists. It writes one
+text back: facts, with no file contents and no packets.
+
+What reads the suspect file or its traffic runs locked up, as a throwaway user with no network (locked()): YARA,
+capa, tshark and `file` have all had bugs in their parsers, and root must not be what such a bug gets."""
+import fcntl
+import hashlib
+import ipaddress
+import json
+import math
+import os
+import re
+import shutil
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import zipfile
+
+sys.path.insert(0, "/usr/local/lib/mentor")
+import mentor_audit
+import mentor_geo
+import mentor_guard
+
+WORK = "/run/mentor-investigate"
+PROGRESS = os.path.join(WORK, "progress-%d.json" % os.getpid())
+CACHE = "/var/lib/mentor/guard/investigated"
+RULES = "/usr/local/share/mentor/yara/mentor.yar"
+EXECLOG = "/var/log/mentor/exec.log"
+CAPA_DIR = "/var/lib/mentor/capa"
+CAPA = os.path.join(CAPA_DIR, "capa")
+CAPA_URL = "https://github.com/mandiant/capa/releases/download/v10.0.0/capa-v10.0.0-linux.zip"
+CAPA_SHA256 = "96cb5115f495024a478b0e9f9f77f9027058155589235fbd4c50e7382055fcca"
+CAPTURE_SECONDS = 30
+SNAP_BYTES = 1600       # a whole packet at most: a TLS hello is large now, and the name can be anywhere in it
+MOST_BYTES = 200 << 20  # a larger file is described, not scanned
+CAPA_MOST = 3 << 19     # bytes of machine code capa can read in CAPA_SECONDS (capa())
+CAPA_SECONDS = 300
+KEPT = 600              # the same program again within this long gets the same answer
+NOT_FLAGGED = "This looks only at programs the guard has flagged, and this one is not on its lists: "
+
+
+def progress(stage, seconds):
+    """What this look is doing, for the chat's steps card (show_look in mentor-chat)."""
+    now = time.time()
+    try:
+        with open(PROGRESS, "w", encoding="utf-8") as f:
+            json.dump({"stage": stage, "start": now, "until": now + seconds}, f)
+        os.chmod(PROGRESS, 0o644)
+    except OSError:
+        pass
+
+
+def clean(text, most=300):
+    """What a program chose to say about itself, safe to print: no control characters, not too long."""
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(text))
+    return text if len(text) <= most else text[:most] + "…"
+
+
+def flagged(program):
+    """Is it on the guard's lists? (findings.json: "KIND:PROGRAM" keys; net.json: programs that asked to go online)"""
+    for path, names in ((mentor_guard.FINDINGS, lambda d: [f.get("program") or f.get("key", "").split(":", 1)[-1]
+                                                           for f in d.get("found", [])]),
+                        (mentor_guard.NET, lambda d: d.get("unknown", {}))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                if program in names(json.load(f)):
+                    return True
+        except (OSError, ValueError, AttributeError):
+            pass
+    return False
+
+
+def locked(argv, folder, seconds=120, extra=()):
+    """Run a tool on what is in `folder`: as a throwaway user, no network, read-only, no way to more rights. Returns
+    (code, what it wrote)."""
+    command = ["systemd-run", "--quiet", "--pipe", "--wait", "--collect", "--service-type=exec",
+               "-p", "DynamicUser=yes", "-p", "PrivateNetwork=yes", "-p", "PrivateTmp=yes", "-p", "ProtectSystem=strict",
+               "-p", "ProtectHome=yes", "-p", "NoNewPrivileges=yes", "-p", "CapabilityBoundingSet=",
+               "-p", "RestrictAddressFamilies=AF_UNIX", "-p", "MemoryMax=1500M", "-p", "CPUQuota=100%", "-p", "Nice=15",
+               "-p", f"RuntimeMaxSec={seconds}", "-p", f"BindReadOnlyPaths={folder}",
+               "-p", "InaccessiblePaths=-/var/log/mentor -/var/log/audit -/var/lib/mentor/guard", *extra, *argv]
+    try:
+        done = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=seconds + 30)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout.decode("utf-8", "replace")
+
+
+def copy_of(program, folder):
+    """A copy for the locked-up tools, with its facts. Opened without following a link: a program could put a link
+    to something of root's at its own name. (facts, copy or None)"""
+    try:
+        source = os.open(program, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        return [f"The file cannot be read: {e.strerror}. (It may be gone: the record below is what is left.)"], None
+    with os.fdopen(source, "rb") as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            return ["It is not an ordinary file."], None
+        facts = [f"Size {info.st_size} bytes, owner uid {info.st_uid}, mode {stat.S_IMODE(info.st_mode):o}, last "
+                 f"changed {time.strftime('%Y-%m-%d %H:%M', time.localtime(info.st_mtime))}."]
+        origin = mentor_guard.origin(program)
+        facts.append("Comes from: " + {"none": "nowhere known (no package, app store or Mentor)",
+                                       "home": "the user's own programs (~/.local)"}.get(origin, origin) + ".")
+        digest, copy = hashlib.sha256(), None
+        scan = info.st_size <= MOST_BYTES
+        if scan:
+            copy = os.path.join(folder, "file")
+            out = open(copy, "wb")
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+            if scan:
+                out.write(chunk)
+        if scan:
+            out.close()
+            os.chmod(copy, 0o644)
+        else:
+            facts.append("Larger than 200 MB: not scanned.")
+        facts.append(f"SHA-256 {digest.hexdigest()}.")
+    return facts, copy
+
+
+def processes(program):
+    """Lines about each running process of the program: its command, parents, control group, connections."""
+    lines, pids = [], []
+    connections = mentor_guard.connections()
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe").replace(" (deleted)", "")
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                command = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+            if exe != program and program not in command.split():
+                continue
+            if "/mentor-investigate" in command or "/mentor-root-shell" in command:
+                continue  # this look itself, which has the program's name in its command
+            with open(f"/proc/{pid}/status", encoding="utf-8", errors="replace") as f:
+                parent = re.search(r"^PPid:\s*(\d+)", f.read(), re.M).group(1)
+            with open(f"/proc/{parent}/cmdline", "rb") as f:
+                said = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+            with open(f"/proc/{pid}/cgroup", encoding="utf-8", errors="replace") as f:
+                group = f.read().strip().rsplit("/", 1)[-1]
+        except (OSError, AttributeError):
+            continue
+        pids.append(int(pid))
+        mine = connections.get(int(pid), [])
+        lines.append(f"Process {pid}: {clean(command)}; started by {parent} ({clean(said, 120)}); in {clean(group, 80)}"
+                     + (f"; connections: {clean(', '.join(map(str, mine)), 300)}" if mine else "."))
+    return lines[:8], pids
+
+
+def history(program):
+    """The last starts of it in the record of programs started."""
+    found = []
+    for path in (EXECLOG + ".1", EXECLOG):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if program in line:
+                        try:
+                            start = json.loads(line)
+                        except ValueError:
+                            continue
+                        words = str(start.get("cmdline", "")).split()
+                        # the program itself, or an interpreter running it: not a program given its name to work on
+                        if start.get("exe") == program or (mentor_guard.INTERPRETERS.match(str(start.get("exe")))
+                                                           and program in words[1:3]):
+                            found.append(start)
+        except OSError:
+            pass
+    return [f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(s.get('time', 0)))}: process {s.get('pid')}, parent "
+            f"{s.get('ppid')}, user {s.get('uid', s.get('user', '?'))}: {clean(s.get('cmdline') or s.get('cmd') or '', 200)}"
+            for s in found[-5:]], len(found)
+
+
+def addresses(program, pids):
+    """The remote addresses the program uses: live connections, and what the guard noted of it."""
+    found = set()
+    connections = mentor_guard.connections()
+    for pid in pids:
+        found.update(connection[1] for connection in connections.get(pid, []))
+    try:
+        with open(mentor_guard.NET, encoding="utf-8") as f:
+            data = json.load(f)
+        if program not in data.get("waiting", {}) and program not in data.get("blocked", {}):
+            # By name again, as most of its connections are over at once: "ips" can be the name server's.
+            for place in data.get("unknown", {}).get(program, {}).get("destinations", [])[-6:]:
+                host = place.rsplit(":", 1)[0].strip("[]")
+                try:
+                    found.update(info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP))
+                except OSError:
+                    pass
+    except (OSError, ValueError):
+        pass
+    usable = []
+    for text in found:
+        for one in re.split(r"[\s,]+", str(text)):
+            one = one.rsplit(":", 1)[0] if one.count(":") == 1 else one
+            try:
+                address = ipaddress.ip_address(one.strip("[]"))
+            except ValueError:
+                continue
+            if address.is_global:
+                usable.append(str(address))
+    return sorted(set(usable))
+
+
+def capture(program, pids, folder):
+    """Thirty seconds of the traffic to and from the program's addresses, headers only, summed up per address and
+    thrown away. Other programs that talk to the same address are counted too: say so."""
+    remote = addresses(program, pids)
+    if not remote:
+        return ["No traffic looked at: it has no connection now, and the guard noted no address it reached."]
+    if not shutil.which("dumpcap"):
+        return ["No traffic looked at: the package wireshark-cli is not installed."]
+    remote = remote[:12]
+    path = os.path.join(folder, "traffic.pcapng")
+    rule = " or ".join("host " + address for address in remote)
+    try:
+        subprocess.run(["dumpcap", "-q", "-i", "any", "-f", rule, "-s", str(SNAP_BYTES), "-a",
+                        f"duration:{CAPTURE_SECONDS}", "-w", path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=CAPTURE_SECONDS + 15)
+        os.chmod(path, 0o644)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"The traffic could not be captured: {e}"]
+    code, out = locked(["tshark", "-n", "-r", path, "-T", "fields", "-E", "separator=|", "-e", "frame.time_epoch", "-e",
+                        "ip.src", "-e", "ip.dst", "-e", "ipv6.src", "-e", "ipv6.dst", "-e", "frame.len", "-e",
+                        "tcp.dstport", "-e", "udp.dstport", "-e", "tls.handshake.extensions_server_name", "-e",
+                        "http.host", "-e", "dns.qry.name"], folder, 60, ("-p", "Environment=HOME=/tmp",))
+    os.unlink(path)
+    if code != 0:
+        return ["The traffic could not be read."]
+    seen = {address: {"out": 0, "in": 0, "packets": 0, "ports": set(), "names": set(), "sends": []} for address in remote}
+    for line in out.splitlines():
+        parts = line.split("|")
+        if len(parts) < 11:
+            continue
+        source, target = parts[1] or parts[3], parts[2] or parts[4]
+        outgoing = target in seen
+        entry = seen.get(target) or seen.get(source)
+        if not entry:
+            continue
+        size = int(parts[5] or 0)
+        entry["packets"] += 1
+        entry["out" if outgoing else "in"] += size
+        if outgoing:
+            entry["sends"].append(float(parts[0] or 0))
+            entry["ports"].update(p for p in (parts[6], parts[7]) if p)
+        entry["names"].update(clean(n, 80) for n in parts[8:11] if n)
+    lines = [f"Traffic over {CAPTURE_SECONDS} seconds (headers only; other programs talking to these addresses are "
+             "counted too):"]
+    for address, entry in seen.items():
+        if not entry["packets"]:
+            lines.append(f"{address} ({mentor_geo.place(address) or 'place not known'}): nothing in this time.")
+            continue
+        steady = ""
+        gaps = [b - a for a, b in zip(entry["sends"], entry["sends"][1:]) if b - a > 0.5]
+        if len(gaps) >= 5:
+            mean = sum(gaps) / len(gaps)
+            if mean and (sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5 / mean < 0.2:
+                steady = f"; sends at a steady beat, every {mean:.1f} s"
+        lines.append(f"{address} ({mentor_geo.place(address) or 'place not known'}): {entry['out']} bytes out, {entry['in']} "
+                     f"in, {entry['packets']} packets, ports {', '.join(sorted(entry['ports'])) or '?'}"
+                     + (f", names {', '.join(sorted(entry['names'])[:5])}" if entry["names"] else "") + steady + ".")
+    return lines
+
+
+# What a compiled program asks the system for: read from its list of imported functions, in a moment. capa reads the
+# code itself and says more, but takes minutes for a few MB (measured below).
+ABILITIES = (
+    ("uses the network", r"socket|connect|bind|listen|accept4?|send(to|msg)?|recv(from|msg)?|getaddrinfo|gethostbyname|"
+                         r"curl_easy_perform|SSL_connect|SSL_read|SSL_write"),
+    ("starts other programs", r"exec[lv]p?e?|execvpe|system|popen|fork|vfork|posix_spawnp?"),
+    ("watches or changes other programs", r"ptrace|process_vm_(read|write)v"),
+    ("loads code while it runs", r"dlopen|memfd_create|fexecve"),
+    ("changes which user it runs as", r"set(e|re|res)?[ug]id|capset|setgroups"),
+    ("loads something into the kernel, or mounts disks", r"init_module|finit_module|mount|umount2?|pivot_root"),
+    ("encrypts data", r"EVP_\w+|AES_\w+|crypto_\w+|gcry_\w+|mbedtls_\w+"),
+    ("reads user accounts or asks for passwords", r"getpw\w+|getspnam|getpass|pam_\w+"),
+    ("watches files, or stops other programs", r"inotify_\w+|fanotify_\w+|kill|tgkill"),
+    ("deletes or renames files", r"unlink(at)?|rename(at2?)?|rmdir"),
+)
+
+
+def readelf(copy, folder):
+    """(imported names, needed libraries, bytes of machine code, what stands out) of an ELF file, by `readelf`, locked up."""
+    code, out = locked(["readelf", "-W", "--dyn-syms", "--dynamic", "--program-headers", "--section-headers", copy], folder, 40)
+    if code != 0:
+        return None
+    imported, needed, machine_code, marks = set(), [], 0, []
+    for line in out.splitlines():
+        words = line.split()
+        if len(words) >= 8 and words[6] == "UND" and words[3] in ("FUNC", "NOTYPE"):
+            imported.add(words[7].split("@")[0])
+        elif "(NEEDED)" in line:
+            needed += re.findall(r"\[([^\]]+)\]", line)
+        elif "(RPATH)" in line or "(RUNPATH)" in line:
+            marks.append("it looks for its libraries in its own place: " + clean(line.split("[")[-1].rstrip("]"), 100))
+        elif words[:1] == ["LOAD"] and len(words) >= 7 and "E" in "".join(words[6:-1]):
+            machine_code += int(words[4], 16)
+        elif words[:1] == ["GNU_STACK"] and "E" in "".join(words[6:-1]):
+            marks.append("its stack can run code, which ordinary programs do not allow")
+        elif ".gopclntab" in line or ".go.buildinfo" in line:
+            marks.append("written in Go") if "written in Go" not in marks else None
+    if "Section Headers:" not in out or ".text" not in out:
+        marks.append("it has no list of sections, as a packed or hidden program has")
+    if not needed:
+        marks.append("it brings its own libraries along (static), so the list below shows little")
+    return imported, needed, machine_code, marks
+
+
+def entropy(copy):
+    """How random its bytes are, 0 to 8. Above 7.5 for a whole program means it is packed or encrypted."""
+    counts, total = [0] * 256, 0
+    with open(copy, "rb") as f:
+        data = f.read(1 << 24)
+    for value in range(256):
+        counts[value] = data.count(value)
+    total = len(data) or 1
+    return -sum(c / total * math.log2(c / total) for c in counts if c)
+
+
+def fast_read(copy, folder):
+    """(lines, bytes of machine code or None). None for a file that is not an ELF program."""
+    with open(copy, "rb") as f:
+        if f.read(4) != b"\x7fELF":
+            return [], None
+    if not shutil.which("readelf"):
+        return ["Its list of imported functions was not read: the package binutils is not installed."], os.path.getsize(copy)
+    read = readelf(copy, folder)
+    if not read:
+        return ["Its list of imported functions could not be read: a damaged or unusual file."], os.path.getsize(copy)
+    imported, needed, machine_code, marks = read
+    random = entropy(copy)
+    if random > 7.5:
+        marks.append(f"its bytes look random ({random:.1f} of 8): packed or encrypted, so what it asks for below shows little")
+    able = [what for what, names in ABILITIES if any(re.fullmatch(names, name) for name in imported)]
+    lines = ["By the functions it imports, it " + ("; ".join(able) if able else "asks for none of those watched") + "."]
+    if needed:
+        lines.append("Libraries it needs: " + clean(", ".join(needed[:14]), 300) + ".")
+    if marks:
+        lines.append("Stands out: " + "; ".join(marks) + ".")
+    lines.append(f"Machine code: {machine_code / 1048576:.1f} MB of a {os.path.getsize(copy) / 1048576:.1f} MB file.")
+    return lines, machine_code
+
+
+def yara(copy, folder):
+    if not shutil.which("yara"):
+        return ["Not scanned for known signs: the package yara is not installed."]
+    if not copy:
+        return []
+    shown = os.path.join(folder, "rules.yar")
+    shutil.copy(RULES, shown)
+    os.chmod(shown, 0o644)
+    code, out = locked(["yara", "-m", "-w", shown, copy], folder, 60)
+    if code != 0:
+        return ["The scan for known signs did not finish."]
+    found = []
+    for line in out.splitlines():
+        rule = re.match(r"(\w+) \[(.*)\] ", line)
+        if rule:
+            said = re.search(r'description="([^"]*)"', rule.group(2))
+            found.append(said.group(1) if said else rule.group(1))
+    return ["Known signs inside the file: " + "; ".join(found) + "."] if found else ["No known signs inside the file."]
+
+
+def get_capa():
+    """capa is in no package: fetched at its first use, and only the exact file named here is taken."""
+    if os.access(CAPA, os.X_OK):
+        return None
+    os.makedirs(CAPA_DIR, mode=0o755, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=CAPA_DIR, suffix=".zip") as f:
+        try:
+            subprocess.run(["curl", "-fsSL", "-m", "300", "-o", f.name, CAPA_URL], check=True, timeout=320,
+                           stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return "it could not be downloaded"
+        digest = hashlib.sha256()
+        with open(f.name, "rb") as z:
+            while chunk := z.read(1 << 20):
+                digest.update(chunk)
+        if digest.hexdigest() != CAPA_SHA256:
+            return "the download was not the expected file"
+        with zipfile.ZipFile(f.name) as z:
+            with z.open("capa") as source, open(CAPA + ".new", "wb") as out:
+                shutil.copyfileobj(source, out)
+    os.chmod(CAPA + ".new", 0o755)
+    os.replace(CAPA + ".new", CAPA)
+    return None
+
+
+def capa(copy, folder, machine_code):
+    """What the program is able to do, read from its machine code. Measured under locked() on four processors: 0.2 MB
+    file 11 s, 1 MB 91 s, 2 MB 287 s, 3 MB and more over 5 minutes; more processors did not help. It goes by the machine
+    code, not by the file: padding a file would not get it out of this, and a large file with little code is quick."""
+    if not copy:
+        return []
+    with open(copy, "rb") as f:
+        head = f.read(4)
+    if head != b"\x7fELF" and head[:2] != b"MZ":
+        return ["Not a compiled program, so capa did not read its code."]
+    size = os.path.getsize(copy) if machine_code is None else machine_code
+    if size > CAPA_MOST:
+        return [f"capa did not read its code: {size / 1048576:.1f} MB is more than it can read in the time. That says nothing "
+                "good or bad about the program."]
+    with open(os.path.join(WORK, "capa.lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return ["capa did not read its code: it is busy with another look. Ask again in a few minutes."]
+        if not os.access(CAPA, os.X_OK):
+            progress("Fetching the tool that reads program code (once)", 300)
+        why = get_capa()
+        if why:
+            return [f"capa did not read its code: it {why}."]
+        progress("Reading what its code can do", CAPA_SECONDS)
+        code, out = locked([CAPA, "-j", copy], folder, CAPA_SECONDS,
+                           ("-p", "RuntimeDirectory=mentor-capa",
+                            "-p", "Environment=HOME=/run/mentor-capa TMPDIR=/run/mentor-capa",
+                            "-p", "BindReadOnlyPaths=" + CAPA_DIR))
+    try:
+        rules = json.loads(out).get("rules", {})
+    except ValueError:
+        return [f"capa did not finish reading its code in {CAPA_SECONDS // 60} minutes. That says nothing good or bad about the program."]
+    names = sorted(clean(name, 80) for name, rule in rules.items() if not rule.get("meta", {}).get("lib"))
+    if not names:
+        return ["capa read its code and found no abilities it knows."]
+    return ["capa read in its code (it guesses from patterns): " + "; ".join(names[:40])
+            + (f"; and {len(names) - 40} more" if len(names) > 40 else "") + "."]
+
+
+def touched(program):
+    lines = []
+    for event in mentor_audit.about(program):
+        lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['time']))} ({event['key'].split('-')[1]}): "
+                     f"{clean(event['paths'][0] if event['paths'] else '?', 150)}")
+    return lines[-10:] or ["Nothing on record. The audit log goes back only some days, and to when it was installed."]
+
+
+def net_said(program):
+    try:
+        with open(mentor_guard.NET, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    entry = data.get("unknown", {}).get(program)
+    if not entry:
+        return []
+    state = next((s for s in ("waiting", "allowed", "blocked") if program in data.get(s, {})), "not answered")
+    places = ", ".join(mentor_geo.where(p, entry.get("ips")) for p in entry.get("destinations", [])[-6:])
+    return [f"The guard on programs going online: {state}; tried {entry.get('count', 0)} times; to {clean(places, 400)}."]
+
+
+def look(program, lock):
+    """Everything about a program. capa last and outside `lock`: it can take minutes, and held up every other look."""
+    folder = tempfile.mkdtemp(prefix="look-", dir=WORK)
+    os.chmod(folder, 0o755)
+    try:
+        progress("Looking at the file", 60)
+        facts, copy = copy_of(program, folder)
+        progress("Looking for known signs inside it", 90)
+        inside = yara(copy, folder)
+        quick, machine_code = fast_read(copy, folder) if copy else ([], None)
+        running, pids = processes(program)
+        starts, count = history(program)
+        said = touched(program)
+        network = net_said(program)
+        if addresses(program, pids):
+            progress("Watching its network traffic", CAPTURE_SECONDS + 15)
+        network += capture(program, pids, folder)
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        inside += quick + capa(copy, folder, machine_code)
+        parts = [("The file", facts), ("Inside the file", inside),
+                 (f"Running now ({len(pids)})", running or ["Not running."]),
+                 (f"Started ({count} times on record, the last ones)", starts or
+                  ["No start on record. The record goes back only some days: this does not mean it never ran."]),
+                 ("Passwords, keys, browser data, start-up files", said), ("The network", network)]
+        return "\n\n".join(f"{title}:\n" + "\n".join(lines) for title, lines in parts) + "\n"
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            os.unlink(PROGRESS)
+        except OSError:
+            pass
+
+
+def asked_with_password(program):
+    """`mentor-investigate --asked PROGRAM`, as root: the user gave their password for this one (the tool
+    security_investigate, through the password dialog), so it need not be on the guard's lists."""
+    os.makedirs(WORK, mode=0o755, exist_ok=True)
+    with open(os.path.join(WORK, "lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("Another look is under way. Try again in a few minutes.")
+            return
+        print(look(os.path.realpath(program), lock), end="")
+
+
+def main():
+    if sys.argv[1:2] == ["--asked"]:
+        if os.geteuid() == 0 and len(sys.argv) == 3:
+            asked_with_password(sys.argv[2])
+        return
+    link = socket.socket(fileno=0)
+    uid = struct.unpack("3i", link.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[1]
+    if uid != 0 and uid < 1000:
+        return
+    asked = b""
+    while b"\n" not in asked and len(asked) < 8192:
+        chunk = link.recv(8192)
+        if not chunk:
+            break
+        asked += chunk
+    try:
+        program = str(json.loads(asked)["program"])
+    except (ValueError, KeyError, TypeError):
+        link.sendall(b"Asked wrongly.\n")
+        return
+    if not flagged(program):
+        link.sendall((NOT_FLAGGED + clean(program) + "\n").encode())
+        return
+    os.makedirs(WORK, mode=0o755, exist_ok=True)
+    os.makedirs(CACHE, mode=0o700, exist_ok=True)
+    with open(os.path.join(WORK, "lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            link.sendall(b"Another look is under way. Try again in a few minutes.\n")
+            return
+        # An answer holds as long as nothing it says has changed: an Allow, or the program started or ended.
+        state = program + "|" + "".join(net_said(program)) + "|" + str(len(processes(program)[1]))
+        kept = os.path.join(CACHE, hashlib.sha256(state.encode()).hexdigest())
+        try:
+            if time.time() - os.path.getmtime(kept) < KEPT:
+                with open(kept, encoding="utf-8") as f:
+                    link.sendall(("(As found a few minutes ago.)\n\n" + f.read()).encode())
+                return
+        except OSError:
+            pass
+        answer = look(os.path.realpath(program) if os.path.isabs(program.split(" ")[0]) and " " not in program else program,
+                      lock)
+        if "it is busy with another look" not in answer:  # asked again, that one gets its turn
+            with open(kept, "w", encoding="utf-8") as f:
+                f.write(answer)
+        link.sendall(answer.encode())
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass

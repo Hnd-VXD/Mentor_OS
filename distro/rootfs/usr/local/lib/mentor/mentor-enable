@@ -17,6 +17,13 @@ systemctl --global enable mentor-guard-notice.path
 # The record of every program started; the guard on programs going online, which is OpenSnitch's daemon with
 # Mentor as its interface (package opensnitch; etc/mentor/SECURITY.md).
 systemctl enable mentor-execlog.service
+# Who touched passwords and keys (package audit; its records stay in its own log, not also in the journal), and
+# the closer look at a flagged program, started only when asked (etc/mentor/SECURITY.md).
+if [ -e /usr/lib/systemd/system/auditd.service ]; then
+    systemctl enable auditd.service
+    systemctl mask systemd-journald-audit.socket
+fi
+systemctl enable mentor-investigate.socket
 # "No programs from temporary folders" (19.10.26.13) was taken back on 2026-10-20: it broke OpenCode and others
 # that unpack a library into /tmp. Its switch-on link goes with the unit the update removes.
 rm -f /etc/systemd/system/sysinit.target.wants/mentor-noexec.service

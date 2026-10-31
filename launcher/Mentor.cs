@@ -614,6 +614,7 @@ static class Program
         catch (IOException) { }
 
         if (tray != null) tray.Attach(bridge);
+        DateTime runStarted = DateTime.UtcNow;
         Application.Run(bridge);
         if (tray != null) tray.Detach();
 
@@ -657,6 +658,15 @@ static class Program
         }
         if (qemu.ExitCode != 0 && !bridge.TimedOut)
             throw new LauncherException("QEMU stopped with an error:\n\n" + Tail(stderr.ToString(), 1500));
+        // QEMU can close before its SHUTDOWN message arrives: after an update's restart Mentor just disappeared
+        // (the user, 2026-10-30). A clean exit with no reason is taken as a restart, so a lost power-off starts
+        // it again. Not when the desktop never came up or it ended at once: that would be a loop.
+        if (qmp.StopReason == null && qemu.ExitCode == 0 && bridge.Revealed &&
+            (DateTime.UtcNow - runStarted).TotalSeconds >= 30)
+        {
+            Note("QEMU ended cleanly without saying why: started again");
+            return true;
+        }
         return qmp.StopReason == "guest-reset" || bridge.TimedOut;
     }
 
@@ -669,6 +679,7 @@ static class Program
         {
             if (File.Exists(trace) && new FileInfo(trace).Length > 0)
                 File.Copy(trace, Path.Combine(vmFolder, "start-trace.previous.log"), true);
+            File.Delete(trace);  // TraceSaysUp must not read the last start's line
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
@@ -886,7 +897,7 @@ class HostBridge : Form
     readonly string startFile;  // how long the last start took, for the loading window's bar
     int frozenFor;  // looks in a row at which QEMU's window did not answer
     bool gameMouse;  // the system inside asked for the game mouse (a game is in front)
-    bool noGameMouse;  // this QEMU has none (an older Mentor.exe's command line, or one given by hand)
+    bool bootOk;  // this start's "ok" was heard, or read in its trace
     const int RevealAnyway = 45;  // seconds, for a system that never reports its desktop
     const int RevealAnywayOwn = 120;
     DateTime startedAt = DateTime.UtcNow;
@@ -983,6 +994,11 @@ class HostBridge : Form
             Link.Tick();
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
+            if (!bootOk && !repair && !qemu.HasExited && TraceSaysUp())
+            {
+                Program.Note("the desktop is up by the start's trace; its word on the control channel did not come");
+                OnBoot("ok");
+            }
             // Only when the system could have told: with no control channel its word cannot arrive, and a
             // working Mentor would be stopped for it (2026-10-18).
             if (bootTimeout > 0 && !TimedOut && watch.Enabled && !watch.Explained && control != null &&
@@ -1120,6 +1136,11 @@ class HostBridge : Form
 
     void OnBoot(string how)
     {
+        if (how == "ok")
+        {
+            if (bootOk) return;  // the trace said so first
+            bootOk = true;
+        }
         if (splash != null && !Revealed) splash.Phase(how);
         if (how == "repair") { Reveal(); return; }  // the repair screen is up (mentor-repair-console)
         if (how == "starting")
@@ -1208,7 +1229,9 @@ class HostBridge : Form
     string KeepMouse()
     {
         bool gameMouse = GameMouseNow;
-        if (noGameMouse) return gameMouse ? "this QEMU has no game mouse" : null;
+        // Looked at every time: QEMU lists the game mouse only once the system's driver has started it, and it
+        // is then the one in use. Remembering "this QEMU has none" from an earlier look left it so, and the
+        // pointer was held in a window (the user, 2026-10-30).
         object result;
         string error = qmp.Execute("query-mice", null, 2000, out result);
         if (error != null) return error;
@@ -1216,16 +1239,13 @@ class HostBridge : Form
         if (mice == null) return "QEMU did not list its mice";
         // The machine's own PS/2 mouse moves only as well, but it is the game mouse that is meant.
         Dictionary<string, object> wanted = null;
-        bool foundGame = false;
         foreach (object item in mice)
         {
             var mouse = item as Dictionary<string, object>;
             if (mouse == null || !(mouse["absolute"] is bool)) continue;
             bool absolute = (bool)mouse["absolute"], game = !absolute && ((mouse["name"] as string) ?? "").Contains("Virtio");
-            if (game) foundGame = true;
             if (gameMouse ? game : absolute) wanted = wanted ?? mouse;
         }
-        if (!foundGame) noGameMouse = true;
         if (wanted == null) return gameMouse ? "this QEMU has no game mouse" : "this QEMU has no tablet";
         if (wanted["current"] is bool && (bool)wanted["current"]) return null;
         if (repair) Program.Note("pointer: " + wanted["name"] + " made the one in use");
@@ -1434,28 +1454,58 @@ class HostBridge : Form
     {
         var thread = new Thread(() => {
             TcpClient client = Program.Connect(port);
-            if (client == null) return;
-            NetworkStream stream = client.GetStream();
-            lock (sendLock) connected(stream);
-            try
+            // A link that dropped under a running system is made again. It used to stay down until the next
+            // start: no restore points, and the word that the start worked never came, so a working Mentor
+            // was stopped after 8 minutes (the user, 2026-10-30). QEMU listens again by itself.
+            while (client != null)
             {
-                var reader = new StreamReader(stream, new UTF8Encoding(false));
-                string line;
-                while ((line = reader.ReadLine()) != null)
+                NetworkStream stream = client.GetStream();
+                lock (sendLock) connected(stream);
+                string why = "closed by QEMU";
+                try
                 {
-                    Dictionary<string, object> message;
-                    try { message = json.Deserialize<Dictionary<string, object>>(line); }
-                    catch (Exception) { continue; }  // not a message of ours
-                    if (message != null && (early == null || !early(message))) BeginInvoke((Action)(() => {
-                        try { handle(message); }
-                        catch (KeyNotFoundException) { }
-                    }));
+                    var reader = new StreamReader(stream, new UTF8Encoding(false));
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        Dictionary<string, object> message;
+                        try { message = json.Deserialize<Dictionary<string, object>>(line); }
+                        catch (Exception) { continue; }  // not a message of ours
+                        if (message != null && (early == null || !early(message))) BeginInvoke((Action)(() => {
+                            try { handle(message); }
+                            catch (KeyNotFoundException) { }
+                        }));
+                    }
                 }
+                catch (IOException e) { why = e.Message; }
+                catch (InvalidOperationException) { return; }  // window already closed
+                lock (sendLock) connected(null);
+                client.Close();
+                client = null;
+                while (client == null && !qemu.HasExited)
+                {
+                    try { client = new TcpClient("127.0.0.1", port); }
+                    catch (SocketException) { Thread.Sleep(200); }
+                }
+                if (client != null) Program.Note("the link on port " + port + " dropped (" + why + "): connected again");
             }
-            catch (IOException) { }
-            catch (InvalidOperationException) { }  // window already closed
         }) { IsBackground = true };
         thread.Start();
+    }
+
+    // The start's own trace says the desktop is up (mentor-start-trace), for when the word on the control
+    // channel was lost.
+    bool TraceSaysUp()
+    {
+        try
+        {
+            using (var file = new FileStream(Path.Combine(Program.VmDir, "start-trace.log"), FileMode.Open,
+                                             FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(file))
+                return reader.ReadToEnd().Contains("=== the desktop is up");
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 }
 

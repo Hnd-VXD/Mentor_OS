@@ -41,6 +41,10 @@ ALWAYS_PROTECTED = (
     # Who asks for the password, and with which words (mentor-rootd).
     "/usr/local/lib/systemd/system/mentor-root.socket", "/usr/local/lib/systemd/system/mentor-root@.service",
     "/etc/systemd/system/sockets.target.wants/mentor-root.socket",
+    # The closer look at a flagged program: root, and no password (SECURITY.md).
+    "/usr/local/lib/mentor/mentor-investigate", "/usr/local/lib/systemd/system/mentor-investigate.socket",
+    "/usr/local/lib/systemd/system/mentor-investigate@.service", "/usr/local/share/mentor/yara/mentor.yar",
+    "/etc/systemd/system/sockets.target.wants/mentor-investigate.socket",
     # Updates of Mentor itself: what installs them and what checks who signed them (UPDATES.md).
     "/usr/local/lib/systemd/system/mentor-update-check.service", "/usr/local/lib/systemd/system/mentor-update-check.timer",
     "/usr/local/lib/systemd/system/mentor-update-apply.service", "/etc/systemd/system/timers.target.wants/mentor-update-check.timer",
@@ -200,6 +204,15 @@ def run_root(args, policy):
     return ["bash", "-c", command]
 
 
+def investigate(args, policy):
+    """A closer look at a program the user asked about, with their password (mentor-investigate; SECURITY.md).
+    Its own action: the root shell rightly refuses every command that names Mentor's files."""
+    path = args.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise Denied("'path' must be an absolute path")
+    return ["/usr/local/lib/mentor/mentor-investigate", "--asked", path]
+
+
 def system_path(args, policy):
     """The validated absolute path a file action may touch."""
     path = args.get("path")
@@ -351,7 +364,7 @@ ACTIONS = {
     },
     # Each of these asks for the password every time: editing a system file is as powerful as a
     # root shell. They are separate doors so that the password dialog can say which it is.
-    "shell": {"run_root": run_root},
+    "shell": {"run_root": run_root, "investigate": investigate},
     "write": {"write_file": write_file, "restore_file": restore_file},
     "apply": {"sandbox_apply": sandbox_apply},
     "undo": {"change_undo": change_undo},

@@ -88,5 +88,17 @@
     "sha256": "bc1f997bb8f8b889d5ea4489572c2c72be6c6c143c1457bd346d3c51b4ada6b2",
     "summary": "Keeps a record of each start of Mentor, so a start that gets stuck can be understood.",
     "published": "2026-10-24 14:13"
+  },
+  {
+    "version": 202610302143,
+    "sha256": "15ac3f0fe7233f132936f3a4cd483039fdd8092802485d3428ccd845c0148a4c",
+    "summary": "Mentor starts again by itself if it closes during an update's restart, and its window no longer holds the mouse.",
+    "published": "2026-10-30 23:43"
+  },
+  {
+    "version": 202610302204,
+    "sha256": "098c325309257580894df68fbdc56dfbc4fc0301a101592ea114d8ff3fcf49ff",
+    "summary": "Mentor stays connected to Windows if the link drops for a moment, and no longer stops a start that worked.",
+    "published": "2026-10-31 00:04"
   }
 ]

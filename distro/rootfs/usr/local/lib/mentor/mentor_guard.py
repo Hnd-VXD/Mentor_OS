@@ -26,6 +26,8 @@ import re
 import subprocess
 import time
 
+import mentor_audit
+
 STATE = "/var/lib/mentor/guard"
 KNOWN = os.path.join(STATE, "known.json")          # programs seen: exe -> {first, last, origin}
 WATCHED = os.path.join(STATE, "starts.json")       # what starts by itself: item -> hash
@@ -439,6 +441,86 @@ def _pacman_since(when):
 
 # --- the look -----------------------------------------------------------------------------------
 
+def _who_touched(event):
+    """The program behind an audit event: for an interpreter the script it runs, or its whole command for code given
+    as text. None for an interpreter with nothing after it, a person at a prompt."""
+    exe = event["exe"]
+    if not INTERPRETERS.match(exe):
+        return exe
+    words = event["command"].split()[1:]
+    if not words:
+        return None
+    script = next((w for w in words if not w.startswith("-")), "")
+    if words[0].startswith("-") or not script.startswith("/") or not os.path.isfile(script):
+        return exe + " " + " ".join(words)
+    return script
+
+
+def secret_findings(touched, journal, found, now):
+    """A red card for each program from nowhere known that touched passwords, keys or a browser's cookies. Programs
+    from a package are not judged: they are what people and browsers use all day (`cat`, Chromium, a backup)."""
+    for event in touched:
+        if event["key"] not in (mentor_audit.SECRETS, mentor_audit.BROWSER):
+            continue
+        program = _who_touched(event)
+        if not program or event["uid"] == "0" and event["exe"] in _MENTOR:
+            continue
+        kept = next((f for f in found if f["key"] == "secrets:" + program), None)
+        if kept is None and trusted({"exe": program, "origin": origin(program)}, journal):
+            continue
+        place = (event["paths"] or ["?"])[0]
+        if kept is not None:
+            if place not in kept["details"] and len(kept["details"]) < 2000:
+                kept["details"] += "\n" + place
+            continue
+        browser = event["key"] == mentor_audit.BROWSER
+        found.append({"key": "secrets:" + program, "level": "problem", "program": program,
+                      "title": "A program read your browser's saved data" if browser
+                      else "A program read your passwords or keys",
+                      "text": f"{net_name(program)[0]} comes from nowhere Mentor knows, and it opened "
+                              f"{os.path.basename(place)}.",
+                      "details": f"{program} (from nowhere known; run by user id {event['uid']}, process {event['pid']}, "
+                                 f"parent {event['ppid']}, at "
+                                 f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['time']))}; command: "
+                                 f"{event['command']}) opened, by the audit log:\n{place}",
+                      "since": now})
+    return found
+
+
+def own_findings(touched, journal, found, now):
+    """A card for each of Mentor's own files that was written to and now differs from `mentor verify`'s list, saying who
+    wrote it. An update and Mentor's own repairs bring the list along, and the assistant's changes are in its journal."""
+    events = [e for e in touched if e["key"] == mentor_audit.OWN]
+    if not events:
+        return found
+    try:
+        with open(MANIFEST) as f:
+            listed = {path.strip(): digest for digest, path in (line.split(None, 1) for line in f if "  " in line)}
+    except (OSError, ValueError):
+        return found
+    for event in events:
+        for path in event["paths"]:
+            if path not in listed or path in journal or any(f["key"] == "own:" + path for f in found):
+                continue
+            try:
+                with open(path, "rb") as f:
+                    if hashlib.sha256(f.read()).hexdigest() == listed[path]:
+                        continue
+            except OSError:
+                pass  # gone: that differs too
+            found.append({"key": "own:" + path, "level": "warning", "program": path,
+                          "title": "One of Mentor's own files was changed",
+                          "text": f"{os.path.basename(path)} is not as it was built, changed by "
+                                  f"{os.path.basename(event['exe'])}.",
+                          "details": f"{path} differs from `mentor verify`'s list. By the audit log it was written at "
+                                     f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['time']))} by {event['exe']} "
+                                     f"(user id {event['uid']}, process {event['pid']}, parent {event['ppid']}; command: "
+                                     f"{event['command']}). Mentor's own files can hold words that look like signs in "
+                                     "security_investigate: they name browsers' files and keys in order to protect them.",
+                          "since": now})
+    return found
+
+
 def scan():
     """Look once (as root), keep the record, and write what looks wrong. Returns the findings."""
     global _MENTOR
@@ -469,7 +551,8 @@ def scan():
             if rate >= HOT:
                 new_hot[key] = hot.get(key, 0) + 1
         p["rate"] = rate
-    _save(SAMPLES, {"time": now, "ticks": new_samples, "hot": new_hot, "execlog": samples.get("execlog")})
+    _save(SAMPLES, {"time": now, "ticks": new_samples, "hot": new_hot, "execlog": samples.get("execlog"),
+                    "audit": samples.get("audit")})
 
     journal = _mentor_journal_text()
     seen_pids = set()
@@ -503,13 +586,20 @@ def scan():
                              + " (mentor-execlog).\n" + _describe(p), "pid": p["pid"], "since": now})
     samples = _load(SAMPLES, {})
     samples["execlog"] = execlog_position()
+    # Who touched passwords, keys and a browser's cookies, and who wrote what starts by itself (auditd).
+    mentor_audit.refresh([home for _name, home in _homes()])
+    touched, samples["audit"] = mentor_audit.since(samples.get("audit"))
     _save(SAMPLES, samples)
 
     # What starts by itself: new or changed since the last look.
     before = _load(WATCHED, {})
     current = starts()
     previous_findings = [f for f in _load(FINDINGS, {"found": []}).get("found", [])
-                         if f.get("key", "").startswith(("starts:", "preload:", "setuid:")) and now - f.get("since", 0) < KEPT]
+                         if f.get("key", "").startswith(("starts:", "preload:", "setuid:", "secrets:", "own:"))
+                         and now - f.get("since", 0) < KEPT]
+    if not learning:
+        previous_findings = secret_findings(touched, journal, previous_findings, now)
+        previous_findings = own_findings(touched, journal, previous_findings, now)
     if before and not learning:
         changed = [path for path, digest in current.items() if before.get(path) != digest]
         package_time = _pacman_since(before.get("__time__", 0) if isinstance(before.get("__time__"), (int, float)) else 0)
@@ -517,6 +607,8 @@ def scan():
         for path in changed:
             if path in _MENTOR:
                 continue  # Mentor's own file: `mentor verify` looks after those
+            if os.path.realpath(path) == "/dev/null":
+                continue  # a masked unit (mentor-enable masks one): it starts nothing
             if path in journal or os.path.basename(path) in journal:
                 continue  # Mentor's assistant did it, and its journal says for which request
             owner = _package(path) if path.startswith(("/etc/", "/usr/")) else ""
@@ -535,7 +627,9 @@ def scan():
                                       "since": now})
         rest = [p for p in new if p not in preload]
         if rest:
-            listed = "\n".join(f"{'new' if p not in before else 'changed'}  {p}" for p in rest[:12])
+            writers = {path: e["exe"] for e in touched if e["key"] == mentor_audit.STARTS for path in e["paths"]}
+            listed = "\n".join(f"{'new' if p not in before else 'changed'}  {p}"
+                               + (f"  (written by {writers[p]})" if p in writers else "") for p in rest[:12])
             previous_findings.append({"key": "starts:" + ",".join(sorted(rest)[:6]), "level": "warning",
                                       "title": "Something new starts by itself",
                                       "text": ", ".join(os.path.basename(p) for p in rest[:4])
@@ -666,7 +760,8 @@ def findings():
 
 def request(f):
     return (f"Mentor's watch for unusual programs found this: {f.get('title')}.\n\n{f.get('details', '')}\n\n"
-            "Follow /etc/mentor/SECURITY.md, \"Unusual programs\": look closely, reading only (where the program "
+            "Follow /etc/mentor/SECURITY.md, \"Unusual programs\": look closely, reading only (security_investigate "
+            "with the program file first; where the program "
             "came from, when its file appeared, what started it, what it talks to, the journal and pacman's log), "
             "and tell me in plain words what it is, whether it is harmful, and what you would do. Do not stop, "
             "change or remove anything before I agree.")
@@ -691,6 +786,7 @@ def summary():
     # the protections themselves: each named when it is not working
     for unit, what in (("mentor-guard.timer", "the watch for unusual programs"),
                        ("mentor-execlog.service", "the record of programs started"),
+                       ("auditd.service", "the record of who touched passwords and keys"),
                        ("opensnitchd.service", "the guard on programs going online (OpenSnitch's daemon)"),
                        ("mentor-netguard.service", "the guard on programs going online (Mentor's side)")):
         if _out("systemctl", "is-active", unit).strip() != "active":

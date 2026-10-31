@@ -1,0 +1,12 @@
+[Unit]
+Description=Mentor: where the agent's tool asks for a closer look at a program the guard flagged
+Documentation=file:///etc/mentor/SECURITY.md
+
+[Socket]
+ListenStream=/run/mentor-investigate.sock
+SocketMode=0666
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target
