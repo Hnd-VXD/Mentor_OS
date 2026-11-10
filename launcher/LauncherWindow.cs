@@ -332,14 +332,17 @@ class LauncherWindow : Form
         // One button for starting from nothing; whether the newest Mentor is downloaded too is a choice
         // inside it (StartOverDialog). It was two, Reinstall and Start over, which the user found the same.
         var fresh = new PillButton { Text = "Start over…" };
-        Control[] buttons = { restore, mend, backUp, fromBackup, move, fresh };
+        // Mentor's disk file made as small as what is in it (Shrink, in Backup.cs).
+        var smaller = new PillButton { Text = "Free up space…" };
+        Control[] buttons = { restore, mend, backUp, fromBackup, move, fresh, smaller };
         for (int i = 0; i < buttons.Length; i++)
         {
             buttons[i].Font = Theme.Font(9f, FontStyle.Regular);
-            Place(buttons[i], i % 2 == 0 ? 32 : 284, 102 + i / 2 * 42, 244, 34);
+            Place(buttons[i], i % 2 == 0 ? 32 : 284, 100 + i / 2 * 40, 244, 32);
         }
+        // Four rows of buttons since "Free up space…" (2026-11-10); the note under them.
         var moreNote = Words("For when something went wrong, or something is to be kept or moved.", 8.5f, Theme.Dim);
-        Place(moreNote, 32, 236, 496, 20);
+        Place(moreNote, 32, 264, 496, 20);
         morePage.AddRange(buttons);
         morePage.Add(moreNote);
 
@@ -414,6 +417,7 @@ class LauncherWindow : Form
             }
         };
         backUp.Click += (s, e) => Backup.Make(this, root, vmDir, image);
+        smaller.Click += (s, e) => Shrink.Run(this, vmDir, points);
         fromBackup.Click += (s, e) => { if (Backup.RestoreFrom(this, root, vmDir, image)) watch.Failures = 0; };
         move.Click += (s, e) => { if (MoveMentor.Run(this, root)) { DialogResult = DialogResult.Cancel; } };
 

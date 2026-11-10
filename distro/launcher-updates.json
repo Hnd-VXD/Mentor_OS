@@ -100,5 +100,11 @@
     "sha256": "098c325309257580894df68fbdc56dfbc4fc0301a101592ea114d8ff3fcf49ff",
     "summary": "Mentor stays connected to Windows if the link drops for a moment, and no longer stops a start that worked.",
     "published": "2026-10-31 00:04"
+  },
+  {
+    "version": 202611100629,
+    "sha256": "6ae56f63c0ecc0c50923416344481dbcde2f7d3e1104a9b54991527e19a80fc5",
+    "summary": "Mentor's disk stops growing on Windows and can be made smaller (Free up space), Mentor is paused instead of broken when the Windows drive is full, and it starts with less memory when Windows is short of it.",
+    "published": "2026-11-10 08:29"
   }
 ]

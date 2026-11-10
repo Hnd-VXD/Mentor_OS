@@ -87,6 +87,8 @@ vm\                   your own disk, created on the first start
 - **Repair** in the launcher window (`Mentor.exe --repair`) is for when the desktop no longer comes up: Mentor starts without it, on a text screen where you talk to the assistant, and it works from its instructions to mend what is broken. `/restart` there starts Mentor normally.
 - `Mentor.exe --restore` returns to a restore point; the launcher window has the same choice.
 - `Mentor.exe --reset` starts again from the clean system. Everything in `vm\` is lost.
+- Disk space on Windows: room freed inside Mentor is used again inside its disk file, so the file stops growing; **Free up space…** on the More page (or `Mentor.exe --shrink`) makes the file as small as what is in it (the restore points are removed). When the Windows drive runs low a card appears in the chat, and when it is full Mentor is paused, not broken, until room is made.
+- When Windows will not give the memory asked for, Mentor.exe starts Mentor with half of it and says so in the chat.
 - **Reinstall** in the launcher window downloads the newest Mentor from GitHub and starts again from it. It asks first and says what is lost (everything inside Mentor, including sign-ins and restore points); nothing is deleted until the download has arrived whole and checked, and a dropped connection is resumed.
 
 ## Source

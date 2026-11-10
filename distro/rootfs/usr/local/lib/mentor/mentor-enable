@@ -52,6 +52,9 @@ systemctl enable mentor-root.socket
 systemctl enable mentor-power-button.service
 # A watch on the desktop from outside it: a freeze is noticed and explained (etc/mentor/FREEZES.md).
 systemctl enable mentor-sentinel.service
+# The disk is told what has been deleted, after every start and weekly (etc/systemd/system/fstrim.timer.d,
+# etc/mentor/DESKTOP.md "Disk space"): on Windows that keeps Mentor's disk file from growing for ever.
+systemctl enable fstrim.timer
 # The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
 systemctl enable mentor-emergency-key.service
 # The languages offered in Settings, System, Region & Language (etc/mentor/DESKTOP.md, "Languages").

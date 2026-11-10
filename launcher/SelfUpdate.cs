@@ -352,12 +352,14 @@ static class SelfUpdate
             foreach (string old in Directory.GetFiles(dir, "Mentor-*.exe"))
                 if (!old.EndsWith(".failed.exe", StringComparison.OrdinalIgnoreCase))
                     try { File.Delete(old); } catch (Exception) { }
-            File.Move(part, PathOf(file));
+            Program.MoveWhenFree(part, PathOf(file));
             File.WriteAllText(PathOf("staged.json"), new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
                 { "version", version }, { "file", file }, { "sha256", sha }, { "summary", info.ContainsKey("summary") ? info["summary"] : "" } }));
             Log("staged " + version + " for the next start");
             SetNote(ReadyNote);
         }
+        // Said every time: for weeks nothing told why a published launcher had not arrived (2026-11-10).
+        else Log("looked: the newest published is " + version + (version > Version ? ", not taken (staged already, or it failed here before)" : ", nothing newer than this one"));
         File.WriteAllText(PathOf("checked"), DateTime.UtcNow.ToString("o"));
     }
 

@@ -14,6 +14,10 @@ button-layout='appmenu:minimize,maximize,close'
 # GNOME's top bar and a dock that only shows in the overview.
 [org/gnome/shell/extensions/dash-to-panel]
 hide-overview-on-startup=true
+# Dash to Panel 74 puts its own Escape handling over the shell's while Show Apps is open from its
+# button; GNOME Shell 51 calls that handler with one argument less, so every key pressed there threw
+# "event is undefined" and did nothing (2026-11-10). The shell's own handling stays. DESKTOP.md.
+show-apps-override-escape=false
 
 [org/gnome/shell]
 enabled-extensions=['mentor@mentor.local', 'dash-to-panel@jderose9.github.com', 'appindicatorsupport@rgcjonas.gmail.com']

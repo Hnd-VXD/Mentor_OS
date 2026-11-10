@@ -6,6 +6,7 @@
 //               [--restore] [--yes] [--boot-timeout SECONDS] [--gpu] [--vulkan] [--repair]
 //               [--no-update] [-- extra qemu arguments]
 //   Mentor.exe --backup FILE.zip | --restore-backup FILE.zip | --move FOLDER   (Backup.cs, no window)
+//   Mentor.exe --shrink     the disk file made as small as what is in it (Backup.cs, no window)
 //
 // --no-update: no looking for a newer Mentor.exe (SelfUpdate.cs) this time.
 // For tests that must show nothing on the screen: MENTOR_NO_TRAY=1 (no tray icon), MENTOR_HELLO_TEST=yes|no
@@ -80,6 +81,10 @@ static class Program
     const string Title = "Mentor";
     public static int Freezes;  // starts in a row that froze with the graphics card drawing
     public static bool SoundFailed;  // QEMU would not start with sound: the next start is without
+    // Windows would not give the memory asked for: each next start asks for half (2 GB at least), and the
+    // user is told in the chat once the system is up (HostBridge).
+    public static int MemoryHalved;
+    public static string[] StartNotice;  // level, title, text, what the agent is told
     public static string LogFile;  // vm\launcher.log: what the launcher did, for the diagnostics file
     // Where this installation is, for the tray icon's commands and the diagnostics file.
     public static string Root, VmDir, Image, QemuDir, SettingsFile;
@@ -196,6 +201,7 @@ static class Program
         int bootTimeout = 480;
         bool repair = false, update = true, explicitMemory = false, explicitCpus = false;
         string backupTo = null, restoreFrom = null, moveTo = null;
+        bool shrink = false;
         bool? fullscreen = null;
         var extra = new List<string>();
         for (int i = 0; i < args.Length; i++)
@@ -207,6 +213,7 @@ static class Program
                 case "--backup": backupTo = Path.GetFullPath(Value(args, ref i)); break;
                 case "--restore-backup": restoreFrom = Path.GetFullPath(Value(args, ref i)); break;
                 case "--move": moveTo = Path.GetFullPath(Value(args, ref i)); break;
+                case "--shrink": shrink = true; break;
                 case "--cpu": cpu = Value(args, ref i); break;
                 case "--iso": iso = Path.GetFullPath(Value(args, ref i)); break;
                 case "--vm-dir": vmDir = Path.GetFullPath(Value(args, ref i)); break;
@@ -236,7 +243,23 @@ static class Program
         string disk = Path.Combine(vmDir, "disk.qcow2");
         string vars = Path.Combine(vmDir, "efivars.fd");
 
-        bool job = backupTo != null || restoreFrom != null || moveTo != null;
+        // "Free up space" (Shrink, in Backup.cs) moves the disk aside for the moment it puts the smaller one in
+        // place. If the computer went off in that moment, the disk is still there under its other name: taken
+        // back, before anything below finds no disk and makes an empty one.
+        try
+        {
+            string aside = disk + ".before-shrink";
+            if (!File.Exists(disk) && File.Exists(aside) && Running(vmDir) == null)
+            {
+                File.Move(aside, disk);
+                try { File.AppendAllText(Path.Combine(vmDir, "launcher.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") +
+                          "  the disk was found set aside by an interrupted \"Free up space\": put back\r\n"); }
+                catch (IOException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        bool job = backupTo != null || restoreFrom != null || moveTo != null || shrink;
         // A newer Mentor.exe that was downloaded last time is put in place now, and this one makes way for it.
         if (update && !job && WindowPlace.IsEmpty && SelfUpdate.AtStart(root, args, Running(vmDir) != null)) return 0;
         if (update && !job && WindowPlace.IsEmpty) SelfUpdate.CheckInBackground();  // not again after Back
@@ -248,7 +271,8 @@ static class Program
         {
             // From the command line: done without a window; the exit code says how it went.
             if (Directory.Exists(vmDir)) LogFile = Path.Combine(vmDir, "launcher.log");
-            string error = backupTo != null ? Backup.MakeTo(null, backupTo, root, vmDir, image)
+            string error = shrink ? Shrink.Do(null, vmDir, new RestorePoints(Path.Combine(qemuDir, "qemu-img.exe"), vmDir, disk, vars))
+                         : backupTo != null ? Backup.MakeTo(null, backupTo, root, vmDir, image)
                          : restoreFrom != null ? Backup.RestoreFile(null, restoreFrom, root, vmDir, image)
                          : MoveMentor.Move(null, root, Path.Combine(moveTo, "Mentor"));
             if (error != null) Console.Error.WriteLine(error);
@@ -380,7 +404,17 @@ static class Program
             int[] plan = Resources.Plan(settings.profile, settings.memory > 0 ? settings.memory : memoryGB,
                                         settings.cpus > 0 ? settings.cpus : cpus);
             int memoryNow = explicitMemory ? memoryGB : plan[0], cpusNow = explicitCpus ? cpus : plan[1];
-            Note("starting with " + memoryNow + " GB and " + cpusNow + " processors (" + settings.profile + ")");
+            int memoryAsked = memoryNow;
+            for (int i = 0; i < MemoryHalved; i++) memoryNow = Math.Max(2, memoryNow / 2);
+            if (memoryNow < memoryAsked)
+                StartNotice = new[] { "warning", "Mentor started with less memory",
+                    "Windows did not have " + memoryAsked + " GB free, so Mentor has " + memoryNow + " GB this time.",
+                    "Mentor.exe asked Windows for " + memoryAsked + " GB of memory for this system and Windows refused, so it " +
+                    "started it with " + memoryNow + " GB. Explain to me in two short sentences, in simple words, what this " +
+                    "means and what I can do (close programs on Windows before starting Mentor, or choose Balanced under " +
+                    "Speed in the Mentor window). /etc/mentor/WINDOWS.md, \"Speed\", says how it works." };
+            Note("starting with " + memoryNow + " GB and " + cpusNow + " processors (" + settings.profile + ")" +
+                 (memoryNow < memoryAsked ? ", not the " + memoryAsked + " GB asked for: Windows refused them" : ""));
             if (tray == null && Environment.GetEnvironmentVariable("MENTOR_NO_TRAY") != "1") tray = new Tray();
             SelfUpdate.RunStarting();
             again = RunVm(qemuDir, firmware, vars, disk, iso, cpu, cpusNow, memoryNow, accel, extraNow, modeFile,
@@ -495,10 +529,21 @@ static class Program
             "-drive", "if=pflash,format=raw,file=" + vars,
             // An explicit boot order: the firmware's remembered one breaks whenever
             // the set of devices changes, and it then falls back to network boot.
-            "-drive", "if=none,id=disk,format=qcow2,file=" + disk,
-            "-device", "virtio-blk-pci,drive=disk,bootindex=" + (iso == null ? 0 : 1),
+            // discard=unmap: what the system inside has deleted and trimmed (fstrim, there) is free in the
+            // disk file again and is used for what is written next. Without it the file only ever grew: a
+            // system holding 5 GB had a file of 32 GB (2026-11-10). After Try Omarchy's -reclaim.
+            "-drive", "if=none,id=disk,format=qcow2,discard=unmap,file=" + disk,
+            // werror=stop: a write Windows refuses (above all a full drive, which QEMU on Windows reports as
+            // a plain error, not as "no space") pauses the system instead of reaching it as a broken disk.
+            // HostBridge.WatchDisk tells the user and lets it go on.
+            "-device", "virtio-blk-pci,drive=disk,werror=stop,bootindex=" + (iso == null ? 0 : 1),
             "-netdev", "user,id=net",
-            "-device", "virtio-net-pci,netdev=net",
+            // romfile=: no network boot program in the card, so the firmware never stops to try one.
+            "-device", "virtio-net-pci,netdev=net,romfile=",
+            // No sleep or hibernation of the system inside by itself: QEMU's window stood still with no way
+            // back (Try Omarchy's finding). Windows' own sleep pauses it from outside (Power.cs).
+            "-global", "ICH9-LPC.disable_s3=1",
+            "-global", "ICH9-LPC.disable_s4=1",
             "-device", (gpu ? "virtio-vga-gl" : "virtio-vga") + firstMode +
                        // Vulkan for the system inside (Venus), with memory of the host's for what it draws.
                        (vulkan ? ",venus=on,blob=on,hostmem=" + HostMemory(memoryGB) + "G" : ""),
@@ -656,8 +701,18 @@ static class Program
             SoundFailed = true;
             return true;  // start it again
         }
+        // Memory that Windows will not give (other programs hold it, or WSL does): once more with half, down
+        // to 2 GB, instead of an error the user can do nothing with. After Try Omarchy's start-up retries.
+        if (qemu.ExitCode != 0 && !bridge.TimedOut && !bridge.Revealed && memoryGB > 2 && OutOfMemory(complaint))
+        {
+            MemoryHalved++;
+            Note("Windows would not give " + memoryGB + " GB: started again with half");
+            return true;
+        }
         if (qemu.ExitCode != 0 && !bridge.TimedOut)
-            throw new LauncherException("QEMU stopped with an error:\n\n" + Tail(stderr.ToString(), 1500));
+            throw new LauncherException(OutOfMemory(complaint)
+                ? "Windows does not have enough free memory to start Mentor.\n\nClose some programs on Windows and try again."
+                : "QEMU stopped with an error:\n\n" + Tail(stderr.ToString(), 1500));
         // QEMU can close before its SHUTDOWN message arrives: after an update's restart Mentor just disappeared
         // (the user, 2026-10-30). A clean exit with no reason is taken as a restart, so a lost power-off starts
         // it again. Not when the desktop never came up or it ended at once: that would be a loop.
@@ -668,6 +723,28 @@ static class Program
             return true;
         }
         return qmp.StopReason == "guest-reset" || bridge.TimedOut;
+    }
+
+    // What QEMU says when Windows refuses the memory for the system: 800705aa is "insufficient system
+    // resources" (seen 2026-10-14, with WSL holding 12 GB), 8007000e "out of memory".
+    static bool OutOfMemory(string complaint)
+    {
+        string said = complaint.ToLowerInvariant();
+        return said.Contains("hr=800705aa") || said.Contains("hr=8007000e") || said.Contains("cannot set up guest memory") ||
+               said.Contains("cannot allocate memory") || said.Contains("os_mem_prealloc");
+    }
+
+    // File.Move that waits for a program holding the file for a moment (an antivirus looking at what was
+    // just downloaded): up to 15 tries, half a second apart. After Try Omarchy's downloads.
+    public static void MoveWhenFree(string from, string to)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { File.Move(from, to); return; }
+            catch (IOException) { if (attempt >= 15) throw; }
+            catch (UnauthorizedAccessException) { if (attempt >= 15) throw; }
+            Thread.Sleep(500);
+        }
     }
 
     // vm\start-trace.log, for this start: the one before it kept as start-trace.previous.log (QEMU empties
@@ -982,6 +1059,12 @@ class HostBridge : Form
         };
         title.Start();
         Link = new HostLink(this, hostPort, qemu, qmp);
+        if (Program.StartNotice != null)
+        {
+            string[] n = Program.StartNotice;
+            Program.StartNotice = null;
+            Link.Notice(n[0], n[1], n[2], n[3]);
+        }
         FormClosed += (s, e) => Link.Stop();  // a restart makes a new one; the old one stops watching
         power = new PowerWatch(this, qmp, qemu);
         power.Woke += () => Link.Again();
@@ -992,6 +1075,7 @@ class HostBridge : Form
             VmWindow.Brand(qemu);
             KeepMouse();
             Link.Tick();
+            WatchDisk();
             // A system that is known to report its starts and says nothing for this long is
             // stuck: stop it, so the next start can fall back or a restore point be offered.
             if (!bootOk && !repair && !qemu.HasExited && TraceSaysUp())
@@ -1043,6 +1127,96 @@ class HostBridge : Form
     }
 
     protected override void SetVisibleCore(bool value) { base.SetVisibleCore(false); }
+
+    // The Windows drive that holds Mentor's disk file (after Try Omarchy's host disk warnings and its
+    // disk-full handling). Two things, from the two-second timer:
+    //  - little room left: a card in the chat, yellow under 5 GB or 5% of the drive, red under 1 GB or 1%;
+    //    once for each, and again only after there has been a fifth more room than that in between;
+    //  - no room left, or a write Windows refused for another reason: QEMU has paused the system
+    //    (Qmp.DiskFull). Nothing inside can say so, as nothing inside runs, so the word comes from here,
+    //    and the system goes on when the user has made room.
+    int diskLooks;
+    string diskTold = "";  // "", "low" or "critical": the card already sent
+    bool diskAsking;
+
+    public static long[] DiskLimits(long total)
+    {
+        return new[] { Math.Max(5L << 30, total / 20), Math.Max(1L << 30, total / 100) };
+    }
+
+    void WatchDisk()
+    {
+        if (qmp.DiskFull && !diskAsking) { DiskIsFull(); return; }
+        if (diskLooks++ % 150 != 15) return;  // half a minute after the start, then every five minutes
+        long free, total;
+        string drive;
+        try
+        {
+            var info = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Program.VmDir)));
+            free = info.AvailableFreeSpace; total = info.TotalSize; drive = info.Name.TrimEnd('\\');
+        }
+        catch (Exception) { return; }
+        long[] limits = DiskLimits(total);
+        string now = free < limits[1] ? "critical" : free < limits[0] ? "low" : "";
+        if (now == "")
+        {
+            if (free > limits[0] + limits[0] / 5) diskTold = "";
+            return;
+        }
+        if (now == diskTold || now == "low" && diskTold == "critical") return;
+        diskTold = now;
+        string left = free >= (1L << 30) ? (free / (double)(1L << 30)).ToString("0.#") + " GB" : (free >> 20) + " MB";
+        Program.Note("Windows drive " + drive + " has " + left + " free (" + now + ")");
+        Link.Notice(now == "critical" ? "problem" : "warning",
+            now == "critical" ? "Windows' disk is almost full" : "Windows is running out of disk space",
+            "Drive " + drive + " has " + left + " left. Mentor keeps its disk there" +
+                (now == "critical" ? ", and is paused when it is full." : "."),
+            "Mentor.exe reports that the Windows drive " + drive + ", which holds this system's disk file, has " + left +
+            " free of " + (total >> 30) + " GB. When it is full, Mentor is paused until room is made on Windows. Tell me in " +
+            "two or three short sentences, in simple words, what I can do: on Windows (empty the Recycle Bin, the Downloads " +
+            "folder, Windows Settings > System > Storage), and for Mentor itself (\"Free up space\u2026\" on the More page of the " +
+            "Mentor window, with Mentor shut down). You cannot see or change Windows from here. /etc/mentor/WINDOWS.md, " +
+            "\"Disk space on Windows\", says how it works.");
+    }
+
+    void DiskIsFull()
+    {
+        diskAsking = true;
+        qmp.DiskFull = false;
+        string drive = "The drive";
+        bool full = true;  // or another fault of the drive's: it still has room
+        try
+        {
+            var info = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Program.VmDir)));
+            drive = "Drive " + info.Name.TrimEnd('\\');
+            full = info.AvailableFreeSpace < (256L << 20);
+        }
+        catch (Exception) { }
+        Program.Note(full ? "the Windows drive is full: QEMU paused the system"
+                          : "Windows refused a write to Mentor's disk, with room left on the drive: QEMU paused the system");
+        try
+        {
+            using (var owner = new Form { TopMost = true, ShowInTaskbar = false, Opacity = 0, StartPosition = FormStartPosition.CenterScreen })
+            {
+                owner.Show();
+                DialogResult choice = MessageBox.Show(owner,
+                    (full ? drive + " on Windows is full, so Mentor is paused. Nothing is lost.\n\n" +
+                            "Make some room on Windows (empty the Recycle Bin, delete large files you no longer need), " +
+                            "then press OK and Mentor goes on where it was.\n\n"
+                          : "Windows could not write to Mentor's disk (" + drive.ToLowerInvariant() + "), so Mentor is paused. " +
+                            "Nothing is lost.\n\nIf the disk is on a drive that was unplugged or went to sleep, bring it " +
+                            "back, then press OK and Mentor goes on where it was.\n\n") +
+                    "Cancel leaves it paused, for you to shut it down from the Mentor icon by the clock.",
+                    "Mentor", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+                if (choice == DialogResult.OK && !qemu.HasExited)
+                {
+                    string error = qmp.Execute("cont", null, 5000);
+                    Program.Note(error == null ? "going on after the full drive" : "could not go on after the full drive: " + error);
+                }
+            }
+        }
+        finally { diskAsking = false; }
+    }
 
     // The tray icon's "Open Mentor": QEMU's window to the front.
     public void ShowVm()
@@ -2194,6 +2368,9 @@ class Qmp
 
     // From {"event": "SHUTDOWN", "data": {"reason": ...}}: guest-reset, guest-shutdown, host-ui, ...
     public volatile string StopReason;
+    // From {"event": "BLOCK_IO_ERROR", "data": {"action": "stop", ...}}: Windows refused a write to the disk
+    // file (a full drive, most of all), and QEMU has paused the system instead of losing what it was writing.
+    public volatile bool DiskFull;
     public readonly Thread Reader;
 
     public Qmp(int port)
@@ -2232,6 +2409,11 @@ class Qmp
                             data is Dictionary<string, object> &&
                             ((Dictionary<string, object>)data).TryGetValue("reason", out reason))
                             StopReason = reason as string;
+                        object action;
+                        if (name as string == "BLOCK_IO_ERROR" && message.TryGetValue("data", out data) &&
+                            data is Dictionary<string, object> &&
+                            ((Dictionary<string, object>)data).TryGetValue("action", out action) && action as string == "stop")
+                            DiskFull = true;
                     }
                     else lock (answers) { answers.Enqueue(message); Monitor.PulseAll(answers); }
                 }
@@ -2420,6 +2602,14 @@ class RestorePoints
         try { if (File.Exists(VarsOf(point))) File.Copy(VarsOf(point), vars, true); }
         catch (IOException) { }
         return null;
+    }
+
+    // The disk file was written anew (Shrink): the restore points were inside the old one.
+    public void Forget()
+    {
+        foreach (RestorePoint point in List())
+            try { File.Delete(VarsOf(point)); } catch (IOException) { }
+        try { File.Delete(listFile); } catch (IOException) { }
     }
 
     // Drops all but the newest few. Only while the VM is stopped.
@@ -2800,7 +2990,7 @@ class Reinstall : Form
             Say("Putting the new Mentor in place…", size, size);
             if (Directory.Exists(vmDir)) Directory.Delete(vmDir, true);
             if (File.Exists(image)) File.Delete(image);
-            File.Move(partial, image);
+            Program.MoveWhenFree(partial, image);
             Finish(null);
         }
         catch (OperationCanceledException)

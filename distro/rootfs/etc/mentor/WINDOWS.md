@@ -5,7 +5,7 @@ Mentor runs as a virtual machine on Windows. The program that starts it there is
 Most of these features were made after Try Omarchy for Windows (github.com/omacom/try-omarchy-windows, MIT), which runs another Linux the same way.
 
 Where the user finds things on Windows, in plain words:
-- **The Mentor window** when Mentor.exe starts without anything else (wide and low since 2026-10-22, the shape of the loading window after it): the owl and "Mentor" at the top left (the line under the name shows news of a new Mentor.exe), two tabs at the top right. **Settings**: **Screen** (three switches side by side: Graphics card, Vulkan, Full screen; what each does is in its tooltip), **Speed** (Balanced, Maximum, Manual; Manual shows Memory and Processors sliders side by side), **Sound, USB and sign-in** (a "Change…" button). **More**: Restore points, Repair, Back up…, Restore a backup…, Move Mentor…, Start over… (one window that can also download the newest Mentor). **Start Mentor** across the bottom. Opened from the tray icon while Mentor runs, it has only the Settings page and Save.
+- **The Mentor window** when Mentor.exe starts without anything else (wide and low since 2026-10-22, the shape of the loading window after it): the owl and "Mentor" at the top left (the line under the name shows news of a new Mentor.exe), two tabs at the top right. **Settings**: **Screen** (three switches side by side: Graphics card, Vulkan, Full screen; what each does is in its tooltip), **Speed** (Balanced, Maximum, Manual; Manual shows Memory and Processors sliders side by side), **Sound, USB and sign-in** (a "Change…" button). **More**: Restore points, Repair, Back up…, Restore a backup…, Move Mentor…, Start over… (one window that can also download the newest Mentor), Free up space… (section 12). **Start Mentor** across the bottom. Opened from the tray icon while Mentor runs, it has only the Settings page and Save.
 - **The loading window** after "Start Mentor" (since 2026-10-22, made after Try Omarchy's): the Mentor window turns a page, in the same place and size, with the same top: a line saying what is happening ("Starting Mentor…", "Getting the desktop ready…", "Trying the change from last time…", "That change did not work. Going back…"), a bar that fills in about the time the last start took (`vm\start-seconds` on Windows), "Keys worth knowing" (Ctrl+Alt+F full screen, Ctrl+Alt+G mouse and keyboard back to Windows, Ctrl+Alt+Backspace help if Mentor gets stuck: the emergency console of FREEZES.md), and **Back** where Start was (stops the start at once and shows the settings again; the window's X stops it and closes). A stop from there is not counted as a failed start. Mentor's own window waits hidden meanwhile (off the taskbar too: the loading window has the owl there instead), already at the size it will have, and comes up when this system says the desktop is up (`{"boot": "ok"}`, BOOT.md): the firmware's logo, the start-up picture and the desktop changing size are no longer seen. For full screen the loading window covers the screen at that moment. If the desktop does not report within 2 minutes, the window comes up anyway, wherever the start is. Not hidden for Repair, a start from an ISO, or the start after two failed ones: there the user sees what happens. The start-up picture (BOOT.md) is still drawn, only no longer seen in a normal start.
 - **The Mentor icon in the Windows notification area** (bottom right, by the clock) while Mentor runs. Right click: Open Mentor, Settings…, Make a diagnostics file, Shut down Mentor.
 
@@ -38,7 +38,7 @@ A Mentor.exe from 2026-10-18 on pauses the system just before Windows sleeps and
 A Mentor.exe from 2026-10-18 on gives this system a third channel, the virtio port `org.mentor.host` (`/dev/virtio-ports/org.mentor.host`), readable by root only (the other two, `org.mentor.clipboard` and `org.mentor.control`, are the user's). `mentor-host-link`, a root service, is at its other end. It carries, one JSON object a line:
 - Windows' time zone (section 4),
 - Windows Hello for passwords (section 8),
-- cards for the chat that Mentor.exe wants the user to see (a USB device it could not give, section 9),
+- cards for the chat that Mentor.exe wants the user to see (a USB device it could not give, section 9; less memory than chosen, section 6; the Windows drive running out of room, section 12),
 - the system's logs for the diagnostics file (section 7).
 
 The service is started by udev when the port is there, so with an older Mentor.exe it simply does not run.
@@ -107,7 +107,9 @@ In the Mentor window, **Speed**:
 - **Balanced** (the default): half of the processors, 4 to 8, and a third of the memory, 4 to 8 GB, leaving Windows at least 2 GB of what is free when Mentor starts.
 - **Maximum**: what Windows is not using when Mentor starts, less room for Windows (two processors, or an eighth on larger computers; 4 GB of memory, or an eighth on larger computers). Never less than Balanced.
 - **Manual**: the two sliders, as before.
-It is worked out again at every start. Here, `nproc` and `free -g` show what this start got. When the user says Mentor is slow and Windows has plenty free, Maximum is the one to suggest; when Windows is slow while Mentor runs, Balanced. The change counts from the next start.
+It is worked out again at every start. Here, `nproc` and `free -g` show what this start got.
+
+**Less memory than chosen.** When Windows will not give the memory asked for (other programs hold it), a Mentor.exe from 2026-11-10 on starts Mentor again with half, and half again, down to 2 GB, instead of stopping with an error. The user then gets a yellow card here, "Mentor started with less memory", saying how much was asked for and how much it got. Tell them in one or two plain sentences: closing programs on Windows before starting Mentor gives it back from the next start, and Balanced under Speed asks for less. `vm\launcher.log` on Windows has "Windows would not give N GB: started again with half". When the user says Mentor is slow and Windows has plenty free, Maximum is the one to suggest; when Windows is slow while Mentor runs, Balanced. The change counts from the next start.
 
 ## 7. The diagnostics file
 
@@ -157,3 +159,23 @@ Restore points (inside the disk) go along with a backup and a move; going back t
 ## 11. When the user asks "what version is Mentor?"
 
 This system's version: `cat /etc/mentor/version-name` (and UPDATES.md). Mentor.exe's version is not visible from here; it is in the diagnostics file (`about.txt`), and it keeps itself up to date (section 1).
+
+## 12. Disk space on Windows
+
+In the user's words: Windows says the disk is full; Mentor is paused; Mentor takes too much space; the window says Stopped.
+
+Mentor's whole disk is one file on Windows, `vm\disk.qcow2` beside Mentor.exe. It grows as things are written inside Mentor. A Mentor.exe from 2026-11-10 on does four things about it (after Try Omarchy for Windows).
+
+**1. Room freed inside Mentor is used again.** The disk is started so that what this system trims is free inside the file (`discard=unmap`). The part inside this system is `fstrim.timer`: DESKTOP.md, "Disk space". The file does not shrink by this; it stops growing.
+
+**2. A card when the Windows drive runs low.** Mentor.exe looks at the drive that holds the file half a minute after the start and every five minutes. Under 5 GB or 5% of the drive free (whichever is more): a yellow card here, "Windows is running out of disk space". Under 1 GB or 1%: a red card, "Windows' disk is almost full". Once each; again only after there was clearly more room in between. Behind "Let Mentor look" you get the drive's letter and how much is free. You cannot see or change Windows from here, so tell the user in two or three plain sentences what they can do:
+- on Windows: empty the Recycle Bin, clear the Downloads folder, Windows Settings > System > Storage;
+- inside Mentor: remove what is not needed (old package files with `sudo pacman -Sc`, the Trash, large downloads), then `sudo fstrim -v /` so the room counts at once;
+- **Free up space…** (below) gives room back to Windows.
+`df -h /` here shows the room inside Mentor, which is another matter: Mentor's own disk can be nearly empty while the Windows drive is full.
+
+**3. When the Windows drive is full, Mentor is paused, not broken.** A write Windows refuses pauses this whole system (QEMU's `werror=stop`) and Mentor.exe shows a message on Windows: "Drive C: on Windows is full, so Mentor is paused. Nothing is lost." The user makes room on Windows and presses OK, and Mentor goes on where it was. You are not running while it is paused, so you cannot say anything then; afterwards the pause shows here as a gap (`mentor-sentinel: stall of N s, paused`, BOOT.md "When Windows sleeps"), and `vm\launcher.log` on Windows has "the Windows drive is full: QEMU paused the system". Before this, a full drive reached this system as a broken disk (I/O errors in `journalctl -k`, the disk read-only). If the user describes a Mentor that stood still with its window saying "[Stopped]" and no message: pressing Cancel there leaves it paused; "Shut down Mentor" from the Mentor icon by the clock, or starting Mentor.exe again, ends it.
+
+**4. Free up space… (the More page of the Mentor window, with Mentor shut down).** Writes the disk file anew with only what is really in it, checks the new one against the old one block for block, and only then puts it in place. The user's files, programs and settings stay exactly as they are. It needs as much free room on the drive as Mentor really holds, takes some minutes, and **removes the restore points** (they are inside the old file); new ones are made as before. It says how large the file was and is ("Mentor's disk went from 31.8 GB to 9.2 GB"). Best done after Mentor has been running for at least a quarter of an hour since things were deleted (so they are trimmed), or after `sudo fstrim -v /` here. From the command line on Windows: `Mentor.exe --shrink`. If the computer goes off in the moment the smaller file is put in place, the disk is still there as `vm\disk.qcow2.before-shrink`, and Mentor.exe takes it back at its next start ("the disk was found set aside by an interrupted "Free up space": put back" in `vm\launcher.log`).
+
+None of this exists on a Mentor that runs on its own PC, and nothing here waits for it: without Mentor.exe there are no such cards, and the disk is the PC's own.

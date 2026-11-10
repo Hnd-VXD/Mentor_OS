@@ -15,6 +15,7 @@
 //
 // For the command line and tests, without any window:
 //     Mentor.exe --backup FILE.zip | --restore-backup FILE.zip | --move FOLDER  [--vm-dir DIR] [--image FILE]
+//     Mentor.exe --shrink  [--vm-dir DIR]                (the Shrink class, at the end of this file)
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -584,5 +585,172 @@ static class MoveMentor
     {
         try { File.WriteAllText(Path.Combine(root, "Mentor moved.txt"), "Mentor is in " + target + " now (moved " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + ").\r\n"); }
         catch (Exception) { }
+    }
+}
+
+// "Free up space…" under More, and Mentor.exe --shrink: Mentor's disk file made as small as what is in it.
+// After Try Omarchy for Windows (its -reclaim, docs/USER-GUIDE.md), done another way, as Mentor's disk is a
+// qcow2 file: the system inside tells the disk what it has deleted (fstrim, DESKTOP.md "Disk space"), which
+// only makes that room usable again inside the file; the file itself never gets smaller. Here it is written
+// out anew without the room nobody uses (qemu-img convert, onto the same image), compared with the old one
+// block for block (qemu-img compare), and only then put in its place. Only while Mentor is shut down.
+// Restore points are inside the old file and do not come along: the user is told before.
+static class Shrink
+{
+    static string Gb(long bytes) { return (bytes / (double)(1L << 30)).ToString("0.0") + " GB"; }
+
+    // The button: says what happens, asks, does it, says how it went.
+    public static void Run(IWin32Window owner, string vmDir, RestorePoints points)
+    {
+        string why = Backup.NotWhileRunning(vmDir);
+        string disk = Path.Combine(vmDir, "disk.qcow2");
+        if (why == null && !File.Exists(disk)) why = "Mentor has not been started yet: there is nothing to make smaller.";
+        if (why != null) { MessageBox.Show(owner, why, "Mentor"); return; }
+        long before = new FileInfo(disk).Length;
+        int kept = points.List().Count;
+        if (MessageBox.Show(owner,
+                "Mentor's disk takes " + Gb(before) + " on Windows. It can be made as small as what is really in it.\n\n" +
+                "Your files, programs and settings inside Mentor stay exactly as they are; they are checked before " +
+                "anything is replaced." +
+                (kept > 0 ? "\n\nThe " + (kept == 1 ? "restore point is" : kept + " restore points are") +
+                            " removed: new ones are made as before." : "") +
+                "\n\nIt can take several minutes.",
+                "Mentor", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            return;
+        string error = Working.Run(owner, "Looking at Mentor's disk…", work => Do(work, vmDir, points));
+        long after = File.Exists(disk) ? new FileInfo(disk).Length : before;
+        MessageBox.Show(owner, error ?? (after < before
+                ? "Done. Mentor's disk went from " + Gb(before) + " to " + Gb(after) + "."
+                : "Done. Mentor's disk was already as small as it gets (" + Gb(after) + ")."),
+            "Mentor", MessageBoxButtons.OK, error == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    // Null when it worked, otherwise what went wrong (and nothing was changed).
+    public static string Do(Working work, string vmDir, RestorePoints points)
+    {
+        string why = Backup.NotWhileRunning(vmDir);
+        if (why != null) return why;
+        string disk = Path.Combine(vmDir, "disk.qcow2"), part = disk + ".part", old = disk + ".before-shrink";
+        if (!File.Exists(disk)) return "There is no disk at " + disk + ".";
+        string qemuImg = Path.Combine(Program.QemuDir, "qemu-img.exe");
+        var json = new JavaScriptSerializer { MaxJsonLength = 256 << 20 };
+        string output, error;
+
+        // The image the disk is made on, as the disk itself names it.
+        if (Capture(qemuImg, "info --output=json " + Program.Quote(disk), out output, out error) != 0)
+            return "Mentor's disk could not be read:\n\n" + error.Trim();
+        var info = json.Deserialize<Dictionary<string, object>>(output);
+        string backing = info.ContainsKey("backing-filename") ? info["backing-filename"] as string : null;
+        if (backing != null && !File.Exists(backing))
+            return "The image Mentor's disk is made on is not where the disk says (" + backing + ").";
+
+        // How large the new file will be: what the disk itself holds now, not what its restore points do.
+        if (Capture(qemuImg, "map --output=json " + Program.Quote(disk), out output, out error) != 0)
+            return "Mentor's disk could not be read:\n\n" + error.Trim();
+        long holds = 0;
+        foreach (object item in json.Deserialize<List<object>>(output))
+        {
+            var range = (Dictionary<string, object>)item;
+            if (Convert.ToInt32(range["depth"]) == 0 && range.ContainsKey("data") && (bool)range["data"])
+                holds += Convert.ToInt64(range["length"]);
+        }
+        long before = new FileInfo(disk).Length, need = holds + holds / 20 + (512L << 20);
+        if (holds + holds / 10 + (64L << 20) >= before) return null;  // nothing worth the copying
+        long free = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(disk))).AvailableFreeSpace;
+        if (free < need)
+            return "There is not enough room on " + Path.GetPathRoot(Path.GetFullPath(disk)) + " to do it: the smaller copy " +
+                   "needs " + Gb(need) + " while it is made, and " + Gb(free) + " is free. Nothing was changed.";
+        try
+        {
+            if (File.Exists(part)) File.Delete(part);
+            string arguments = "convert -p -f qcow2 -O qcow2 " +
+                (backing != null ? "-B " + Program.Quote(backing) + " -F qcow2 " : "") + Program.Quote(disk) + " " + Program.Quote(part);
+            if (Progress(qemuImg, arguments, work, "Making Mentor's disk smaller", 0, 60, out error) != 0)
+                throw new IOException(error.Trim());
+            // The same in every block as the old one, or it is not used.
+            int same = Progress(qemuImg, "compare -p -f qcow2 -F qcow2 " + Program.Quote(disk) + " " + Program.Quote(part),
+                                work, "Checking the smaller copy", 60, 40, out error);
+            if (same != 0) throw new IOException("the smaller copy is not the same as the disk" + (error.Trim() != "" ? ": " + error.Trim() : ""));
+            if (work != null && work.Cancelled) throw new OperationCanceledException();
+        }
+        catch (OperationCanceledException)
+        {
+            try { File.Delete(part); } catch (Exception) { }
+            throw;
+        }
+        catch (Exception e)
+        {
+            try { File.Delete(part); } catch (Exception) { }
+            return "It did not work, and nothing was changed:\n\n" + e.Message;
+        }
+        // In place: the old one aside first, back again if the new one cannot be moved in.
+        if (File.Exists(old)) File.Delete(old);
+        File.Move(disk, old);
+        try { Program.MoveWhenFree(part, disk); }
+        catch (Exception e)
+        {
+            File.Move(old, disk);
+            try { File.Delete(part); } catch (Exception) { }
+            return "It did not work, and nothing was changed:\n\n" + e.Message;
+        }
+        File.Delete(old);
+        points.Forget();  // they were inside the old file
+        Program.Note("disk made smaller: " + Gb(before) + " to " + Gb(new FileInfo(disk).Length));
+        return null;
+    }
+
+    static int Capture(string file, string arguments, out string output, out string error)
+    {
+        var p = Process.Start(new ProcessStartInfo(file, arguments) {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true });
+        string said = null;
+        var errors = new Thread(() => said = p.StandardError.ReadToEnd());
+        errors.Start();
+        output = p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+        errors.Join();
+        error = said ?? "";
+        return p.ExitCode;
+    }
+
+    // qemu-img with -p: its "(12.34/100%)" moves the bar between `from` and `from + span` percent.
+    static int Progress(string file, string arguments, Working work, string words, int from, int span, out string error)
+    {
+        var p = Process.Start(new ProcessStartInfo(file, arguments) {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true });
+        string said = null;
+        var errors = new Thread(() => said = p.StandardError.ReadToEnd());
+        errors.Start();
+        var number = new System.Text.StringBuilder();
+        bool inside = false;
+        int c;
+        try
+        {
+            while ((c = p.StandardOutput.Read()) >= 0)
+            {
+                if (c == '(') { inside = true; number.Length = 0; }
+                else if (inside && c == '/')
+                {
+                    inside = false;
+                    double percent;
+                    if (double.TryParse(number.ToString(), System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture, out percent) && work != null)
+                        work.Say(words + "… " + (int)percent + "%", (long)(from * 100 + percent * span), 10000);
+                }
+                else if (inside) number.Append((char)c);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(); } catch (Exception) { }
+            p.WaitForExit();
+            errors.Join();
+            error = "";
+            throw;
+        }
+        p.WaitForExit();
+        errors.Join();
+        error = said ?? "";
+        return p.ExitCode;
     }
 }

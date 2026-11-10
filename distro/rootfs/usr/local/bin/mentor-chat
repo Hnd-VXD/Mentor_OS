@@ -568,6 +568,7 @@ NET_PATH = "/var/lib/mentor/guard/net.json"
 # its tab closed), gets one again where the user looks, at most this often (remind_unseen).
 NET_REMIND_EVERY = 15 * 60
 NET_REMIND_AFTER = 90  # seconds after net.json changed: mentor-watch's own card of a new try comes first
+NET_FRONT_WAIT = 20  # seconds after a try that the program's window may still come to the front (ask_front)
 NETGUARD = "/usr/local/lib/mentor/mentor-netguard"
 # What mentor-advisor found worth bringing up, and what this user has said about hearing of it.
 ADVICE_PATH = "/var/lib/mentor/advice/suggestions.json"
@@ -692,9 +693,12 @@ tabbar.agent-tabs tab:selected { background: rgba(20, 22, 27, 0.92); }
 # backdrop-filter; mutter's own radius is used, not this one. Only where a graphics card draws the screen
 # (drawn_without_graphics_card): with the processor alone the shell used seven times its time while the gear
 # turned (40 s in 20 s against 5.7 s, 2026-10-24). DESKTOP.md, "Frosted glass".
+# Not the tabs (tabbar.agent-tabs tab): a tab that closes shrinks to nothing, GTK is then asked to blur a part
+# with no size, and the chat crashed every time (2026-11-10: on every return from another workspace, whose
+# empty conversation is closed then). They keep their dark tint, without the blur.
 GLASS_CSS = """
 .agent-card, .steps, .ask, .notice, .suggest, .subject, .attachment, .attachment-note, .tool-row, .steps-header,
-.zoom-level, tabbar.agent-tabs tab, dropdown.model > button, menubutton.model > button { backdrop-filter: blur(24px); }
+.zoom-level, dropdown.model > button, menubutton.model > button { backdrop-filter: blur(24px); }
 .agent-card, .steps, .ask, .subject, .attachment, dropdown.model > button, menubutton.model > button {
     background-color: rgba(20, 22, 27, 0.70); }
 /* The colored cards a little more solid than the answers: they must be read at once, over any wallpaper (the user,
@@ -3190,6 +3194,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.open_cards = []  # the system's cards none of whose buttons was used yet (place_cards)
         self.net_shown = {}  # program waiting to go online -> when a card of it was last shown (remind_unseen)
         self.remind_timer = 0  # remind_unseen to come, after net.json changed (follow_net)
+        self.net_asked = set()  # programs the dimmed question was shown for (ask_front)
+        self.net_asking = False
+        self.front_timer = 0
 
         # Top left: the conversations. Top right: the model.
         new_tab = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="New conversation",
@@ -5181,11 +5188,108 @@ class DesktopWindow(Adw.ApplicationWindow):
         # (NET_GATHER), and looked at at once it was shown twice (tested 2026-10-29).
         if not self.remind_timer:
             self.remind_timer = GLib.timeout_add_seconds(NET_REMIND_AFTER, self.remind_later)
+        self.ask_front()
         return False
 
     def remind_later(self):
         self.remind_timer = 0
         return self.remind_unseen()
+
+    @staticmethod
+    def programs_in_front(pid):
+        """The files running as the process `pid`: itself, its app's other processes (its cgroup), and what those started."""
+        try:
+            with open(f"/proc/{pid}/cgroup") as f:
+                group = f.read().strip().split("::", 1)[-1]
+            with open(f"/sys/fs/cgroup{group}/cgroup.procs") as f:
+                family = {int(line) for line in f}
+        except (OSError, ValueError):
+            family = set()
+        family.add(pid)
+        parents = {}
+        for name in os.listdir("/proc"):
+            if name.isdigit():
+                try:
+                    with open(f"/proc/{name}/stat") as f:
+                        parents[int(name)] = int(f.read().rsplit(")", 1)[1].split()[1])
+                except (OSError, ValueError, IndexError):
+                    pass
+        grew = True
+        while grew:
+            more = {child for child, parent in parents.items() if parent in family} - family
+            family |= more
+            grew = bool(more)
+        files = set()
+        for each in family:
+            try:
+                files.add(os.readlink(f"/proc/{each}/exe").removesuffix(" (deleted)"))
+            except OSError:
+                pass
+        return files
+
+    def ask_front(self):
+        """A program waiting to go online that is the one in front gets the shell's dimmed question over everything,
+        once: its card is on the desktop, under it, and a full-screen one hides even the notification (the user's
+        wish, 2026-10-31). Programs in the background get only their card, so nothing interrupts for an updater. The
+        window of a program that tries as it starts comes a moment later: looked at again for NET_FRONT_WAIT."""
+        if self.net_asking or self.is_active() or (mentor_settings and "security" in (mentor_settings.get("watch_off") or [])):
+            return False
+        data = self.read_net() or {}
+        try:
+            with open("/proc/stat") as f:
+                began = next((float(line.split()[1]) for line in f if line.startswith("btime ")), 0.0)
+        except (OSError, ValueError, IndexError):
+            began = 0.0
+        waiting = {program: entry.get("last", 0) for program, entry in data.get("unknown", {}).items()
+                   if self.net_state(data, program) == "waiting" and program not in self.net_asked
+                   and entry.get("last", 0) >= began}
+        if not waiting:
+            return False
+        bus = self.get_application().get_dbus_connection()
+        try:
+            pid = bus.call_sync("org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "FocusPid", None, None,
+                                Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+        except GLib.Error:  # a shell from before this was added, until the next login
+            return False
+        hit = sorted(self.programs_in_front(pid) & set(waiting)) if pid > 0 and pid != os.getpid() else []
+        if not hit:
+            if not self.front_timer and max(waiting.values()) > time.time() - NET_FRONT_WAIT:
+                self.front_timer = GLib.timeout_add_seconds(2, self.front_later)
+            return False
+        self.net_asking = True
+        self.net_asked.update(hit)
+        try:
+            import mentor_guard
+            names = mentor_guard.net_names(hit)
+        except ImportError:
+            names = [net_name(program)[0] for program in hit]
+        names = [name if len(name) <= 60 else name[:59] + "…" for name in names]
+        if len(hit) == 1:
+            title = f"{names[0]} wants to go online"
+            text = "Mentor does not know it, so it stays offline until you answer."
+        else:
+            title = f"{len(hit)} programs want to go online"
+            text = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "") + \
+                ". Mentor does not know them, so they stay offline until you answer."
+        text += " If you allow and it showed an error, try again in it. Later leaves the card in the chat."
+
+        def answered(connection, result):
+            self.net_asking = False
+            try:
+                what = connection.call_finish(result).unpack()[0]
+            except GLib.Error:
+                return
+            if what in ("allow", "block"):
+                for program in hit:
+                    self.answer_net(what, program)
+
+        bus.call("org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "NetQuestion",
+                 GLib.Variant("(ss)", (title, text)), None, Gio.DBusCallFlags.NONE, GLib.MAXINT, None, answered)
+        return False
+
+    def front_later(self):
+        self.front_timer = 0
+        return self.ask_front()
 
     def on_finished(self, conversation):
         """An answer nobody is looking at (the desktop is covered) is announced."""

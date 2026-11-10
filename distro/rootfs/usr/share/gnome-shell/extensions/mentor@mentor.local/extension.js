@@ -20,7 +20,9 @@ import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+import * as Dialog from 'resource:///org/gnome/shell/ui/dialog.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {AppMenu} from 'resource:///org/gnome/shell/ui/appMenu.js';
 import {Spinner} from 'resource:///org/gnome/shell/ui/animation.js';
@@ -581,6 +583,14 @@ const SERVICE = `
     <method name="AwaitCopy">
       <arg type="s" direction="in" name="pattern"/>
     </method>
+    <method name="FocusPid">
+      <arg type="i" direction="out" name="pid"/>
+    </method>
+    <method name="NetQuestion">
+      <arg type="s" direction="in" name="title"/>
+      <arg type="s" direction="in" name="text"/>
+      <arg type="s" direction="out" name="answer"/>
+    </method>
   </interface>
 </node>`;
 
@@ -918,6 +928,63 @@ function pickArea() {
     });
 }
 
+// The seconds before the buttons of the question below work: whoever it interrupts has their hands on the keys
+// and the mouse (the user's wish, 2026-10-31).
+const NET_QUESTION_WAIT = 5;
+
+// A program in front wants to go online: the screen dims and the question is on top of everything, a full-screen
+// game holding the mouse too, since its card is on the desktop under that program. `answer` gets allow, block or
+// later, once. Enter answers nothing, and until the count ends neither does a key or a click.
+function askNetQuestion(title, text, answer) {
+    const dialog = new ModalDialog.ModalDialog({styleClass: 'mentor-net-question'});
+    dialog.contentLayout.add_child(new Dialog.MessageDialogContent({title, description: text}));
+    const noButton = new St.Widget({can_focus: true, width: 1, height: 1, opacity: 0});
+    dialog.contentLayout.add_child(noButton);
+    let left = NET_QUESTION_WAIT, timer = 0, told = false;
+    const finish = what => {
+        if (told)
+            return;
+        told = true;
+        if (timer)
+            GLib.source_remove(timer);
+        timer = 0;
+        answer(what);
+    };
+    const choose = what => {
+        if (left > 0)
+            return;
+        finish(what);
+        dialog.close();
+    };
+    const later = dialog.addButton({label: 'Later', action: () => choose('later'), key: Clutter.KEY_Escape});
+    const block = dialog.addButton({label: 'Block', action: () => choose('block')});
+    const allow = dialog.addButton({label: 'Allow', action: () => choose('allow')});
+    const paint = () => {
+        block.label = left ? `Block (${left})` : 'Block';
+        allow.label = left ? `Allow (${left})` : 'Allow';
+        for (const button of [later, block, allow]) {
+            button.reactive = !left;
+            button.can_focus = !left;
+        }
+    };
+    paint();
+    dialog.connect('destroy', () => finish('later'));
+    if (!dialog.open()) {
+        dialog.destroy();
+        return null;
+    }
+    timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 1, () => {
+        left--;
+        paint();
+        noButton.grab_key_focus();  // or a space bar or Enter pressed in a game would answer
+        if (left > 0)
+            return GLib.SOURCE_CONTINUE;
+        timer = 0;
+        return GLib.SOURCE_REMOVE;
+    });
+    return dialog;
+}
+
 class ShellService {
     constructor(desktop, status) {
         this._desktop = desktop;
@@ -986,6 +1053,24 @@ class ShellService {
     // The assistant's text box, brought up over whatever is in front (see ASK_WINDOW below).
     Ask() {
         ask('--ask');
+    }
+
+    // The process of the window in front, 0 for none (mentor-chat, ask_front).
+    FocusPid() {
+        return global.display.get_focus_window()?.get_pid() ?? 0;
+    }
+
+    // Answered when the user answers: the caller waits. One at a time; another gets "later".
+    NetQuestionAsync([title, text], invocation) {
+        const answer = what => invocation.return_value(new GLib.Variant('(s)', [what]));
+        if (this._netQuestion) {
+            answer('later');
+            return;
+        }
+        this._netQuestion = askNetQuestion(title, text, what => {
+            this._netQuestion = null;
+            answer(what);
+        });
     }
 
     // Which parts of Mentor in the shell are working (see `mentor doctor`, /etc/mentor/DESKTOP.md).
@@ -1139,6 +1224,7 @@ class ShellService {
 
     destroy() {
         this._stopAwaiting?.();
+        this._netQuestion?.destroy();
         this._object.unexport();
     }
 }
