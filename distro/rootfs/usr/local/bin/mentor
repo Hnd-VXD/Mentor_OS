@@ -159,6 +159,16 @@ def cmd_keyring(args):
     print("Done. The login keyring opens by itself again, and what was in it is kept.")
 
 
+def nearest_scale(allowed, wanted):
+    """Of the scales a screen mode takes, the one nearest to WANTED. A quarter step (125%, 150%...) is chosen over a
+    third (133%) only when it is about as near: thirds draw text a little less sharp. The smaller of two as near.
+    Until 2026-11-14 it was the largest quarter step not above WANTED: a window of 2176x1360 takes 100%, 133%, 200%
+    and 267%, and a wish of 150% came out as 100%, the desktop's letters tiny (the user saw it; they chose 133%).
+    The same rule is in the shell extension (_applyScale)."""
+    quarter = lambda s: abs(s * 4 - round(s * 4)) < 0.01
+    return min(allowed, key=lambda s: (abs(s - wanted) + (0 if quarter(s) else 0.05), s))
+
+
 def cmd_scale(args):
     """Scale the desktop the way the host's screen is scaled, so that it is drawn sharp.
 
@@ -206,16 +216,12 @@ def cmd_scale(args):
             if found := re.search(rf"\b{re.escape(asked)}@[\d.]+", modes):
                 mode = ["--mode", found.group(0)]
     # Not every scale fits every resolution (2 does not fit an odd height, as when the window is
-    # maximized at 2880x1659): the shell says which ones the mode takes. The largest of them that
-    # is not more than wanted is used, so a maximized window on a 200% screen gets 150%, not 100%.
-    # Without that list: the wanted one, then the nearest whole one.
+    # maximized at 2880x1659): the shell says which ones the mode takes. The one nearest to the wanted
+    # one is used (nearest_scale). Without that list: the wanted one, then the nearest whole one.
     target = mode[1].split("@")[0] if mode else (current.group(1) if current else "")
     allowed = _supported_scales(target)
     if allowed:
-        # quarter steps first (125%, 150%...), as Settings offers them: thirds draw text less sharp
-        allowed = [s for s in allowed if abs(s * 4 - round(s * 4)) < 0.01] or allowed
-        fits = [s for s in allowed if s <= wanted + 0.01]
-        candidates = [max(fits) if fits else min(allowed, key=lambda s: abs(s - wanted))]
+        candidates = [nearest_scale(allowed, wanted)]
     else:
         candidates = list(dict.fromkeys((wanted, float(round(wanted)))))
     for candidate in candidates:

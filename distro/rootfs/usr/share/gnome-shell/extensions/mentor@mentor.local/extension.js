@@ -168,14 +168,17 @@ class DesktopLayer {
         if (!current)
             throw new Error('no current mode');
         const target = monitor[1].find(m => m[6]['is-preferred']) ?? current;
-        let allowed = target[5].filter(s => Math.abs(s * 4 - Math.round(s * 4)) < 0.01);
-        if (!allowed.length)
-            allowed = target[5];
+        // The scale nearest to the wanted one of those the mode takes; a quarter step (125%, 150%...) over a third
+        // (133%) only when it is about as near, thirds drawing text a little less sharp; the smaller of two as near.
+        // It was the largest quarter step not above the wanted one: a window of 2176x1360 takes 100%, 133%, 200% and
+        // 267%, and a wish of 150% came out as 100% (the user saw it, 2026-11-14, and chose 133%). Same rule as
+        // `mentor scale` (nearest_scale).
+        const allowed = target[5];
         if (!allowed.length)
             throw new Error('the mode lists no scales');
-        const fits = allowed.filter(s => s <= wanted + 0.01);
-        const chosen = fits.length ? Math.max(...fits)
-            : allowed.reduce((a, b) => Math.abs(b - wanted) < Math.abs(a - wanted) ? b : a);
+        const cost = s => Math.abs(s - wanted) + (Math.abs(s * 4 - Math.round(s * 4)) < 0.01 ? 0 : 0.05);
+        const chosen = allowed.reduce((a, b) => cost(b) < cost(a) - 1e-9 || (Math.abs(cost(b) - cost(a)) < 1e-9 && b < a)
+            ? b : a);
         if (target[0] === current[0] && Math.abs(scale - chosen) < 0.01)
             return;
         GLib.file_set_contents('/run/mentor/scale-kept', '');  // _keepScale answers the question

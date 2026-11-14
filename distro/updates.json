@@ -604,5 +604,11 @@
     "name": "14.11.26.06",
     "summary": "The last fixes from the review: background commands no longer stall the assistant, and update cards reach PCs where you log in by hand.",
     "published": "2026-11-14 14:08"
+  },
+  {
+    "version": 202611141244,
+    "name": "14.11.26.07",
+    "summary": "The desktop's zoom follows Windows better: when a window size cannot show your zoom, Mentor picks the nearest one instead of 100%.",
+    "published": "2026-11-14 14:44"
   }
 ]
