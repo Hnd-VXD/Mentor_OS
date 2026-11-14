@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -237,20 +238,34 @@ def backups_of(path):
     return [c for c in copies if os.path.isfile(c)]
 
 
-def replace_file(path, data, like=None):
-    """Write atomically, keeping the owner and mode of the file being replaced."""
-    like = like or (path if os.path.exists(path) else None)
+def replace_file(folder, name, data, like=None):
+    """Write NAME in the opened FOLDER (mentor_sandbox.open_folder) in one step, with the owner and mode of LIKE
+    (a stat result) or 644. The new version goes to a fresh name made only where nothing is: the fixed name
+    PATH.mentor-new followed a link a user's program put there, and root's write landed on any file, sudoers or
+    Mentor's own among them (review of 2026-11-14)."""
+    temporary, out = mentor_sandbox.new_file(folder, name)
+    try:
+        with os.fdopen(out, "wb") as f:
+            f.write(data)
+            f.flush()
+            if like:
+                os.fchown(f.fileno(), like.st_uid, like.st_gid)
+                os.fchmod(f.fileno(), stat.S_IMODE(like.st_mode))
+            else:
+                os.fchmod(f.fileno(), 0o644)
+        os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=folder)
+        except OSError:
+            pass
+        raise
+
+
+def _opened(path):
+    """The folder of a checked path, opened (made first if need be), and the file's name in it."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = f"{path}.mentor-new"
-    with open(temporary, "wb") as f:
-        f.write(data)
-    if like:
-        st = os.stat(like)
-        os.chown(temporary, st.st_uid, st.st_gid)
-        os.chmod(temporary, st.st_mode & 0o7777)
-    else:
-        os.chmod(temporary, 0o644)
-    os.replace(temporary, path)
+    return mentor_sandbox.open_folder(os.path.dirname(path)), os.path.basename(path)
 
 
 def write_file(args, policy):
@@ -258,12 +273,31 @@ def write_file(args, policy):
     data = sys.stdin.buffer.read(MAX_FILE_BYTES + 1)
     if len(data) > MAX_FILE_BYTES:
         raise Denied(f"content is larger than {MAX_FILE_BYTES} bytes")
-    if os.path.exists(path):
-        backup = os.path.join(BACKUP_ROOT, time.strftime("%Y%m%d-%H%M%S"), path.lstrip("/"))
-        os.makedirs(os.path.dirname(backup), exist_ok=True)
-        shutil.copy2(path, backup)
-        print(f"previous version saved; file_restore brings it back")
-    replace_file(path, data)
+    folder, name = _opened(path)
+    try:
+        like = None
+        try:  # the version there now, as it is: not through a link put at its name since it was checked
+            old = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder)
+        except FileNotFoundError:
+            old = None
+        except OSError as e:
+            raise Denied(f"{path} cannot be opened as a plain file ({e.strerror}): nothing was written")
+        if old is not None:
+            with os.fdopen(old, "rb") as f:
+                like = os.fstat(f.fileno())
+                if not stat.S_ISREG(like.st_mode):
+                    raise Denied(f"{path} is not a plain file: nothing was written")
+                backup = os.path.join(BACKUP_ROOT, time.strftime("%Y%m%d-%H%M%S"), path.lstrip("/"))
+                os.makedirs(os.path.dirname(backup), exist_ok=True)
+                with open(backup, "wb") as b:
+                    shutil.copyfileobj(f, b, 1 << 20)
+                os.chown(backup, like.st_uid, like.st_gid)
+                os.chmod(backup, stat.S_IMODE(like.st_mode))
+                os.utime(backup, ns=(like.st_atime_ns, like.st_mtime_ns))
+            print(f"previous version saved; file_restore brings it back")
+        replace_file(folder, name, data, like)
+    finally:
+        os.close(folder)
     print(f"wrote {len(data)} bytes to {path}")
     return 0
 
@@ -274,7 +308,12 @@ def restore_file(args, policy):
     if not copies:
         raise Denied(f"there is no backup of {path}")
     with open(copies[-1], "rb") as f:
-        replace_file(path, f.read(), like=copies[-1])
+        data, like = f.read(), os.fstat(f.fileno())
+    folder, name = _opened(path)
+    try:
+        replace_file(folder, name, data, like)
+    finally:
+        os.close(folder)
     os.remove(copies[-1])  # so that a second restore goes one step further back
     print(f"restored {path} from the backup of {copies[-1].split('/')[5]}")
     return 0
@@ -306,6 +345,17 @@ def sandbox_discard(args, policy):
     return 0
 
 
+def _not_as_it_is(path):
+    """Whether one of Mentor's files is missing from the sandbox's view of the system, or different there."""
+    inside = os.path.join(mentor_sandbox.MERGED, path.lstrip("/"))
+    if not os.path.lexists(inside):
+        return True
+    try:
+        return not mentor_sandbox._same(inside, path)
+    except OSError:
+        return os.path.lexists(path)
+
+
 def _takes_mentor_away():
     """What of Mentor's the sandbox's changes would remove: its packages (their pacman database folders
     deleted) and its own files (MANIFEST.sha256). Mentor's updates apply their own sandbox, not this way."""
@@ -320,9 +370,9 @@ def _takes_mentor_away():
             found.add(package)
         path = "/" + rel.rstrip("/")
         if rel.endswith("/") or os.path.isdir(path):
-            # a directory deleted or swapped for another: the files of Mentor's in it went with it, or may have
-            changed = [f for f in files if f.startswith(path + "/") and
-                       not os.path.lexists(os.path.join(mentor_sandbox.MERGED, f.lstrip("/")))]
+            # a directory deleted or swapped for another: the files of Mentor's in it went with it, or came back
+            # changed (a folder made again holds what the sandbox put in it; review of 2026-11-14)
+            changed = [f for f in files if f.startswith(path + "/") and _not_as_it_is(f)]
             found.update(changed)
         elif path in files:
             found.add(path)

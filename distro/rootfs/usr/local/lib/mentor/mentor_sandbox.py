@@ -357,14 +357,66 @@ def _copy(src, dst):
         os.makedirs(dst, exist_ok=True)
         _own(dst, st)
     elif stat.S_ISREG(st.st_mode):
-        temporary = dst + ".mentor-new"  # replaced in one step, so running programs keep the old file
-        shutil.copyfile(src, temporary)
-        _own(temporary, st)
-        for name in os.listxattr(src):
-            if name.startswith("security.") and not dst.startswith(BOOT + "/"):
-                os.setxattr(temporary, name, os.getxattr(src, name))
-        os.utime(temporary, ns=(st.st_atime_ns, st.st_mtime_ns))
-        os.replace(temporary, dst)
+        # Replaced in one step, so running programs keep the old file. Written in the opened folder, under a new
+        # name made only where nothing is (open_folder, new_file): with the fixed name DST.mentor-new, a link a
+        # user's program put there sent root's copy to any file it pointed at (review of 2026-11-14).
+        folder = open_folder(os.path.dirname(dst))
+        try:
+            temporary, out = new_file(folder, os.path.basename(dst))
+            try:
+                with os.fdopen(out, "wb") as o, open(src, "rb") as f:
+                    shutil.copyfileobj(f, o, 1 << 20)
+                    o.flush()
+                    try:
+                        os.fchown(o.fileno(), st.st_uid, st.st_gid)
+                        os.fchmod(o.fileno(), stat.S_IMODE(st.st_mode))
+                    except PermissionError:
+                        if not dst.startswith(BOOT + "/"):
+                            raise
+                    for name in os.listxattr(src):
+                        if name.startswith("security.") and not dst.startswith(BOOT + "/"):
+                            os.setxattr(o.fileno(), name, os.getxattr(src, name))
+                    os.utime(o.fileno(), ns=(st.st_atime_ns, st.st_mtime_ns))
+                os.replace(temporary, os.path.basename(dst), src_dir_fd=folder, dst_dir_fd=folder)
+            except BaseException:
+                try:
+                    os.unlink(temporary, dir_fd=folder)
+                except OSError:
+                    pass
+                raise
+        finally:
+            os.close(folder)
+
+
+def open_folder(folder):
+    """The folder root is about to write a file in, opened, and refused unless it is the very folder named: one
+    on the way swapped for a link (by a program of the user's, in a folder of theirs) would send the write
+    elsewhere. Paths here have no links in them: scan() calls a folder that is a link on the system "replaced",
+    and mentor_core resolves them before checking. Also used by mentor_core.write_file."""
+    folder = os.path.normpath(folder)
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        opened = None
+    if opened != folder:
+        os.close(fd)
+        raise SandboxError(f"{folder} is not the folder it was a moment ago (a link was put on the way to it): "
+                           "nothing was written there")
+    return fd
+
+
+def new_file(folder, name):
+    """A new file in the opened folder for the next version of NAME, made only where nothing is (a link there is
+    not followed). Returns (its name, an open descriptor for writing)."""
+    for _ in range(5):
+        temporary = f".{name[:200]}.mentor-new-{os.urandom(6).hex()}"
+        try:
+            return temporary, os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                      0o600, dir_fd=folder)
+        except FileExistsError:
+            continue
+    raise SandboxError(f"no new file could be made beside {name}")
 
 
 def _copy_tree(src, dst):
@@ -382,8 +434,12 @@ def _remove(path):
 
 
 def _protected(rel, protected):
+    """Whether applying REL touches a protected path: the path itself or a folder above it, and for a folder (deleted
+    or replaced as one tree) anything protected inside it. A sandbox that made /usr/local/lib again with an edited
+    Mentor in it was one "replaced" line, and replaced Mentor's code (review of 2026-11-14)."""
     path = "/" + rel.rstrip("/")
-    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in protected)
+    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") or
+               (rel.endswith("/") and p.startswith(path + "/")) for p in protected)
 
 
 def apply(summary, protected):

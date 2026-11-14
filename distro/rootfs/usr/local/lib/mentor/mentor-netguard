@@ -48,7 +48,12 @@ sys.path.insert(0, "/usr/local/lib/mentor")
 import mentor_geo
 import mentor_guard
 
-SOCKET = "/tmp/osui.sock"
+# Where the daemon finds its interface. Not OpenSnitch's own /tmp/osui.sock: in /tmp any program could take that name
+# while this guard restarts, and the daemon would ask it, and believe it (review of 2026-11-14). In a folder only root
+# can enter; the daemon's config (default()) and its command line (opensnitchd.service.d/mentor.conf) both name it.
+UI_DIR = "/run/mentor-netguard-ui"
+SOCKET = UI_DIR + "/osui.sock"
+UI_ADDRESS = "unix://" + SOCKET
 RULES = "/etc/opensnitchd/rules"
 NET = "/var/lib/mentor/guard/net.json"   # unknown programs that went online, and the tries of blocked ones
 PREFIX = "mentor-block-"
@@ -60,7 +65,11 @@ CONFIG = "/etc/opensnitchd/default-config.json"
 # An interpreter running a script first, as OpenSnitch sees its command line: the interpreter as it was typed
 # (python3, while the program's path is python3.14), options, then the script. Case-sensitive: the daemon lowercases
 # a pattern that is not, \S too (tested 2026-10-23).
-SCRIPT_COMMAND = r"^(\S*/)?[\w.+-]+( -\S+)* {}( .*)?$"
+# The options before the script are plain switches only: one that gives code (`-cCODE`, `-e…`, see CODE_LETTERS) is not
+# among them, or `python3 -cCODE /usr/bin/ls` passed as ls (review of 2026-11-14). OLD_OPTIONS: the rules made before.
+SCRIPT_OPTIONS = r"( -[A-DF-Zabdf-lnoqs-z0-9]+)*"  # letters but CODE_LETTERS (c e E m p r)
+OLD_OPTIONS = r"( -\S+)*"
+SCRIPT_COMMAND = r"^(\S*/)?[\w.+-]+" + SCRIPT_OPTIONS + r" {}( .*)?$"
 KEEP_DESTINATIONS = 40                   # where a program went: the last this many, per program
 LOCK = threading.Lock()
 
@@ -275,6 +284,38 @@ def _operator(op):
                        sensitive=bool(op.get("sensitive")), list=[_operator(o) for o in op.get("list") or []])
 
 
+def _tighten_old_rules():
+    """Mentor's rules for scripts made before 2026-11-14 let any option come before the script, code too
+    (SCRIPT_OPTIONS): made again with only plain switches, at the guard's start, and told to the daemon."""
+    old, new = r"^(\S*/)?[\w.+-]+" + OLD_OPTIONS + " ", r"^(\S*/)?[\w.+-]+" + SCRIPT_OPTIONS + " "
+
+    def tighten(operator):
+        changed = False
+        if isinstance(operator, dict):
+            data = operator.get("data")
+            if operator.get("operand") == "process.command" and isinstance(data, str) and data.startswith(old):
+                operator["data"], changed = new + data[len(old):], True
+            for inner in operator.get("list") or []:
+                changed |= tighten(inner)
+        return changed
+
+    for name in os.listdir(RULES) if os.path.isdir(RULES) else ():
+        if not (name.startswith("mentor-") and name.endswith(".json")):
+            continue
+        path = os.path.join(RULES, name)
+        try:
+            with open(path) as f:
+                rule = json.load(f)
+            if not tighten(rule.get("operator")):
+                continue
+            with open(path + ".new", "w") as f:
+                json.dump(rule, f, indent=2)
+            os.replace(path + ".new", path)
+            _tell(rule)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            print(f"mentor-netguard: {name}: {e}", file=sys.stderr)
+
+
 def _tell(rule=None, name=None):
     """Send a rule (a dict as written to its file) or the name of one removed to the daemon, if this is the guard."""
     pb = _PB["pb"]
@@ -394,6 +435,18 @@ _known = {}
 ENGINES = mentor_guard.ENGINES  # the AI engines Mentor sets up for the user, in their home
 INTERPRETERS = mentor_guard.INTERPRETERS
 LAUNCHERS = re.compile(r"^(env|python3?(\.\d+)?|bash|sh|dash|zsh|perl|ruby|node|lua\S*|php)$")  # by name, in args
+# Short options that give code as text or a module to run, alone or in a cluster: python -c -m, bash -c, perl -e -E -p
+# (code around each line), ruby/node/lua -e, node -p, php -r. `-Ic CODE`, `-le CODE` and `-cCODE` are code as much as
+# `-c CODE`; only the exact `-c` counted, so `python3 -cCODE /usr/bin/ls` was judged as ls (review of 2026-11-14).
+# Some plain switches have these letters too (bash -e, python -E): such a command is asked about, never let out.
+CODE_LETTERS = set("cmeErp")
+CODE_LONG = re.compile(r"^--(eval|print|command|require|import|loader|experimental-loader|module)(=|$)")
+
+
+def _gives_code(arg):
+    if arg.startswith("--"):
+        return bool(CODE_LONG.match(arg))
+    return arg.startswith("-") and len(arg) > 1 and bool(CODE_LETTERS & set(arg[1:]))
 
 
 def _from_proc(pid, args, cwd):
@@ -440,7 +493,7 @@ def program_of(path, args, cwd="", root=""):
     # ["env", "python3", "fetch.py"] (the interpreter, but env's command line). The first argument that is a file,
     # past env, interpreters and options.
     for arg in args:
-        if arg in ("-c", "-m", "-e", "-") or not arg:  # code or a module, not a file
+        if arg == "-" or not arg or _gives_code(arg):  # code or a module, not a file
             break
         if arg.startswith("-") or LAUNCHERS.match(os.path.basename(arg)):
             continue
@@ -607,6 +660,7 @@ def serve():
             sandbox = _sandboxed(request.process_id)
             program, interpreter = program_of(request.process_path or "?", args, cwd, sandbox)
             place = f"{request.dst_host or request.dst_ip}:{request.dst_port}"
+            unknown = False  # judged unknown: from then on a failure here keeps it offline (below)
             try:
                 if program in blocked():  # blocked a moment ago, before the daemon read the new rule
                     with LOCK:
@@ -636,6 +690,7 @@ def serve():
                     if interpreter:  # never all of python3 or bash at once: this script, run by this interpreter
                         return script_rule(request.process_path, program)
                     return rule("allow", "until restart", program, "mentor-known-" + _slug(program))
+                unknown = True
                 with LOCK:
                     data = load()
                     first = program not in data["unknown"]
@@ -648,13 +703,20 @@ def serve():
                     # match too much; it is refused at each try instead, and asked about again.
                     newly = not os.path.exists(rule_path(program, WAIT)) and not (command and not command[1].strip())
                     if newly:  # it waits for the user's answer; the daemon stops asking about it
-                        _write_rule(program, WAIT, "deny", "Waiting for the user's answer on Mentor's card")
+                        try:  # its card still comes when the rule cannot be made: it is refused at each try then
+                            _write_rule(program, WAIT, "deny", "Waiting for the user's answer on Mentor's card")
+                        except Exception as e:
+                            print(f"mentor-netguard: wait rule: {e}", file=sys.stderr)
                     entry["refused"] = entry.get("refused", 0) + 1
                     save(data, _place("unknown", program, entry, place, request.dst_ip, first or newly))
                 _rule_names[WAIT + _slug(program)] = program
                 return rule("deny", "once", request.process_path, WAIT + _slug(program))
             except Exception as e:
                 print(f"mentor-netguard: ask: {e}", file=sys.stderr)
+            if unknown:
+                # Failing on a program already judged unknown lets nothing out: a byte that is not UTF-8 in its command
+                # line made the rule fail, and every changed byte was a free connection (review of 2026-11-14).
+                return rule("deny", "once", request.process_path, WAIT + _slug(program))
             return rule("allow", "once", request.process_path, "mentor-once")  # Mentor's side failing: let it be
 
         def Subscribe(self, request, context):
@@ -679,10 +741,15 @@ def serve():
         def PostAlert(self, request, context):
             return pb.MsgResponse(id=request.id)
 
+    os.makedirs(UI_DIR, mode=0o700, exist_ok=True)
+    if os.path.islink(UI_DIR) or os.lstat(UI_DIR).st_uid != 0:
+        raise SystemExit(f"mentor-netguard: {UI_DIR} is not root's own folder")
+    os.chmod(UI_DIR, 0o700)
     try:
         os.remove(SOCKET)
     except FileNotFoundError:
         pass
+    _tighten_old_rules()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     grpc_mod.add_UIServicer_to_server(UI(), server)
     server.add_insecure_port("unix://" + SOCKET)
@@ -713,9 +780,11 @@ def default(action):
     except (OSError, ValueError) as e:
         print(f"mentor-netguard: {CONFIG}: {e}", file=sys.stderr)
         return 0  # nothing to change; the daemon keeps what the package gave it
-    if config.get("DefaultAction") == action:
+    server = config.get("Server") if isinstance(config.get("Server"), dict) else {}
+    moved = server.get("Address") == UI_ADDRESS  # the daemon looks for this guard where it is (UI_DIR)
+    if config.get("DefaultAction") == action and moved:
         return 0
-    if action == "allow":
+    if action == "allow" and moved:
         if subprocess.run(["systemctl", "is-system-running"], capture_output=True,
                           text=True).stdout.strip() == "stopping":
             return 0  # shutting down: the guard is there again at the next start, and the daemon need not start twice
@@ -726,6 +795,7 @@ def default(action):
             # while it starts (QueueBypass): two of them let a waiting program out for about 13 s (tested 2026-10-23).
             return 0
     config["DefaultAction"] = action
+    config["Server"] = {**server, "Address": UI_ADDRESS}
     with open(CONFIG + ".new", "w") as f:
         json.dump(config, f, indent=4)
     os.replace(CONFIG + ".new", CONFIG)

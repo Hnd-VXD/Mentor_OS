@@ -30,6 +30,7 @@ import mentor_guard
 
 WORK = "/run/mentor-investigate"
 PROGRESS = os.path.join(WORK, "progress-%d.json" % os.getpid())
+LOOKS = os.path.join(WORK, "looks")
 CACHE = "/var/lib/mentor/guard/investigated"
 RULES = "/usr/local/share/mentor/yara/mentor.yar"
 EXECLOG = "/var/log/mentor/exec.log"
@@ -94,9 +95,38 @@ def locked(argv, folder, seconds=120, extra=()):
     return done.returncode, done.stdout.decode("utf-8", "replace")
 
 
-def copy_of(program, folder):
+def asker(link):
+    """Who is asking on the socket: (uid, the groups they are in)."""
+    pid, uid, gid = struct.unpack("3i", link.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+    groups = {gid}
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as f:
+            found = re.search(r"^Groups:\s*(.*)$", f.read(), re.M)
+        groups.update(int(g) for g in (found.group(1).split() if found else []))
+    except (OSError, ValueError):
+        pass
+    return uid, groups
+
+
+def readable_by(info, reader):
+    """Could READER (uid, groups) read this file themselves? Without the password, a look opens only that."""
+    if reader is None or reader[0] == 0:
+        return True
+    uid, groups = reader
+    mode = info.st_mode
+    if info.st_uid == uid:
+        return bool(mode & stat.S_IRUSR)
+    if info.st_gid in groups:
+        return bool(mode & stat.S_IRGRP)
+    return bool(mode & stat.S_IROTH)
+
+
+def copy_of(program, folder, reader=None):
     """A copy for the locked-up tools, with its facts. Opened without following a link: a program could put a link
-    to something of root's at its own name. (facts, copy or None)"""
+    to something of root's at its own name. READER (uid, groups) is who asked without the password: a file they
+    could not read themselves is neither copied nor fingerprinted. A flagged program swapped for a link to
+    /etc/shadow, its path then resolved, was copied where anyone could read it (review of 2026-11-14).
+    (facts, copy or None)"""
     try:
         source = os.open(program, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
@@ -107,6 +137,10 @@ def copy_of(program, folder):
             return ["It is not an ordinary file."], None
         facts = [f"Size {info.st_size} bytes, owner uid {info.st_uid}, mode {stat.S_IMODE(info.st_mode):o}, last "
                  f"changed {time.strftime('%Y-%m-%d %H:%M', time.localtime(info.st_mtime))}."]
+        if not readable_by(info, reader):
+            return facts + ["Only the system can read this file, so a look without the user's password does not open "
+                            "it: not scanned. With the user's yes, security_investigate with user_asked and explain "
+                            "looks inside it."], None
         origin = mentor_guard.origin(program)
         facts.append("Comes from: " + {"none": "nowhere known (no package, app store or Mentor)",
                                        "home": "the user's own programs (~/.local)"}.get(origin, origin) + ".")
@@ -458,13 +492,18 @@ def net_said(program):
     return [f"The guard on programs going online: {state}; tried {entry.get('count', 0)} times; to {clean(places, 400)}."]
 
 
-def look(program, lock):
-    """Everything about a program. capa last and outside `lock`: it can take minutes, and held up every other look."""
-    folder = tempfile.mkdtemp(prefix="look-", dir=WORK)
+def look(program, lock, reader=None):
+    """Everything about a program. capa last and outside `lock`: it can take minutes, and held up every other look.
+    READER: who asked without the password (copy_of)."""
+    # The copy is read by the locked-up tools (a throwaway user), so its folder is open to all; the folder above it
+    # can be passed through but not listed, so nobody else finds its random name.
+    os.makedirs(LOOKS, exist_ok=True)
+    os.chmod(LOOKS, 0o711)
+    folder = tempfile.mkdtemp(prefix="look-", dir=LOOKS)
     os.chmod(folder, 0o755)
     try:
         progress("Looking at the file", 60)
-        facts, copy = copy_of(program, folder)
+        facts, copy = copy_of(program, folder, reader)
         progress("Looking for known signs inside it", 90)
         inside = yara(copy, folder)
         quick, machine_code = fast_read(copy, folder) if copy else ([], None)
@@ -510,7 +549,8 @@ def main():
             asked_with_password(sys.argv[2])
         return
     link = socket.socket(fileno=0)
-    uid = struct.unpack("3i", link.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))[1]
+    reader = asker(link)
+    uid = reader[0]
     if uid != 0 and uid < 1000:
         return
     asked = b""
@@ -546,7 +586,7 @@ def main():
         except OSError:
             pass
         answer = look(os.path.realpath(program) if os.path.isabs(program.split(" ")[0]) and " " not in program else program,
-                      lock)
+                      lock, reader)
         if "it is busy with another look" not in answer:  # asked again, that one gets its turn
             with open(kept, "w", encoding="utf-8") as f:
                 f.write(answer)

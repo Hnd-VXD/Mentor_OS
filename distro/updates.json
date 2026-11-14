@@ -562,5 +562,11 @@
     "name": "10.11.26.00",
     "summary": "The chat no longer goes empty when you come back from another workspace, typing works again in Show Apps, and Mentor's disk stops growing on Windows.",
     "published": "2026-11-10 08:29"
+  },
+  {
+    "version": 202611140744,
+    "name": "14.11.26.00",
+    "summary": "Mentor's protections are stronger: four ways a harmful program could get around them are closed.",
+    "published": "2026-11-14 09:44"
   }
 ]

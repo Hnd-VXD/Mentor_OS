@@ -27,7 +27,10 @@ KEY_LEFTSHIFT, KEY_RIGHTSHIFT = 42, 54
 ALTS, SHIFTS = {KEY_LEFTALT, KEY_RIGHTALT}, {KEY_LEFTSHIFT, KEY_RIGHTSHIFT}
 CONSOLE = "mentor-emergency-console.service"
 VT = 3
-FLAG = "/run/mentor/emergency"   # what the console reads to know it was opened by the key
+# What the console reads to know it was opened by the key (/etc/profile.d/mentor-repair.sh). In a folder of root's:
+# /run/mentor is open to every user (the desktop writes desktop-ok there), and a file a user's program made in it
+# first stopped root's write, so the key did nothing (review of 2026-11-14).
+FLAG = "/run/mentor-emergency/opened"
 RESCAN = 5
 AGAIN = 5                        # seconds before the key works again
 
@@ -54,9 +57,18 @@ def keyboards():
 
 
 def open_console():
-    os.makedirs(os.path.dirname(FLAG), exist_ok=True)
-    with open(FLAG, "w") as f:
-        f.write(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+    try:  # the console opens even if this cannot be written: it is only the welcome that depends on it
+        folder = os.path.dirname(FLAG)
+        os.makedirs(folder, mode=0o755, exist_ok=True)
+        if os.lstat(folder).st_uid != 0 or os.path.islink(folder):
+            raise OSError(f"{folder} is not root's")
+        os.chmod(folder, 0o755)
+        fd = os.open(FLAG + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "w") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+        os.replace(FLAG + ".new", FLAG)
+    except OSError as e:
+        print(f"the mark for the console could not be written: {e}", flush=True)
     # A fresh one each time: what is left of an earlier one is a bare command line.
     subprocess.run(["systemctl", "restart", CONSOLE], timeout=30)
     time.sleep(0.5)

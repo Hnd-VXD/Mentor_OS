@@ -362,7 +362,9 @@ To tell it works: `mentor --help` lists all of these, and `mentor boot` answers 
 
 ## What you may not change
 
-`ALWAYS_PROTECTED` in `mentor_core.py` and `[files] protected` in `policy.toml`. Writing to them is refused by `file_write`, skipped by `sandbox_apply` ("not applied, protected: …"), and a root command that names them is refused by the patterns in `[root_shell] deny_patterns`. This is on purpose: it is the layer that keeps the agent in check, the files that decide who is root, and what a failed start falls back on. Do not look for a way around it.
+`ALWAYS_PROTECTED` in `mentor_core.py` and `[files] protected` in `policy.toml`. Writing to them is refused by `file_write`, skipped by `sandbox_apply` ("not applied, protected: …"; a folder the sandbox deleted or made again is skipped whole when anything protected is inside it, and refused when one of Mentor's own files in it would come back changed), and a root command that names them is refused by the patterns in `[root_shell] deny_patterns`. This is on purpose: it is the layer that keeps the agent in check, the files that decide who is root, and what a failed start falls back on. Do not look for a way around it.
+
+How root writes a file (`write_file`, `restore_file`, `sandbox_apply`, undo): in the folder it opened and checked (`mentor_sandbox.open_folder`: refused, "is not the folder it was a moment ago", when a folder on the way became a link), to a new name made only where nothing is (`new_file`: `.NAME.mentor-new-RANDOM`, a link there is not followed), then renamed over the file in one step; the version there before is read without following a link. Until 2026-11-14 it wrote to the fixed name `PATH.mentor-new`, and a link a user's program put at that name sent root's write to any file, sudoers among them (a review found it). A leftover `.NAME.mentor-new-*` beside a file is from a write that was cut off: safe to remove.
 
 ## How to tell that it works
 
