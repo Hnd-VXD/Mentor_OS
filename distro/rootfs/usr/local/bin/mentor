@@ -169,6 +169,32 @@ def nearest_scale(allowed, wanted):
     return min(allowed, key=lambda s: (abs(s - wanted) + (0 if quarter(s) else 0.05), s))
 
 
+def text_fill(wanted, chosen):
+    """What the screen's scale cannot give, the letters make up: text-scaling-factor = wanted / chosen (steps of
+    0.05, 0.75 to 1.5), only while it is the value Mentor set last (~/.config/mentor/text-scale), so that a size the
+    user chose for the letters stays theirs. The same as the extension's _fillWithText (DESKTOP.md, "Sharp text")."""
+    path = os.path.expanduser("~/.config/mentor/text-scale")
+    try:
+        with open(path) as f:
+            last = float(f.read())
+    except (OSError, ValueError):
+        last = 1.0
+    now = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "text-scaling-factor"],
+                         capture_output=True, text=True).stdout.strip()
+    try:
+        if abs(float(now) - last) > 0.01:
+            return  # the user's own
+    except ValueError:
+        return
+    factor = min(1.5, max(0.75, round(wanted / chosen / 0.05) * 0.05))
+    if abs(factor - 1) < 0.03:
+        factor = 1.0
+    subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "text-scaling-factor", f"{factor:.2f}"])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(f"{factor:.2f}")
+
+
 def cmd_scale(args):
     """Scale the desktop the way the host's screen is scaled, so that it is drawn sharp.
 
@@ -184,17 +210,19 @@ def cmd_scale(args):
     """
     import glob
     import re
-    try:
-        with open("/run/mentor/host-scale") as f:
-            wanted = float(f.read())
-    except (OSError, ValueError):
+    # The user's own zoom (Mentor Settings, Zoom; or a scale picked in GNOME's Settings, which the extension notes)
+    # before the host's. Neither (a PC of its own, nothing chosen): nothing is done.
+    wanted = None
+    for path in (os.path.expanduser("~/.config/mentor/scale"), "/run/mentor/host-scale"):
+        try:
+            with open(path) as f:
+                wanted = float(f.read())
+            break
+        except (OSError, ValueError):
+            continue
+    if not wanted:
+        text_fill(1.0, 1.0)  # letters Mentor made larger go back to their size
         return
-    # A scale the user chose in Settings goes before the host's (the extension notes it).
-    try:
-        with open(os.path.expanduser("~/.config/mentor/scale")) as f:
-            wanted = float(f.read())
-    except (OSError, ValueError):
-        pass
     shown = subprocess.run(["gdctl", "show"], capture_output=True, text=True,
                            env={**os.environ, "LC_ALL": "C.UTF-8", "LANGUAGE": ""}).stdout  # read in English
     monitor, scale = re.search(r"Monitor (\S+)", shown), re.search(r"Scale: ([\d.]+)", shown)
@@ -222,6 +250,7 @@ def cmd_scale(args):
     allowed = _supported_scales(target)
     if allowed:
         candidates = [nearest_scale(allowed, wanted)]
+        text_fill(wanted, candidates[0])
     else:
         candidates = list(dict.fromkeys((wanted, float(round(wanted)))))
     for candidate in candidates:

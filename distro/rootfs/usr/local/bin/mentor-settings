@@ -188,6 +188,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         # "Change Background…" (the user's wish, 2026-10-24).
         themes = WidePage()
         themes.add(self.colors_group())
+        themes.add(self.zoom_group())
         themes.add(self.pointer_group())
         themes.add(self.background_group())
         self.tabs.add_titled_with_icon(themes, "themes", "Themes", "applications-graphics-symbolic")
@@ -354,6 +355,51 @@ class SettingsWindow(Adw.ApplicationWindow):
             ["/usr/local/bin/gnome-control-center", "background"], start_new_session=True))
         row.add_suffix(change)
         row.set_activatable_widget(change)
+        group.add(row)
+        return group
+
+    ZOOMS = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0]
+    ZOOM_FILE = os.path.expanduser("~/.config/mentor/scale")
+
+    def zoom_group(self):
+        """How large everything is drawn, in steps of 25% (the user's wish, 2026-11-14: GNOME's own Settings offers
+        only the scales the window's exact size takes, 100%, 150% and 300% at 2880x1659). Kept in
+        ~/.config/mentor/scale; `mentor scale --keep` uses the nearest real scale and makes the letters up to the
+        rest (DESKTOP.md, "Sharp text"). "Like Windows" removes the file: the launcher's scale again."""
+        group = Adw.PreferencesGroup(title="Zoom", description="How large everything is drawn")
+        try:
+            with open("/run/mentor/host-scale") as f:
+                host = float(f.read())
+        except (OSError, ValueError):
+            host = None
+        try:
+            with open(self.ZOOM_FILE) as f:
+                mine = float(f.read())
+        except (OSError, ValueError):
+            mine = None
+        names = [f"Like Windows ({round(host * 100)}%)" if host else "As the screen has it"] + \
+                [f"{round(z * 100)}%" for z in self.ZOOMS]
+        row = Adw.ComboRow(title="Size", model=Gtk.StringList.new(names))
+        chosen = 0 if mine is None else 1 + min(range(len(self.ZOOMS)), key=lambda i: abs(self.ZOOMS[i] - mine))
+        row.set_selected(chosen)
+
+        def picked(widget, _param):
+            index = widget.get_selected()
+            try:
+                if index == 0:
+                    os.remove(self.ZOOM_FILE)
+                else:
+                    os.makedirs(os.path.dirname(self.ZOOM_FILE), exist_ok=True)
+                    with open(self.ZOOM_FILE, "w") as f:
+                        f.write(str(self.ZOOMS[index - 1]))
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                widget.set_subtitle(GLib.markup_escape_text(f"Could not be kept: {e.strerror}"))
+                return
+            later(lambda: subprocess.run(["/usr/local/bin/mentor", "scale", "--keep"], capture_output=True, timeout=60),
+                  lambda _result: None)
+        row.connect("notify::selected", picked)
         group.add(row)
         return group
 

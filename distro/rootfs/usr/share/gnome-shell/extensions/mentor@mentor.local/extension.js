@@ -99,7 +99,7 @@ class DesktopLayer {
         if (!sameSize) {
             this._matchHostScale();
         } else if (Math.abs(before.scale - now.scale) > 0.01 &&
-                   GLib.get_monotonic_time() / 1000000 - this._scaledAt > 4) {
+                   GLib.get_monotonic_time() / 1000000 - this._scaledAt > 4 && !this._ownScaleChange()) {
             try {
                 const dir = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor']);
                 GLib.mkdir_with_parents(dir, 0o700);
@@ -115,6 +115,19 @@ class DesktopLayer {
     // once it has settled. Done here, through the shell's own display settings, the same way as
     // `mentor scale` does it: started as a program it took 1.2 s, during which the user saw the
     // desktop unscaled each time the window was maximized or made full screen (2026-10-17).
+    // Whether a scale that just changed was Mentor's doing (`mentor scale --keep`, Mentor Settings' Zoom): it marks
+    // /run/mentor/scale-kept. Without this a scale of Mentor's was noted as the user's own choice, and a Zoom of 175%
+    // became 150% (the scale chosen for it) at once.
+    _ownScaleChange() {
+        try {
+            const info = Gio.File.new_for_path('/run/mentor/scale-kept').query_info(
+                'time::modified', Gio.FileQueryInfoFlags.NONE, null);
+            return GLib.get_real_time() / 1000000 - info.get_modification_date_time().to_unix() < 10;
+        } catch {
+            return false;
+        }
+    }
+
     _matchHostScale() {
         if (this._scaleLater)
             GLib.source_remove(this._scaleLater);
@@ -149,10 +162,14 @@ class DesktopLayer {
                 return 0;
             }
         };
-        let wanted = read('/run/mentor/host-scale');
-        if (!wanted)
-            return;  // no launcher said anything
-        wanted = read(GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'scale'])) || wanted;
+        // The user's own zoom (Mentor Settings, Zoom; or a scale picked in GNOME's Settings), else the host's.
+        // Neither (a PC of its own, nothing chosen): the shell's own choice is left alone.
+        const wanted = read(GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'scale'])) ||
+            read('/run/mentor/host-scale');
+        if (!wanted) {
+            this._fillWithText(1, 1);  // letters Mentor made larger go back to their size
+            return;
+        }
         this._defaultScale(wanted);
         const call =(method, args, type) => Gio.DBus.session.call('org.gnome.Mutter.DisplayConfig',
             '/org/gnome/Mutter/DisplayConfig', 'org.gnome.Mutter.DisplayConfig', method, args,
@@ -179,11 +196,44 @@ class DesktopLayer {
         const cost = s => Math.abs(s - wanted) + (Math.abs(s * 4 - Math.round(s * 4)) < 0.01 ? 0 : 0.05);
         const chosen = allowed.reduce((a, b) => cost(b) < cost(a) - 1e-9 || (Math.abs(cost(b) - cost(a)) < 1e-9 && b < a)
             ? b : a);
+        this._fillWithText(wanted, chosen);
         if (target[0] === current[0] && Math.abs(scale - chosen) < 0.01)
             return;
         GLib.file_set_contents('/run/mentor/scale-kept', '');  // _keepScale answers the question
         await call('ApplyMonitorsConfig', new GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', [serial, 2,
             [[x, y, chosen, transform, true, [[connector, target[0], {}]]]], {}]), null);
+    }
+
+    // What the screen's scale cannot give, the letters make up (the user's choice, 2026-11-14): a maximized window of
+    // 2880x1659 takes only 100%, 150% and 300%, so a wish of 200% gets 150% and letters a third larger
+    // (org.gnome.desktop.interface text-scaling-factor = wanted / chosen, in steps of 0.05, from 0.75 to 1.5).
+    // Icons and panels stay at the real scale. Only while that setting is the one Mentor set last
+    // (~/.config/mentor/text-scale): a size the user chose for the letters (Large Text) is theirs and stays.
+    // The same in `mentor scale` (text_fill).
+    _fillWithText(wanted, chosen) {
+        try {
+            const settings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+            const file = GLib.build_filenamev([GLib.get_user_config_dir(), 'mentor', 'text-scale']);
+            let last = 1;
+            try {
+                const [, bytes] = GLib.file_get_contents(file);
+                last = parseFloat(new TextDecoder().decode(bytes)) || 1;
+            } catch {
+                // never set by Mentor: 1, as GNOME has it
+            }
+            if (Math.abs(settings.get_double('text-scaling-factor') - last) > 0.01)
+                return;  // the user's own
+            let factor = Math.round(wanted / chosen / 0.05) * 0.05;
+            factor = Math.min(1.5, Math.max(0.75, factor));
+            if (Math.abs(factor - 1) < 0.03)
+                factor = 1;
+            if (Math.abs(settings.get_double('text-scaling-factor') - factor) > 0.001)
+                settings.set_double('text-scaling-factor', factor);
+            GLib.mkdir_with_parents(GLib.path_get_dirname(file), 0o700);
+            GLib.file_set_contents(file, String(factor));
+        } catch (e) {
+            console.warn(`mentor: could not set the letters' size: ${e.message}`);
+        }
     }
 
     // A size the shell has not seen yet (the window maximized or made full screen for the first time)

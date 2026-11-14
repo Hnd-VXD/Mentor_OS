@@ -610,5 +610,11 @@
     "name": "14.11.26.07",
     "summary": "The desktop's zoom follows Windows better: when a window size cannot show your zoom, Mentor picks the nearest one instead of 100%.",
     "published": "2026-11-14 14:44"
+  },
+  {
+    "version": 202611141310,
+    "name": "14.11.26.08",
+    "summary": "More zoom levels: choose 100% to 300% in steps of 25% in Mentor Settings, Themes, Zoom.",
+    "published": "2026-11-14 15:18"
   }
 ]
