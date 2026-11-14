@@ -11,6 +11,13 @@
 #
 # -Notes: the maker's notes for the assistant (build/update-notes-template.md says how to write them):
 # what changed and why, and step by step what the files alone cannot do. Signed with the update.
+#
+# -Prebuilt: no new build; the package already in out\update (the newest mentor-update-*.tar.zst, with its
+# version-name) is signed and, with -Upload, published. The usual way to publish (2026-11-14): build and sign once
+# without -Upload, install that package on a test Mentor, then run again with -Prebuilt -Upload, so that what
+# reaches every Mentor is the very file that was tested, about 3 minutes sooner (a second build differed from the
+# tested one in its build time at least).
+#   .\build\publish-update.ps1 -Summary "..." -Notes notes.md -Prebuilt -Upload
 param(
     [Parameter(Mandatory = $true)][string]$Summary,
     [string]$Notes = '',
@@ -18,6 +25,7 @@ param(
     # that sent one tells its user so on the update's card.
     [string]$Fixes = '',
     [switch]$Upload,
+    [switch]$Prebuilt,
     [string]$Key = (Join-Path $HOME '.mentor\update-signing-key'),
     [string]$Repo = 'Hnd-VXD/Mentor_OS'
 )
@@ -27,14 +35,23 @@ $out = Join-Path $root 'out\update'
 if (-not (Test-Path $Key)) { Write-Host "The signing key is missing: $Key"; exit 1 }
 if ($Summary.Trim().Length -lt 10) { Write-Host 'Write a summary for the users: what is new or fixed.'; exit 1 }
 
-# 1. The package: Mentor's own files exactly as an image gets them (build.sh update).
-$env:WSL_UTF8 = '1'
-$wslRoot = '/mnt/' + $root.Substring(0, 1).ToLower() + ($root.Substring(2) -replace '\\', '/')
-wsl.exe -d archlinux -u root -- env "MENTOR_OUT=$wslRoot/out" bash "$wslRoot/build/build.sh" update
-$built = $LASTEXITCODE
-wsl.exe --shutdown  # WSL keeps the memory it used, which Mentor itself needs
-if ($built -ne 0) { Write-Host 'The update could not be built.'; exit 1 }
-$package = Get-ChildItem $out -Filter 'mentor-update-*.tar.zst' | Sort-Object LastWriteTime | Select-Object -Last 1
+# 1. The package: Mentor's own files exactly as an image gets them (build.sh update), or, with -Prebuilt, the one
+#    built before (and tested since).
+if (-not $Prebuilt) {
+    $env:WSL_UTF8 = '1'
+    $wslRoot = '/mnt/' + $root.Substring(0, 1).ToLower() + ($root.Substring(2) -replace '\\', '/')
+    wsl.exe -d archlinux -u root -- env "MENTOR_OUT=$wslRoot/out" bash "$wslRoot/build/build.sh" update
+    $built = $LASTEXITCODE
+    wsl.exe --shutdown  # WSL keeps the memory it used, which Mentor itself needs
+    if ($built -ne 0) { Write-Host 'The update could not be built.'; exit 1 }
+}
+$package = Get-ChildItem $out -Filter 'mentor-update-*.tar.zst' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $package) { Write-Host "There is no package in $out to publish: build one first (without -Prebuilt)."; exit 1 }
+if ($Prebuilt) {
+    Write-Host "Publishing the package built before: $($package.Name), built $($package.LastWriteTime)."
+    if (-not (Test-Path (Join-Path $out 'version-name'))) { Write-Host 'Its version-name is missing: build it again.'; exit 1 }
+}
 $version = [long]($package.BaseName -replace '^mentor-update-(\d+)\.tar$', '$1')
 
 # 2. What it is, signed.
