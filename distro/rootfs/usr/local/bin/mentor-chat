@@ -1771,7 +1771,7 @@ class Conversation(Gtk.Box):
         if not os.path.isfile(HOST_PICTURE):
             return False
         os.makedirs(PASTED_DIR, exist_ok=True)
-        path = os.path.join(PASTED_DIR, time.strftime("pasted-%Y%m%d-%H%M%S.png"))
+        path = os.path.join(PASTED_DIR, time.strftime("pasted-%Y%m%d-%H%M%S-") + os.urandom(3).hex() + ".png")
         try:
             shutil.copyfile(HOST_PICTURE, path)
         except OSError:
@@ -1792,7 +1792,7 @@ class Conversation(Gtk.Box):
             print("paste: the picture could not be read:", e.message, file=sys.stderr, flush=True)
             return
         os.makedirs(PASTED_DIR, exist_ok=True)
-        path = os.path.join(PASTED_DIR, time.strftime("pasted-%Y%m%d-%H%M%S.png"))
+        path = os.path.join(PASTED_DIR, time.strftime("pasted-%Y%m%d-%H%M%S-") + os.urandom(3).hex() + ".png")
         if texture and texture.save_to_png(path):
             self.attach(path)
 
@@ -5925,8 +5925,11 @@ class AssistantApp(Adw.Application):
                 window.for_request().send(request[1], shown=request[0])
         elif arguments[:1] == ["--file"] and len(arguments) > 1:
             conversation = window.for_request()
+            # A relative path is the caller's, not this program's: `mentor-chat --file notes.txt` from a terminal in
+            # another folder attached a file that was not there, or another of the same name (review of 2026-11-14).
+            here = command_line.get_cwd() or GLib.get_home_dir()
             for path in arguments[1:]:
-                conversation.attach(path)
+                conversation.attach(os.path.join(here, os.path.expanduser(path)))
         elif arguments[:1] == ["--as"] and len(arguments) > 2:
             # the long instructions go to the agent; the user sees, here and in History, the short words
             window.for_request().send(" ".join(arguments[2:]), shown=arguments[1])

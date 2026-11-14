@@ -16,6 +16,7 @@ import select
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -366,6 +367,9 @@ def system_upgrade(a):
     if stop:
         return stop
     note = _restore_point("Before a full system upgrade")
+    # Written down as the way back only when it was made: on a PC of its own (no launcher) or a busy launcher there
+    # is none, and the journal named one for good (review of 2026-11-14).
+    _noted["restore_point"] = not note.startswith("[No")
     code, out = _privileged(HELPER, "system_upgrade", {}, timeout=3600)
     if INITCPIO_FAILED in out:
         leave_notice("problem", "The update did not finish making the start-up files",
@@ -777,6 +781,7 @@ SEARCH_MOST = 200  # lines file_read and file_search give for a search
 SEARCH_FILES = 20000  # files file_search looks at, at most
 SEARCH_SKIP = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv"}
 SEARCH_BIG = 5 << 20  # a file larger than this is not searched inside
+READ_BIG = 64 << 20  # file_read reads no larger file
 
 
 def file_read(a):
@@ -785,6 +790,17 @@ def file_read(a):
     path = os.path.expanduser(a["path"])
     mentor_security.saw(os.environ.get("MENTOR_SANDBOX"), "read", {"path": path})
     mentor_recipes.note_seen(os.environ.get("MENTOR_SANDBOX"), os.path.abspath(path))  # wherever it is
+    # Looked at before it is opened: a pipe waited for ever, /dev/zero filled the memory, and a disk image of
+    # gigabytes was read whole before being cut, with the tools answering nothing meanwhile (review of 2026-11-14).
+    try:
+        info = os.stat(path)
+    except OSError:
+        info = None
+    if info is not None and not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+        return 1, f"{path} is not an ordinary file (a pipe, a device or a socket): it is not read"
+    if info is not None and stat.S_ISREG(info.st_mode) and info.st_size > READ_BIG:
+        return 1, (f"{path} is {info.st_size / (1 << 20):.0f} MB, too large to read here. Look into it with "
+                   "run_command: grep -n WORDS, sed -n 'FROM,TOp', tail -n 100.")
     try:
         with open(path, errors="replace") as f:
             text = f.read()
@@ -891,7 +907,8 @@ def file_search(a):
                 break
             continue
         try:
-            if os.path.getsize(path) > SEARCH_BIG:
+            info = os.stat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > SEARCH_BIG:  # a pipe (size 0) waited for ever
                 continue
             with open(path, "rb") as f:
                 data = f.read()
@@ -925,13 +942,30 @@ def file_write(a):
     try:
         note = ""
         if os.path.isfile(real):
-            backup = os.path.join(HOME_BACKUPS, time.strftime("%Y%m%d-%H%M%S"), real.lstrip("/"))
+            # A folder of its own each time (the second, then nanoseconds: they sort as they came). By the second
+            # alone, two writes in one second shared it and the first version was lost (review of 2026-11-14).
+            stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000_000:09d}"
+            backup = os.path.join(HOME_BACKUPS, stamp, real.lstrip("/"))
             os.makedirs(os.path.dirname(backup), exist_ok=True)
             shutil.copy2(real, backup)
             note = "previous version saved; file_restore brings it back\n"
         os.makedirs(os.path.dirname(real), exist_ok=True)
-        with open(real, "w") as f:
-            f.write(content)
+        # Whole or not at all: written in place, a full disk or a stop mid-write left the file cut.
+        fd, temporary = tempfile.mkstemp(dir=os.path.dirname(real), prefix="." + os.path.basename(real)[:100] + ".")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            if os.path.exists(real):
+                shutil.copymode(real, temporary)
+            else:
+                os.chmod(temporary, 0o644)
+            os.replace(temporary, real)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
         return 0, f"{note}wrote {len(content)} characters to {real}"
     except OSError as e:
         return 1, str(e)
@@ -4467,7 +4501,8 @@ JOURNAL = {
                                       "package_install, the same names"),
     "system_upgrade": lambda a, out: None if "Nothing was upgraded" in out else (
         "upgraded every package (pacman -Syu); /var/log/pacman.log has the versions",
-        "the restore point made just before it (Restore points in the launcher)"),
+        "the restore point made just before it (Restore points in the launcher)" if _noted.get("restore_point")
+        else None),
     "settings_set": lambda a, out: (
         f"setting {a['schema']} {a['key']}: {_noted.get('before') or 'unknown'} -> {a['value']}",
         f"settings_set {a['schema']} {a['key']} {_noted['before']}" if _noted.get("before") else None),

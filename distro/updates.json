@@ -586,5 +586,11 @@
     "name": "14.11.26.03",
     "summary": "Smaller fixes: Mentor Settings opens at large zoom, safer recipe checks, and volume keys come back by themselves.",
     "published": "2026-11-14 12:48"
+  },
+  {
+    "version": 202611141100,
+    "name": "14.11.26.04",
+    "summary": "Safer file tools: earlier versions are all kept, files are never left half written, and huge files no longer stall the assistant.",
+    "published": "2026-11-14 13:01"
   }
 ]
