@@ -130,7 +130,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         safe.add(switch("Let Mentor look by itself at what seems wrong",
                         "Someone trying to connect, or a program that behaves oddly: it tells you in the chat in a few words",
                         bool(mentor_settings.get("auto_review")), lambda on: mentor_settings.put("auto_review", on)))
-        self.health = Adw.ActionRow(title="Checking…")
+        self.health = Adw.ActionRow(title="Checking…", use_markup=False)  # plain text, not markup: findings and errors hold & and < (review of 2026-11-14)
         self.look = button("Let Mentor look", lambda: ask(self.look_request))
         self.look.set_visible(False)
         self.health.add_suffix(self.look)
@@ -386,6 +386,12 @@ class SettingsWindow(Adw.ApplicationWindow):
         sizes = mentor_pointer.fitting(zoom)
         size = Adw.ActionRow(title="Size", subtitle="" if len(sizes) == len(mentor_pointer.SIZES) else
                              f"Larger sizes at a smaller zoom (now {round(zoom * 100)}%)")
+        if len(sizes) < 2:
+            # One size only (in a VM at 225% and more): a slider from 0 to 0 is refused by GTK (it gave None and
+            # Mentor Settings did not open at all; review of 2026-11-14). The row says which size it is instead.
+            size.add_suffix(Gtk.Label(label=f"{sizes[0]} pixels", valign=Gtk.Align.CENTER, css_classes=["dim-label"]))
+            group.add(size)
+            return group
         scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, len(sizes) - 1, 1)
         scale.set_size_request(260, -1)
         scale.set_draw_value(False)
@@ -642,7 +648,7 @@ class SettingsWindow(Adw.ApplicationWindow):
         The work is mentor-update's, as root (UPDATES.md)."""
         page = WidePage()
         now = Adw.PreferencesGroup(title="This Mentor")
-        self.update_row = Adw.ActionRow(title="Checking…")
+        self.update_row = Adw.ActionRow(title="Checking…", use_markup=False)  # plain text, not markup: findings and errors hold & and < (review of 2026-11-14)
         self.update_row.set_subtitle_lines(4)
         self.whats_new = button("What's new?", lambda: ask(self.whats_new_request))
         self.whats_new.set_visible(False)
@@ -732,8 +738,8 @@ class SettingsWindow(Adw.ApplicationWindow):
         elif waiting:
             name = mentor_update.display_name(waiting["version"], waiting.get("name"))
             self.update_row.set_title(f"An update is waiting: {name}")
-            # escaped: rows read markup, and a summary with "&" was not shown at all (2026-10-19)
-            self.update_row.set_subtitle(GLib.markup_escape_text(str(waiting.get("summary", "")))
+            # plain text: the row shows no markup (use_markup=False), so a summary with "&" shows as written
+            self.update_row.set_subtitle(str(waiting.get("summary", ""))
                                          + "\nInstalling it restarts Mentor (about a minute).")
             self.update_button.set_visible(True)
             self.waiting_version = int(waiting["version"])
@@ -775,7 +781,7 @@ class SettingsWindow(Adw.ApplicationWindow):
             if not isinstance(item, dict):
                 continue
             fixed = fixed_by.get(item.get("id"))
-            row = Adw.ActionRow(title=str(item.get("title", "")),
+            row = Adw.ActionRow(title=str(item.get("title", "")), use_markup=False,  # the user's own words
                                 subtitle=(f"Fixed in Mentor {fixed}" if fixed else "Sent, not fixed yet")
                                 + f" · sent {str(item.get('time', ''))[:10]} · number {item.get('id')}")
             self.reports.add(row)

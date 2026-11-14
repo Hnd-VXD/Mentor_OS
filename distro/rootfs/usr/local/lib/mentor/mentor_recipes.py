@@ -85,7 +85,21 @@ def generalise(text):
     home = os.path.expanduser("~")
     for what in {home, f"/home/{user}"}:
         text = text.replace(what, "~")
-    return re.sub(rf"\b{re.escape(user)}\b", "USER", text) if len(user) > 2 else text
+    if len(user) <= 2:
+        return text
+    name = re.escape(user)
+    # Where a name stands for the user in a command: user@host, user:group, -u user, chown user.
+    text = re.sub(rf"(?<![\w-]){name}(?=@)|(?<![\w-]){name}(?=:[\w-])|(?<=:){name}\b|"
+                  rf"(?<=-u ){name}\b|(?<=--user ){name}\b|(?<=chown ){name}\b", "USER", text)
+    if user.lower() in COMMON_NAMES:
+        # A name that is also an everyday word (Mentor's own default is "admin"): changed everywhere, it broke
+        # django-admin, admin:/// and /admin pages in saved recipes (review of 2026-11-14).
+        return text
+    return re.sub(rf"(?<![\w/-]){name}(?![\w-])", "USER", text)
+
+
+# User names that are everyday words too: generalise() changes them only where they stand for the user.
+COMMON_NAMES = {"admin", "user", "root", "test", "guest", "ubuntu", "arch", "mentor", "home", "owner", "demo"}
 
 
 def _out(*argv):
@@ -341,10 +355,13 @@ def inspect(path):
     sha = sha_of(path)
     lines = text.splitlines()
     findings = []  # (severity, line number, what, why, excerpt)
-    for number, line in enumerate(lines, 1):
+    # A command split over lines with a backslash is looked at whole, at its first line's number: `curl … \` with
+    # `| bash` on the next line was not seen as "downloads a program and runs it" (review of 2026-11-14).
+    for number, line in logical_lines(lines):
         for severity, pattern, what, why in RISKS:
             if re.search(pattern, line):
                 findings.append((severity, number, what, why, line.strip()[:140]))
+    for number, line in enumerate(lines, 1):
         if HIDDEN.search(line):
             findings.append(("high", number, "has invisible characters in the text", "they can hide words from the reader",
                              line.strip()[:80].encode("unicode_escape").decode()[:120]))
@@ -354,8 +371,8 @@ def inspect(path):
             host = re.sub(r"^https?://", "", url).split("/")[0].split(":")[0].lower()
             hosts.setdefault(host, []).append((number, url))
     for host, uses in hosts.items():
-        if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host) or host.endswith(SHORTENERS) or any(u.startswith("http://") for _n, u in uses):
-            findings.append(("high" if not host.endswith(USUAL) else "medium", uses[0][0], f"goes to {host}",
+        if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host) or under(host, SHORTENERS) or any(u.startswith("http://") for _n, u in uses):
+            findings.append(("high" if not under(host, USUAL) else "medium", uses[0][0], f"goes to {host}",
                              "an address of numbers, a shortener, a paste or tunnel site, or a connection that is not encrypted",
                              uses[0][1][:140]))
     seen, unique = set(), []
@@ -405,7 +422,7 @@ def inspect(path):
             out += ["", f"## {label}"]
             out += [f"- line {n}: it {what}. Why it matters: {why}.\n    `{excerpt}`" for _s, n, what, why, excerpt in group]
     out += ["", "## Where it goes on the internet"]
-    out += [f"- {host}" + (" (a usual place)" if host.endswith(USUAL) else " (not a place Mentor knows)") + f", line {uses[0][0]}"
+    out += [f"- {host}" + (" (a usual place)" if under(host, USUAL) else " (not a place Mentor knows)") + f", line {uses[0][0]}"
             for host, uses in sorted(hosts.items())] or ["- nowhere (no address in it)"]
     out += ["", "## Programs it installs"] + ([f"- {p}" for p in packages[:40]] or ["- none that it names"])
     out += ["", "## Files and folders it names"] + ([f"- {p}" for p in written[:40]] or ["- none"])
@@ -573,13 +590,38 @@ NEEDS_ROW = re.compile(r"(?m)^\|\s*Needs\s*\|\s*(.+?)\s*\|\s*$")
 PROGRAM = re.compile(r"^[a-z0-9][a-z0-9+._-]*$")
 
 
+def under(host, domains):
+    """Whether HOST is one of DOMAINS or a name under one: notgithub.com is not github.com, and microsoft.co is not
+    the shortener t.co (a plain endswith said both were; review of 2026-11-14)."""
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def logical_lines(lines):
+    """(first line number, the command) with lines that end in a backslash joined to the next."""
+    joined, start, parts = [], None, []
+    for number, line in enumerate(lines, 1):
+        if start is None:
+            start = number
+        if line.rstrip().endswith("\\"):
+            parts.append(line.rstrip()[:-1])
+            continue
+        parts.append(line)
+        joined.append((start, " ".join(parts)))
+        start, parts = None, []
+    if parts:
+        joined.append((start, " ".join(parts)))
+    return joined
+
+
 def parse_needs(text):
     """The programs the "Needs" row names, as written (only plain package-like names): ["chromium"]."""
     m = NEEDS_ROW.search(text)
     if not m:
         return []
     names = []
-    for part in re.split(r"[,;]|and", re.sub(r"\(.*?\)", "", m.group(1))):
+    # "and" as a word (\b): the pattern held two backspace characters in place of \b since 2026-10-25,
+    # so "chromium and git" was never split and both names were dropped (review of 2026-11-14)
+    for part in re.split(r"[,;]|\band\b", re.sub(r"\(.*?\)", "", m.group(1))):
         part = part.strip().strip("`").lower()
         if PROGRAM.match(part) and part not in ("nothing", "none", "no", "n", "a") and part not in names:
             names.append(part)

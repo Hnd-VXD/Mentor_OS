@@ -580,5 +580,11 @@
     "name": "14.11.26.02",
     "summary": "Chat fixes: a question in the Alt+Space box is no longer lost, and the chat says when the assistant stops without an answer.",
     "published": "2026-11-14 11:16"
+  },
+  {
+    "version": 202611141047,
+    "name": "14.11.26.03",
+    "summary": "Smaller fixes: Mentor Settings opens at large zoom, safer recipe checks, and volume keys come back by themselves.",
+    "published": "2026-11-14 12:48"
   }
 ]

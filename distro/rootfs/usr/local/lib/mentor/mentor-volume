@@ -16,6 +16,7 @@ puts everything back: the real output as the default, at the volume the virtual 
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -171,10 +172,30 @@ def watch():
             print(json.dumps({"volume": now[0], "mute": now[1]}), flush=True)
             sent = now
     log("pactl subscribe ended")
+    keys_back()  # the user's volume keys first: os._exit skips main's `finally` (review of 2026-11-14)
     os._exit(1)  # the sound server went away (the session ended): mentor-host-link starts this again
 
 
+def restore_keys():
+    """`mentor-volume restore-keys`, at every login (mentor-taskbar-quiet): volume keys left empty by a helper that
+    was stopped hard (shut down, logged out) get the user's values back, unless a helper runs now and wants them
+    empty. Without it a Mentor with no Windows volume to follow (a PC, an older launcher) kept dead volume keys."""
+    if not os.path.exists(KEYS_KEPT):
+        return 0
+    others = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", "mentor-volume$"], capture_output=True,
+                            text=True).stdout.split()
+    if [pid for pid in others if pid != str(os.getpid())]:
+        return 0
+    keys_back()
+    log("volume keys given back: they were left empty")
+    return 0
+
+
 def main():
+    if sys.argv[1:] == ["restore-keys"]:
+        return restore_keys()
+    # Stopped (a shutdown, the service stopping it): as an ordinary end, so that `finally` gives the keys back.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     real = real_sink()
     if not real:
         log("no sound output: nothing to do")

@@ -347,7 +347,7 @@ class RecipesWindow(Adw.ApplicationWindow):
                                  if wanted else "Switched off, its files kept")
             else:
                 switch.set_active(state["on"])  # as it was: nothing changed
-                row.set_subtitle("It could not be switched: " + out.strip()[:90])
+                row.set_subtitle(GLib.markup_escape_text("It could not be switched: " + out.strip()[:90]))
 
         def flipped(widget, _param):
             if widget.get_active() == state["on"]:
@@ -420,7 +420,7 @@ class RecipesWindow(Adw.ApplicationWindow):
 
         def done(result):
             if isinstance(result, Exception):
-                row.set_subtitle("It could not be copied: " + str(result)[:80])
+                row.set_subtitle(GLib.markup_escape_text("It could not be copied: " + str(result)[:80]))
                 return
             copy, based = result
             row.set_subtitle("Your own version is in Mine; Mentor has it in the chat")
@@ -509,7 +509,7 @@ class RecipesWindow(Adw.ApplicationWindow):
             except FileNotFoundError:
                 pass
             except OSError as e:
-                row.set_subtitle("It could not be deleted: " + (e.strerror or str(e)))
+                row.set_subtitle(GLib.markup_escape_text("It could not be deleted: " + (e.strerror or str(e))))
                 return
             if name:
                 mentor_recipes.off_set(name, False)

@@ -376,7 +376,11 @@ class Engine:
         except KeyboardInterrupt:
             process.terminate()
             say("\nStopped.")
-        process.wait()
+        try:  # a second Ctrl+C while it stops, or an engine that does not: neither leaves the console
+            process.wait(timeout=10)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            process.kill()
+            process.wait()
         self.flush()
         if self.refused and not carried:
             # Gemini may not use its own tools here (a refusal ends its turn): told so once and set
@@ -535,14 +539,24 @@ def choose(ask_user):
     first that is; or the user's pick. None when none is ready."""
     kept = settings()
     print("  Looking for an engine that is ready to answer...", flush=True)
-    ready = [provider for provider, (_name, test) in ENGINES.items() if test()]
+    ready = []
+    for provider, (_name, test) in ENGINES.items():
+        try:  # Ctrl+C skips the engine being asked (up to 40 s each), it does not leave the console
+            if test():
+                ready.append(provider)
+        except KeyboardInterrupt:
+            print()
     if not ready:
         return None
     wanted = kept.get("engine")
     if ask_user and len(ready) > 1:
         for number, provider in enumerate(ready, 1):
             say(f"{number}. {ENGINES[provider][0]}")
-        answer = input("  Which one? ").strip()
+        try:
+            answer = input("  Which one? ").strip()
+        except (EOFError, KeyboardInterrupt):  # as in talk(): a stray key does not leave the console
+            print()
+            answer = ""
         wanted = ready[int(answer) - 1] if answer.isdigit() and 0 < int(answer) <= len(ready) else wanted
     provider = wanted if wanted in ready else ready[0]
     return Engine(provider, kept.get("engine_model") if provider == kept.get("engine") else None)
@@ -634,7 +648,10 @@ def talk():
             "the instructions kept in /etc/mentor to find what is broken and mend it. Nothing is changed without "
             "your say: an approval is asked for with your password, here.")
         print()
-        say(verify())
+        try:  # Ctrl+C during the first look (up to 2 minutes) only skips it (review of 2026-11-14)
+            say(verify())
+        except KeyboardInterrupt:
+            say("(The check was skipped. /verify does it again.)")
     print()
     engine = choose(ask_user=False)
     if engine is None:
@@ -647,7 +664,10 @@ def talk():
                    "use tools only for what it does not say):\n\n" + snapshot())
     while True:
         if message:
-            engine.ask(message)
+            try:
+                engine.ask(message)
+            except KeyboardInterrupt:  # outside the engine's own reading (starting it, the end of its words)
+                say("\nStopped.")
         print()
         try:
             bind_paste()
@@ -664,7 +684,10 @@ def talk():
         if message == "/help":
             print("\n".join(chips(line) for line in HELP.splitlines()))
         elif message == "/verify":
-            say(verify())
+            try:
+                say(verify())
+            except KeyboardInterrupt:
+                say("(Stopped.)")
         elif message == "/desktop":
             if not EMERGENCY:
                 say("There is no desktop running to go back to: /restart starts it.")

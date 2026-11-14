@@ -5,6 +5,9 @@
 # stores the installed version first, so the taskbar has nothing to announce. See DESKTOP.md.
 metadata=/usr/share/gnome-shell/extensions/dash-to-panel@jderose9.github.com/metadata.json
 version=$(sed -n 's/.*"version": *\([0-9][0-9]*\).*/\1/p' "$metadata" 2>/dev/null | head -n 1)
+# Also at login: volume keys that a stopped one-volume helper left empty come back (mentor-volume restore-keys;
+# WINDOWS.md, "One volume"). Before the taskbar's part, which may end the script early.
+/usr/local/lib/mentor/mentor-volume restore-keys >/dev/null 2>&1 || true
 [ -n "$version" ] || exit 0
 [ "$(gsettings get org.gnome.shell.extensions.dash-to-panel extension-version 2>/dev/null)" = "$version" ] && exit 0
 exec gsettings set org.gnome.shell.extensions.dash-to-panel extension-version "$version"
