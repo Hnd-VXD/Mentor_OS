@@ -167,12 +167,48 @@ def _mentor_files():
         return set()
 
 
+RECORD_SOURCES = ("/var/log/mentor/audit.log", "/var/lib/mentor/changes")
+
+
 def _mentor_journal_text():
-    """What Mentor's assistant changed, as text, every user's: a path in it was Mentor's doing."""
+    """What Mentor's assistant did, as text: a path in it was Mentor's doing. From root's own records only: the
+    root side's audit log (every approved request that ran, with its arguments) and the changes applied through
+    the sandbox (/var/lib/mentor/changes/*/manifest.json). Until 2026-11-14 it was the assistant's journal in each
+    home, which any program running as the user could add its own path to, and so pass as Mentor's doing: online
+    without a card, and no "unusual program" card (a review found it; the user chose a record root keeps).
+    Something the assistant made in the home without root is not in it: it is judged as any program there."""
     text = []
-    for _name, home in _homes():
-        text.append(_read(os.path.join(home, ".local/state/mentor/journal.jsonl"), 8 << 20).decode("utf-8", "replace"))
+    try:
+        with open(RECORD_SOURCES[0], encoding="utf-8", errors="replace") as f:
+            for line in f.readlines()[-20000:]:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and entry.get("outcome") == "executed" and entry.get("exit_code") == 0:
+                    text.append(json.dumps(entry.get("args"), ensure_ascii=False))
+    except OSError:
+        pass
+    for manifest in glob.glob(os.path.join(RECORD_SOURCES[1], "*", "manifest.json")):
+        try:
+            with open(manifest, encoding="utf-8") as f:
+                change = json.load(f)
+            if change.get("state") == "applied":
+                text.extend("/" + str(rel).rstrip("/") for rel, _kind in change.get("entries", []))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
     return "\n".join(text)
+
+
+def record_stamp():
+    """Changes when the record above may have: for those that keep it read (mentor-netguard)."""
+    stamp = 0.0
+    for path in (RECORD_SOURCES[0], RECORD_SOURCES[1]):
+        try:
+            stamp += os.path.getmtime(path)
+        except OSError:
+            pass
+    return stamp
 
 
 def _appimage_mounts():
@@ -307,11 +343,15 @@ def _describe(p, conns=None, rate=None):
     return "\n".join(lines)
 
 
-def trusted(p, journal):
+def trusted(p, journal, strict=False):
     """A program that may work hard and wait for connections without a word: from a package, Mentor, Flatpak or
-    Steam, one of the AI engines Mentor set up, or one Mentor's assistant installed (a recipe, say: its journal
-    names it). The strong signs (mining, a disguise) count for every program."""
+    Steam, one of the AI engines Mentor set up, or one Mentor's assistant installed (root's record names it). The
+    strong signs (mining, a disguise) count for every program. STRICT (passwords, keys, browser data): nothing in
+    a home counts, the Flatpak and Steam folders and the AI engines there included, as any program of the user's
+    can put itself there (the user's choice, 2026-11-14)."""
     exe = p["exe"].replace(" (deleted)", "")
+    if strict and exe.startswith("/home/"):
+        return False
     return (p["origin"].startswith("package") or p["origin"] in ("mentor", "flatpak", "steam", "appimage")
             or bool(ENGINES.match(exe)) or exe in journal)
 
@@ -466,7 +506,7 @@ def secret_findings(touched, journal, found, now):
         if not program or event["uid"] == "0" and event["exe"] in _MENTOR:
             continue
         kept = next((f for f in found if f["key"] == "secrets:" + program), None)
-        if kept is None and trusted({"exe": program, "origin": origin(program)}, journal):
+        if kept is None and trusted({"exe": program, "origin": origin(program)}, journal, strict=True):
             continue
         place = (event["paths"] or ["?"])[0]
         if kept is not None:
@@ -483,6 +523,61 @@ def secret_findings(touched, journal, found, now):
                                  f"parent {event['ppid']}, at "
                                  f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['time']))}; command: "
                                  f"{event['command']}) opened, by the audit log:\n{place}",
+                      "since": now})
+    return found
+
+
+def root_only_findings(found, now):
+    """A card for each of Mentor's files that only root may read (the polkit rules, say) and that is no longer as
+    built. `mentor verify` runs as the user and passes over them, so the weekly watch never told of one (a review
+    found it; the user chose that this guard, which runs as root, looks). A change the user said was meant
+    (`mentor verify --accept`, in any home's ~/.config/mentor/verify-accepted.json) is left alone."""
+    try:
+        with open(MANIFEST) as f:
+            listed = [(digest, path.strip()) for digest, path in (line.split(None, 1) for line in f if "  " in line)]
+    except (OSError, ValueError):
+        return found
+    accepted = {}
+    for _name, home in _homes():
+        try:
+            with open(os.path.join(home, ".config/mentor/verify-accepted.json")) as f:
+                mine = json.load(f)
+            if isinstance(mine, dict):
+                accepted.update(mine)
+        except (OSError, ValueError):
+            pass
+    def others_can_read(path):
+        """By the file's mode and every folder above it: a polkit rule is 644 in a folder others cannot enter."""
+        if not os.stat(path).st_mode & 0o004:
+            return False
+        folder = os.path.dirname(path)
+        while folder not in ("/", ""):
+            if not os.stat(folder).st_mode & 0o001:
+                return False
+            folder = os.path.dirname(folder)
+        return True
+
+    for digest, path in listed:
+        try:
+            if others_can_read(path):
+                continue  # every user may read it: `mentor verify` sees it
+            with open(path, "rb") as f:
+                now_digest = hashlib.sha256(f.read()).hexdigest()
+        except FileNotFoundError:
+            now_digest = None
+        except OSError:
+            continue
+        if now_digest == digest or (now_digest and accepted.get(path) == now_digest):
+            continue
+        if any(f["key"] == "own:" + path for f in found):
+            continue
+        found.append({"key": "own:" + path, "level": "warning", "program": path,
+                      "title": "One of Mentor's protected files was changed",
+                      "text": f"{os.path.basename(path)} is {'gone' if now_digest is None else 'not as it was built'}.",
+                      "details": f"{path} is one of Mentor's files that only root may read, and it "
+                                 f"{'is missing' if now_digest is None else 'differs from the list of how it was built'}"
+                                 " (/etc/mentor/source/MANIFEST.sha256). `sudo mentor verify` shows it; `sudo mentor "
+                                 "restore PATH` puts it back as built.",
                       "since": now})
     return found
 
@@ -600,6 +695,7 @@ def scan():
     if not learning:
         previous_findings = secret_findings(touched, journal, previous_findings, now)
         previous_findings = own_findings(touched, journal, previous_findings, now)
+        previous_findings = root_only_findings(previous_findings, now)
     if before and not learning:
         changed = [path for path, digest in current.items() if before.get(path) != digest]
         package_time = _pacman_since(before.get("__time__", 0) if isinstance(before.get("__time__"), (int, float)) else 0)

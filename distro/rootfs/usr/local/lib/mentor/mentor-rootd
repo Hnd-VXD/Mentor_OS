@@ -80,15 +80,16 @@ FACTS = {
 }
 
 
-def said(action, args, explain, exact):
-    """The agent's sentence, or ours when it gave none; and for a user who asked for it
-    (Mentor Settings), or when there is no sentence of the agent's, the thing itself under it."""
+def said(action, args, explain, exact=None):
+    """The agent's sentence, or ours when it gave none, and always under it the thing itself, from what is really
+    asked for. Until 2026-11-14 the thing was shown only when the caller sent "exact": any program of the user's
+    could connect here, write the whole sentence ("install today's security update") and run something else
+    under it (a review found it; the user chose: keep the sentence, always add the real action). `exact` is no
+    longer needed for it and is ignored."""
     plain, thing = FACTS.get(action, ("Mentor wants to change your system.", lambda a: ""))
     reason = short(explain or "", 200)
-    if reason and not exact:
-        return reason
     named = thing(args)
-    return (reason or plain) + (f"\n\n{named}" if named and (exact or action != "run_root") else "")
+    return (reason or plain) + (f"\n\n{named}" if named else "")
 
 
 def answer(out, code, text=""):

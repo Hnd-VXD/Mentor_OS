@@ -592,5 +592,11 @@
     "name": "14.11.26.04",
     "summary": "Safer file tools: earlier versions are all kept, files are never left half written, and huge files no longer stall the assistant.",
     "published": "2026-11-14 13:01"
+  },
+  {
+    "version": 202611141139,
+    "name": "14.11.26.05",
+    "summary": "Stronger protections: the password window always says what will really happen, and the emergency console asks for your password when you log in by hand.",
+    "published": "2026-11-14 13:39"
   }
 ]

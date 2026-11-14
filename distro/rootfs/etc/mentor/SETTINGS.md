@@ -24,7 +24,7 @@ A window, **Mentor Settings**: in the application grid, in the right-click menu 
 | (tab Themes) **Background**, Desktop picture, **Change** | GNOME's own page for the desktop picture (Settings, Appearance: `/usr/local/bin/gnome-control-center background`); it was the desktop menu's Change Background…, now **Themes** (the user's wish, 2026-10-24) |
 | (tab Themes) **Accent** (nine sets under Dark and Light, in Window colors) | sets like Windows' "accent color on title bars and taskbar": the title bars and the taskbar in that color, the windows and the menus GNOME's dark with what is switched on in the color; each also sets GNOME's own accent color (`org.gnome.desktop.interface accent-color`). `mentor_colors.ACCENT_SETS`; `mentor colors "Orange accent"` from a command (DESKTOP.md, "Window colors", "Accent sets") |
 | (tab Themes) **Pointer**: Color (Black, White, Accent) and Size (a slider) | the mouse pointer, at once: `mentor_pointer.apply`, GNOME's `cursor-theme` and `cursor-size` (DESKTOP.md, "Pointer"); `mentor pointer` from a command |
-| **More choices** (folded away) | each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "A menu after Print Screen"; "Show the exact command when my password is asked" |
+| **More choices** (folded away) | each kind of warning (my safety, someone trying to connect, Mentor itself, the disk, programs in the background); "A menu after Print Screen" |
 
 The window has four tabs: **Settings** (the table above), **Themes** (Window colors with the Mixed and Accent sets, Pointer and Background: the rows of the table above that say so; `mentor settings themes` opens it, and so does **Themes** in the desktop's right-click menu), **Suggestions** (`mentor settings suggestions`) and **Updates** (`mentor settings updates` opens it): which Mentor this is ("Mentor 15.10.26.00"), an update that is waiting with **What's new?** and **Update**, "Look for an update now", and **Every update** this Mentor had, by year and then month (rows that open), newest first, each with **Ask Mentor**, and **Problems you reported** with **Report a problem** and each report's state, "Sent, not fixed yet" or "Fixed in Mentor NAME" (UPDATES.md).
 
@@ -41,7 +41,7 @@ Nothing in the window calls a model. "Ask Mentor" and "Let Mentor look" hand you
 | Telling the recipes site about a harmful recipe | the same file | `"report_to_hub": true` (the first value) or `false`; the switch is "Tell the recipes site about harmful recipes" under More choices |
 | Which recipes were used here, and what the user said of them | `~/.local/state/mentor/recipes-used.json` | shown in the Recipes app (not in Mentor Settings), each with a thumb up, a thumb down and "Take it away" |
 | The green card that offers to write down what was built | the same file | `"offer_recipes": true` (the first value) or `false`; the switch is "Offer to write down what I built" under More choices, and the card has "Don't suggest this" |
-| The exact command in the password dialog | the same file | `"exact": false` (the first value) or `true` |
+| The exact command in the password dialog | always shown since 2026-11-14 (`said` in `mentor-rootd`); `"exact"` in the same file is no longer read | |
 | The menu after a picture from Windows' Print Screen | the same file | `"picture_menu": true` (the first value) or `false`; the switch is "A menu after Print Screen" under More choices, and the menu has "Don't show this after Print Screen". Mentor's own screenshot keys always show it (DESKTOP.md, "The menu after a picture") |
 | Tips on or off, kinds never to hear of | `~/.config/mentor/advice.json` | `{"off": false, "never": ["github"], "until": {…}}` (SUGGESTIONS.md) |
 | The firewall on or off | the service `nftables` (enabled and started, or stopped and disabled) | SECURITY.md |
@@ -66,7 +66,7 @@ A key that is not in `settings.json` has its first value.
 | The file of choices | `/usr/local/lib/mentor/mentor_settings.py` | `load()`, `get(key)`, `put(key, value)`, `DEFAULTS` |
 | Who reads `watch_off` | `main` and `group` in `mentor-watch` | a finding whose group is switched off is not raised |
 | Who reads `auto_review` | `handle` in `mentor-firewall-watch`; `main` in `mentor-watch` (which then leaves refused connections to it) | SECURITY.md |
-| Who reads `exact` | `_ask_root` in `mentor_tools.py` passes it to `mentor-rootd`, whose `said` adds the line with the thing itself | TOOLS.md, "Who asks for the password" |
+| The line with the thing itself in the password dialog | `said` in `mentor-rootd` adds it always (it no longer depends on `exact`) | TOOLS.md, "Who asks for the password" |
 | The firewall's switch | `on_firewall` | `mentor_tools.call("service_control", …)` for `nftables`: `enable` and `start`, or `stop` and `disable`, with a sentence for the password dialog. It is written into the journal |
 | The tips' switches | read and write `advice.json` with `mentor_tools._advice_state()`; the assistant watches that file and the bell follows at once | |
 

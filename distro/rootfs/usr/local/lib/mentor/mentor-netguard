@@ -580,12 +580,7 @@ def known(program):
     names it). The user's own others in ~/.local are not: a harmful program can sit there too."""
     # The assistant's journal, read again as soon as it changes: a program a recipe has just installed goes online
     # right after (its check missed one read a minute before, 2026-10-20).
-    stamp = 0.0
-    for _name, home in mentor_guard._homes():
-        try:
-            stamp += os.path.getmtime(os.path.join(home, ".local/state/mentor/journal.jsonl"))
-        except OSError:
-            pass
+    stamp = mentor_guard.record_stamp()  # root's own record of what the assistant did (mentor_guard)
     if stamp != _journal["read"]:
         _journal["text"], _journal["read"] = mentor_guard._mentor_journal_text(), stamp
         _known.clear()

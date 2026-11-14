@@ -37,6 +37,10 @@ if [ "$tty" = tty1 ]; then
     esac
     printf '\033[?25h' > /dev/tty1  # the cursor: the kernel's command line hides it (vt.global_cursor_default=0)
 fi
+# On tty3 (the emergency key) with automatic login off, the password is asked (mentor-emergency-console).
+if [ "$tty" = tty3 ] && [ -z "$MENTOR_AUTOLOGIN" ]; then
+    exec /usr/bin/agetty --noclear "$tty" linux
+fi
 if [ -n "$user" ]; then
     exec /usr/bin/agetty --autologin "$user" --noclear "$tty" linux
 fi
