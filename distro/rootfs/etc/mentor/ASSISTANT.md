@@ -163,6 +163,13 @@ In the user's words: the desktop is empty; there is no chat; the chat does not o
 2. **It starts, and a message gets no answer.** That is the engine: ENGINES.md. The assistant shows the engine's own words in red; read them.
 3. **The conversations are gone after a login.** `~/.local/state/mentor/conversations.json`: a file that is not valid JSON is ignored. Everything said is still in `history.jsonl` beside it (History…).
 4. **One part misbehaves** (the bell, the timeline, attachments): find its functions by name in the table above, read them, and test a change as above.
+5. **What was fixed on 2026-11-14** (a review found these; if one comes back, look here first):
+   - A line of the engine's output that is not UTF-8 is skipped and the reading goes on (`on_line`: `read_line_finish_utf8` raises `G_CONVERT_ERROR_ILLEGAL_SEQUENCE`, the line is already taken): it had ended the turn while the engine went on unseen. Not `read_line_finish`: PyGObject gives `b""` at the end as for an empty line, and the chat read the end for ever (tested). A pipe that breaks stops the engine and says so. An engine that ends with not a word gets "The engine stopped without an answer" (`finish`). A message of 128 KiB or more in one argument is refused with words ("too long to send in one piece"), not "Could not start".
+   - A conversation opened from History sends its old text once (`brought_back`, `handover`), and Clear forgets it, its turns too (`clear`).
+   - Links in a suggestion's details are found before escaping (`linkify_markup`, `ADDRESS`): one in angle brackets or quotes made the whole text vanish.
+   - History reads past an entry longer than 64 KiB (`read_history` reads further back instead of stopping).
+   - `chat.json`, `advice.json` and `usage.json` are written whole (`write_json`: a `.new` file, then renamed) and never stop the action that saves them; on reading, values of the wrong kind are dropped (`advice_state`, `suggestions`, `usable_windows`): one wrong value had left a blank desktop at every login.
+   - A steps card shown again from the history folds and counts no time (`add_step`, `restore`); Codex's own shell rows count as live (`add_tool(..., restored=False)`).
 
 ## Making it again from nothing
 

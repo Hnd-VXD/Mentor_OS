@@ -986,9 +986,25 @@ def details_markup(details):
             head = f"<b>{linked(name, lines[-1].strip())}</b>" + (f"  {GLib.markup_escape_text(rest, -1)}" if rest else "")
             blocks.append("\n".join([head] + [GLib.markup_escape_text(line, -1) for line in lines[1:-1]]))
         else:
-            escaped = GLib.markup_escape_text(block, -1)
-            blocks.append(re.sub(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)]", lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', escaped))
+            blocks.append(linkify_markup(block))
     return "\n\n".join(blocks)
+
+
+ADDRESS = re.compile(r"https?://[^\s<>\"']+[^\s<>\"'.,;:!?)]")
+
+
+def linkify_markup(text):
+    """TEXT as markup, every web address in it a link. The addresses are found in the text as it is, then each piece
+    escaped: found in the escaped text, an address in angle brackets or quotes took `&gt` or `&quot` into its link,
+    the markup broke, and the details dialog showed nothing at all (review of 2026-11-14)."""
+    parts, at = [], 0
+    for m in ADDRESS.finditer(text):
+        parts.append(GLib.markup_escape_text(text[at:m.start()], -1))
+        address = GLib.markup_escape_text(m.group(0), -1)
+        parts.append(f'<a href="{address}">{address}</a>')
+        at = m.end()
+    parts.append(GLib.markup_escape_text(text[at:], -1))
+    return "".join(parts)
 
 
 def note_request(sandbox, text):
@@ -1176,10 +1192,24 @@ def load_settings():
         return {}
 
 
+def write_json(path, data):
+    """Write a file of the chat's whole or not at all (a new one, then renamed over it), and never fail its caller.
+    Written in place, a full disk or a stop mid-write left a cut file: chat.json read as {} put the user back at
+    "Connect the agent", advice.json brought back every suggestion turned away, and the OSError stopped the action
+    half way (review of 2026-11-14). False when it could not be written."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".new", "w") as f:
+            json.dump(data, f)
+        os.replace(path + ".new", path)
+        return True
+    except (OSError, TypeError, ValueError) as e:
+        print(f"mentor-chat: {path} could not be written: {e}", file=sys.stderr)
+        return False
+
+
 def save_settings(settings):
-    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
-    with open(SETTINGS_PATH, "w") as f:
-        json.dump(settings, f)
+    write_json(SETTINGS_PATH, settings)
 
 
 def key_path(provider, model=None):
@@ -1590,6 +1620,7 @@ class Conversation(Gtk.Box):
             return
         self.attachments.append(path)
         chip = Gtk.Box(spacing=2)
+        chip.path = path  # which file it stands for (close_ask takes an unasked screenshot's chip away)
         chip.add_css_class("attachment")
         name = Gtk.Label(label=os.path.basename(path) or path, max_width_chars=28,
                          ellipsize=Pango.EllipsizeMode.MIDDLE, tooltip_text=f"{path}\nClick to open")
@@ -1787,6 +1818,10 @@ class Conversation(Gtk.Box):
         self.tool_icons.clear()
         self.tool_items.clear()
         self.history = []
+        # Forgotten, as the dialog says, by the assistant too: a conversation reopened from History and then
+        # cleared still sent its old transcript with the next question (review of 2026-11-14).
+        self.reopened, self.brought_back = "", False
+        self.turn, self.engine_seen = 0, {}
         self.stray_output = []
         self.got_result = False
         self.last_said = ""
@@ -1829,9 +1864,12 @@ class Conversation(Gtk.Box):
             elif "took" in item:  # how long the steps before it took, kept when they ended (end_steps)
                 if self.steps is not None:
                     self.steps["took"] = item["took"]
+                    self.end_steps()
             else:
                 self.add_text(item.get("text", ""), user=item.get("user", False), error=item.get("error", False),
                               when=item.get("time") or 0, apps=item.get("apps"))
+        if self.steps is not None and self.steps.get("restored"):  # a turn that was stopped: its card folds too
+            self.end_steps()
 
     def stop(self):
         """Stop the engine at work, with whatever it started: Codex and Claude Code are
@@ -2500,8 +2538,10 @@ class Conversation(Gtk.Box):
             row.append(note)
         return self.add(row)
 
-    def add_tool(self, tool_id, name, arguments, described=False, failed=None):
-        """One row per tool call. `described` and `failed` are for a call shown again from the history."""
+    def add_tool(self, tool_id, name, arguments, described=False, failed=None, restored=None):
+        """One row per tool call. `described` and `failed` are for a call shown again from the history; `restored`
+        (by default as `described`) says it is from the history, not this turn: Codex's own shell rows come
+        described but live, and made the card a "restored" one with no time and no gear (review of 2026-11-14)."""
         detail = arguments
         if not described:
             name, detail = describe_tool(name, arguments)
@@ -2521,7 +2561,7 @@ class Conversation(Gtk.Box):
         row.append(text)
         if not described:
             self.tool_icons[tool_id] = icon
-        self.add_step(row, restored=described)
+        self.add_step(row, restored=described if restored is None else restored)
         if name == "security_investigate" and not described:
             self.steps["look"] = tool_id
 
@@ -2552,7 +2592,11 @@ class Conversation(Gtk.Box):
                           "start": time.time(), "end": None, "restored": restored}
             steps = self.steps
             # the time it has taken, counted on the card while the agent works
-            GLib.timeout_add_seconds(1, lambda: not steps["done"] and (self.show_steps(steps) or True))
+            # (not for a card shown again from the history, and only while the card is still in a conversation:
+            # one of a stopped turn, restored, or cleared away, kept counting every second for good; review)
+            if not restored:
+                GLib.timeout_add_seconds(1, lambda: not steps["done"] and steps["card"].get_root() is not None
+                                         and (self.show_steps(steps) or True))
 
             def turn():  # the gear, a step at a time, until the answer is there
                 if steps["done"] or (steps.get("turn") is not None and gear.get_root() is None):
@@ -2698,7 +2742,7 @@ class Conversation(Gtk.Box):
             if getattr(self, "reopened", ""):
                 prompt = ("This conversation is taken up again from History. What was said in it before (the start may "
                           "be cut):\n\n" + self.reopened + "\n\n---\n\n" + prompt)
-                self.reopened = ""
+                self.reopened, self.brought_back = "", True  # handover() then adds nothing: this holds all of it
             if self.quote:
                 quoted = "\n".join("> " + line for line in self.quote.splitlines())
                 prompt = f"About this, which you said earlier in this conversation:\n\n{quoted}\n\n{prompt}"
@@ -2805,10 +2849,17 @@ class Conversation(Gtk.Box):
             argv += ["--resume", self.sessions[self.engine]]
         if self.engine == "claude":
             argv += ["--", prompt]
+        if max(len(str(arg).encode()) for arg in argv) >= 128 * 1024:
+            # Linux takes no single argument of 128 KiB or more: the start failed as "Could not start" (review of
+            # 2026-11-14). A long paste goes in a file, attached, instead.
+            self.add_text("This message is too long to send in one piece. Put the long text in a file and attach it "
+                          "(the paper clip), with a short question.", error=True)
+            return
         self.trouble = None
         self.pending = ""
         self.stray_output = []
         self.got_result = False
+        self.last_said = ""  # of this turn: finish() tells a turn that ended with not a word
         if not carry_on:
             note_request(self.sandbox, shown or text)
         note_model(self.sandbox, self.window.model_name())
@@ -2833,10 +2884,23 @@ class Conversation(Gtk.Box):
         stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, self.process)
 
     def on_line(self, stream, result, process):
+        # A line that is not UTF-8 (stderr comes the same way) raised here, was taken for "the engine exited", and the
+        # engine went on working with no Stop button (review of 2026-11-14). That line is skipped (read_line has
+        # already taken it) and the reading goes on. Not read_line_finish: in PyGObject it gives b"" at the end as for
+        # an empty line, so the end could not be told (tested: the chat read the end for ever).
         try:
             line, _ = stream.read_line_finish_utf8(result)
-        except GLib.Error:
-            line = None
+        except GLib.Error as e:
+            if process is not self.process:
+                return
+            if e.matches(GLib.convert_error_quark(), GLib.ConvertError.ILLEGAL_SEQUENCE):
+                self.stray_output.append("(a line that was not text was left out)")
+                stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.on_line, process)
+                return
+            self.stray_output.append(f"What the engine said could not be read: {e.message}")
+            self.stop()  # the pipe itself broke: stopped, and said, not left running unseen
+            self.finish()
+            return
         if process is not self.process:
             return  # the tab was closed meanwhile
         if line is None:
@@ -2900,7 +2964,7 @@ class Conversation(Gtk.Box):
         elif kind == "item.completed" and item.get("type") == "command_execution":
             note_reading(self.sandbox, "shell", str(item.get("command", "")))
             self.add_tool(None, "shell", str(item.get("command", "")), described=True,
-                          failed=item.get("exit_code") not in (0, None))
+                          failed=item.get("exit_code") not in (0, None), restored=False)
         elif kind == "item.completed" and item.get("type") == "agent_message":
             self.on_block({"type": "text", "text": item.get("text", "")})
         elif "web" in str(item.get("type", "")):  # its own search of the web
@@ -3003,8 +3067,11 @@ class Conversation(Gtk.Box):
         if seen is None and self.sessions.get(engine):
             seen = self.turn - 1  # a conversation from before turns were counted: it knows it
         self.engine_seen[engine] = self.turn
-        if getattr(self, "reopened", ""):
-            return prompt  # taken up again from History: that brings the whole of it already
+        if getattr(self, "brought_back", False):
+            # Taken up again from History: the message brings the whole of it already. It looked at `reopened`,
+            # which send() had emptied a moment before, so the transcript went twice (review of 2026-11-14).
+            self.brought_back = False
+            return prompt
         missed = [item for item in self.history if item.get("text") and not item.get("error")
                   and (seen is None or item.get("turn", 0) > seen) and item.get("turn", 0) < self.turn]
         if not missed:
@@ -3029,6 +3096,10 @@ class Conversation(Gtk.Box):
         # The Antigravity CLI logs to the same place; when it has said what went wrong, that is enough.
         if self.stray_output and not self.got_result and not self.trouble:
             self.add_text("\n".join(self.stray_output[-8:]), error=True)
+        elif not self.got_result and not self.trouble and not self.last_said and not getattr(self, "carry_prompt", None):
+            # Gone with not a word (killed for memory, a crash): said, or the turn just ended in silence (review).
+            self.add_text("The engine stopped without an answer. Ask again; if it keeps happening, "
+                          "try another model.", error=True)
         if self.trouble and not self.got_result:
             signed_out = self.engine == "codex" and ("401" in self.trouble or "nauthorized" in self.trouble)
             self.add_text("ChatGPT is not signed in." if signed_out else self.trouble, error=True)
@@ -3633,13 +3704,20 @@ class DesktopWindow(Adw.ApplicationWindow):
                 if end is None:
                     end = f.seek(0, os.SEEK_END)
                 while end > 0 and len(entries) < count:
-                    start = max(0, end - 65536)
-                    f.seek(start)
-                    block = f.read(end - start)
-                    if start > 0:  # begin at the first whole line
-                        cut = block.find(b"\n") + 1
-                        if cut == 0:
+                    start, size = max(0, end - 65536), 65536
+                    while True:
+                        f.seek(start)
+                        block = f.read(end - start)
+                        # The last byte is the line end of the entry before `end`: a line end before it is wanted.
+                        # Counting that one, a block inside a long entry made no progress and History hung.
+                        cut = block.find(b"\n", 0, len(block) - 1) + 1 if start > 0 else 0
+                        if start == 0 or cut:
                             break
+                        # No line ends in it: one entry longer than the block (a long paste; Greek is 6 bytes a letter
+                        # in JSON). Read further back, not stop: History ended there for good (review of 2026-11-14).
+                        size *= 2
+                        start = max(0, end - size)
+                    if start > 0:  # begin at the first whole line
                         start, block = start + cut, block[cut:]
                     for line in reversed(block.splitlines()):
                         try:
@@ -4019,19 +4097,23 @@ class DesktopWindow(Adw.ApplicationWindow):
             state = {}
         if not isinstance(state, dict):
             state = {}
-        state.setdefault("off", False)
-        state.setdefault("never", [])   # kinds of suggestion not to make again
-        state.setdefault("until", {})   # a suggestion -> when it may be made again
-        state.setdefault("extra", [])   # cards the user asked for with "More", whole
-        state.setdefault("had", {})     # a group of "More" -> the keys of what it already gave
-        state.setdefault("hidden", {})  # an article the user hid -> its title, never shown again
-        state.setdefault("sources_off", [])  # where articles come from ("LWN") that the user wants no more of
+        # Each of the kind it must be: this file is written by Mentor Settings and the agent's tools too, and one
+        # value of another kind stopped the chat at its start, a blank desktop at every login (review of 2026-11-14).
+        for key, empty in (("off", False),
+                           ("never", []),        # kinds of suggestion not to make again
+                           ("until", {}),        # a suggestion -> when it may be made again
+                           ("extra", []),        # cards the user asked for with "More", whole
+                           ("had", {}),          # a group of "More" -> the keys of what it already gave
+                           ("hidden", {}),       # an article the user hid -> its title, never shown again
+                           ("sources_off", [])):  # where articles come from ("LWN") that the user wants no more of
+            if not isinstance(state.get(key), type(empty)):
+                state[key] = empty
+        state["until"] = {k: v for k, v in state["until"].items() if isinstance(v, (int, float))}
+        state["had"] = {k: v for k, v in state["had"].items() if isinstance(v, list)}
         return state
 
     def save_advice_state(self, state):
-        os.makedirs(os.path.dirname(ADVICE_STATE_PATH), exist_ok=True)
-        with open(ADVICE_STATE_PATH, "w") as f:
-            json.dump(state, f)
+        write_json(ADVICE_STATE_PATH, state)
 
     def suggestions(self):
         """What there is to suggest now, less what the user has put off or does not want to hear of."""
@@ -4040,7 +4122,9 @@ class DesktopWindow(Adw.ApplicationWindow):
             return []
         try:
             with open(ADVICE_PATH) as f:
-                found = [s for s in json.load(f) if isinstance(s, dict) and s.get("id") and s.get("prompt")]
+                found = json.load(f)
+            found = [s for s in (found if isinstance(found, list) else [])
+                     if isinstance(s, dict) and isinstance(s.get("id"), str) and s.get("prompt")]
         except (OSError, ValueError):
             found = []
         ids = {s["id"] for s in found}
@@ -4324,9 +4408,13 @@ class DesktopWindow(Adw.ApplicationWindow):
             self.tabs.set_selected_page(self.tabs.get_page(last if last in here else here[-1]))
         else:
             self.new_conversation()
-        # A workspace only passed through leaves no empty conversation behind.
+        # A workspace only passed through leaves no empty conversation behind. Not the one whose text box is up over
+        # the windows (Alt+Space shows on every workspace), nor one with words typed or files attached: closed, the
+        # lifted box lost the next question, and a draft was thrown away (review of 2026-11-14).
         for conversation in self.conversations():
-            if conversation.workspace != index and conversation.untouched and not conversation.first_run:
+            if (conversation.workspace != index and conversation.untouched and not conversation.first_run
+                    and not self.asking(conversation) and not conversation.entry.get_text().strip()
+                    and not conversation.attachments):
                 self.tabs.close_page(self.tabs.get_page(conversation))
         self.focus_entry()
 
@@ -4356,7 +4444,8 @@ class DesktopWindow(Adw.ApplicationWindow):
             self.get_application().shell("Show")  # nothing to ask yet: to the desktop, to connect an engine
             return
         os.makedirs(PASTED_DIR, exist_ok=True)
-        shot = os.path.join(PASTED_DIR, time.strftime("screen-%H%M%S.png"))
+        # A name of its own: by the time alone, one of a later day wrote over a picture an older conversation sent.
+        shot = os.path.join(PASTED_DIR, time.strftime("screen-%Y%m%d-%H%M%S-") + os.urandom(3).hex() + ".png")
         try:  # the shell takes it; nothing else may on Wayland
             self.get_application().get_dbus_connection().call_sync(
                 "org.gnome.Shell", "/org/mentor/Shell", "org.mentor.Shell", "Screenshot",
@@ -4409,12 +4498,22 @@ class DesktopWindow(Adw.ApplicationWindow):
         self.ask_slot.remove(conversation.bottom)
         conversation.bottom_home.set_child(conversation.bottom)
         conversation.bottom_home.set_size_request(-1, -1)
-        # A picture that was taken for a question never asked is not kept for the next one.
-        if self.ask_shot and conversation.attachments == [os.path.abspath(self.ask_shot)]:
-            conversation.attachments = []
-            while chip := conversation.attachment_bar.get_first_child():
-                conversation.attachment_bar.remove(chip)
-            conversation.attachment_bar.set_visible(False)
+        # A picture that was taken for a question never asked is not kept for the next one, whatever else is
+        # attached: with another file beside it, it stayed and went out with the next, unrelated message, and the
+        # file was never removed (review of 2026-11-14).
+        shot, self.ask_shot = (os.path.abspath(self.ask_shot) if self.ask_shot else None), None
+        if shot and shot in conversation.attachments:
+            chip = conversation.attachment_bar.get_first_child()
+            while chip is not None and getattr(chip, "path", None) != shot:
+                chip = chip.get_next_sibling()
+            if chip is not None:
+                conversation.detach(shot, chip)
+            else:
+                conversation.attachments.remove(shot)
+            try:
+                os.remove(shot)
+            except OSError:
+                pass
         conversation.entry.set_placeholder_text("Ask Mentor to do something\u2026")
         conversation.show_action()  # Send again, on the desktop
 
@@ -4550,6 +4649,8 @@ class DesktopWindow(Adw.ApplicationWindow):
                 closed.told_busy = True
                 closed.add_note("Mentor is still working here. Press the stop button first, or wait until it is done, then close it.")
             return Gdk.EVENT_STOP
+        if closed is self.ask_of:  # its text box is up over the windows: put back first, or it stayed there, orphaned
+            self.close_ask()
         closed.stop()
         closed.process = None  # what it may still say is no longer listened to
         for card in self.open_cards:  # not closed with the tab: they go to the one in front (place_cards)
@@ -4681,17 +4782,24 @@ class DesktopWindow(Adw.ApplicationWindow):
         except (OSError, ValueError):
             return {}
 
+    @staticmethod
+    def usable_windows(known):
+        """An account's allowance windows as kept, those of the right shape only, and whose reset has not passed:
+        usage.json holds what the engines said, and a reset given as text once stopped the chat at its start."""
+        windows = known.get("windows") if isinstance(known, dict) else None
+        number = (int, float)
+        return [w for w in windows if isinstance(w, dict)
+                and (w.get("resets") is None or isinstance(w["resets"], number) and w["resets"] > time.time())
+                and (w.get("used") is None or isinstance(w["used"], number))
+                and (w.get("minutes") is None or isinstance(w["minutes"], number))] \
+            if isinstance(windows, list) else []
+
     def set_usage(self, provider, windows):
         """Keep what an account said of its allowance, and show it."""
         if not windows:
             return
         self.usage[provider] = {"at": time.time(), "windows": windows}
-        try:
-            os.makedirs(os.path.dirname(USAGE_PATH), exist_ok=True)
-            with open(USAGE_PATH, "w") as f:
-                json.dump(self.usage, f)
-        except OSError:
-            pass
+        write_json(USAGE_PATH, self.usage)
         self.show_usage()
 
     def claude_usage(self, info):
@@ -4741,9 +4849,9 @@ class DesktopWindow(Adw.ApplicationWindow):
         """Fill the top of the model's menu, in every conversation: the model chosen, and under it
         the limits of its account where the engine tells them."""
         provider = MODELS[self.model_index][1]
-        known = self.usage.get(provider) or {}
-        # A window whose reset has passed says nothing about now.
-        windows = [w for w in known.get("windows", []) if not w.get("resets") or w["resets"] > time.time()]
+        known = self.usage.get(provider) if isinstance(self.usage.get(provider), dict) else {}
+        # A window whose reset has passed says nothing about now (usable_windows).
+        windows = self.usable_windows(known)
         for conversation in self.conversations():
             menu = conversation.model.get_popover()
             if menu is None:
@@ -4776,8 +4884,10 @@ class DesktopWindow(Adw.ApplicationWindow):
                 if window.get("used") is not None:
                     one.append(Gtk.ProgressBar(fraction=min(1.0, window["used"] / 100)))
                 box.append(one)
-            if windows:
+            if windows and isinstance(known.get("at"), (int, float)):
                 told = Gtk.Label(label=f"As {ACCOUNTS[provider][0]} last said, {told_when(known['at']).lower()}.", xalign=0)
+            elif windows:
+                told = Gtk.Label(label=f"As {ACCOUNTS[provider][0]} last said.", xalign=0)
             elif provider in ACCOUNTS:
                 told = Gtk.Label(label="Its limits show here after the first answer.", xalign=0)
             else:

@@ -574,5 +574,11 @@
     "name": "14.11.26.01",
     "summary": "Updates and changes are safer: one cut off half way is put back, and undo takes back only what Mentor changed.",
     "published": "2026-11-14 10:28"
+  },
+  {
+    "version": 202611140916,
+    "name": "14.11.26.02",
+    "summary": "Chat fixes: a question in the Alt+Space box is no longer lost, and the chat says when the assistant stops without an answer.",
+    "published": "2026-11-14 11:16"
   }
 ]
