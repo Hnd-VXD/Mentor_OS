@@ -598,5 +598,11 @@
     "name": "14.11.26.05",
     "summary": "Stronger protections: the password window always says what will really happen, and the emergency console asks for your password when you log in by hand.",
     "published": "2026-11-14 13:39"
+  },
+  {
+    "version": 202611141207,
+    "name": "14.11.26.06",
+    "summary": "The last fixes from the review: background commands no longer stall the assistant, and update cards reach PCs where you log in by hand.",
+    "published": "2026-11-14 14:08"
   }
 ]

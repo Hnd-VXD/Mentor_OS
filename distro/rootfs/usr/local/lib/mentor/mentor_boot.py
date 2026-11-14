@@ -476,9 +476,15 @@ def deadline():
     """During a start that tries something: no desktop in time means it failed."""
     if load()["phase"] != "running":
         return 0
-    started, greeter = time.monotonic(), None
-    while time.monotonic() - started < DEADLINE:
+    # Counted in steps of at most 5 seconds: the clock goes on while Windows keeps the VM paused (the PC asleep), and a
+    # trial start paused for a while looked as if it had run past its three minutes and was undone, though it worked
+    # (review of 2026-11-14; BOOT.md, "When Windows sleeps").
+    waited, greeter, last = 0.0, None, time.monotonic()
+    while waited < DEADLINE:
         time.sleep(3)
+        now = time.monotonic()
+        waited += min(now - last, 5.0)
+        last = now
         if os.path.exists(DESKTOP_OK) or load()["phase"] != "running":
             return 0
         # Without automatic login the login screen is as far as a start gets by itself.
@@ -489,7 +495,7 @@ def deadline():
                 open(DESKTOP_OK, "w").close()
                 return 0
     state = load()
-    if state["phase"] != "running":
+    if state["phase"] != "running" or os.path.exists(DESKTOP_OK):  # one last look: it may have just come up
         return 0
     state["reason"] = "deadline"
     save(state)

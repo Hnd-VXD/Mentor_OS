@@ -351,10 +351,21 @@ def settle(state):
 
 # --- the steps ---------------------------------------------------------------------------
 
+def look_again_soon():
+    """Look again in 10 minutes when nobody was logged in to be told. The daily timer's look comes a minute after the
+    start, before a user who logs in by hand has done so, and "later" was a day of uptime: a PC switched on daily
+    never showed an update card (review of 2026-11-14). One waiting look at a time (the unit's name is fixed)."""
+    subprocess.run(["systemd-run", "--quiet", "--unit=mentor-update-check-again", "--on-active=10min",
+                    "--timer-property=AccuracySec=1min", "systemctl", "start", "--no-block", "mentor-update-check.service"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def check():
     state = load()
     if not settle(state):
         log("looked: the last update is still being tried, or nobody is logged in to be told")
+        if not _session_user():
+            look_again_soon()
         return 0
     try:
         data, signature = _fetch("update.json", 64 << 10), _fetch("update.json.sig", 16 << 10)
@@ -398,7 +409,8 @@ def check():
         save(state)
         log(f"update {update['version']} ({update['name']}) offered")
     else:
-        log(f"looked: {update['name']} is waiting, but the card could not be left (nobody logged in?); tried again later")
+        log(f"looked: {update['name']} is waiting, but the card could not be left (nobody logged in?); looking again soon")
+        look_again_soon()
     return 0
 
 

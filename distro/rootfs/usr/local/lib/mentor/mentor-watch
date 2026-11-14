@@ -11,6 +11,7 @@ Among the checks is Mentor itself: whether its own files are all there and as th
 built (mentor verify), and whether the parts of its desktop work (mentor doctor); and the
 user's safety (mentor_security.checks: the firewall, the first password, and more).
 """
+import fcntl
 import json
 import os
 import re
@@ -163,8 +164,9 @@ def still_broken(found, now):
                 if part:
                     now_broken[part] = since.get(part, now)
     os.makedirs(os.path.dirname(SINCE_PATH), exist_ok=True)
-    with open(SINCE_PATH, "w") as f:
+    with open(SINCE_PATH + ".new", "w") as f:  # whole or not at all
         json.dump(now_broken, f)
+    os.replace(SINCE_PATH + ".new", SINCE_PATH)
     long = sorted(part for part, first in now_broken.items() if now - first >= REPORT_AFTER)
     if not long:
         return []
@@ -180,12 +182,41 @@ def still_broken(found, now):
              "shows now. Show me the report as it is and send it only after my yes.")]
 
 
-def main():
+def _load_raised():
     try:
         with open(STATE_PATH) as f:
             raised = json.load(f)
+        return raised if isinstance(raised, dict) else {}
     except (OSError, ValueError):
-        raised = {}
+        return {}
+
+
+def remember(raised, marks, unless_recent=None):
+    """Write marks ({key: time}) into watch.json under a lock, merged with what is there now, whole (a new file, then
+    renamed). The timer's run and the guard's (mentor-watch --guard) are two services that can run together: each
+    wrote the copy it had read minutes before, the other's marks were lost and a card came twice; and a stop mid-write
+    left the file cut, so every finding was raised again (review of 2026-11-14). With UNLESS_RECENT (a key and the
+    time it counts for), nothing is written and False returned when the file already has that key that recently:
+    the other run raised it a moment ago."""
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    with open(STATE_PATH + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        now = _load_raised()
+        if unless_recent:
+            key, within = unless_recent
+            if time.time() - now.get(key, 0) < within:
+                raised.update(now)
+                return False
+        now.update({k: max(v, now.get(k, 0)) for k, v in marks.items()})
+        with open(STATE_PATH + ".new", "w") as f:
+            json.dump(now, f)
+        os.replace(STATE_PATH + ".new", STATE_PATH)
+        raised.update(now)
+    return True
+
+
+def main():
+    raised = _load_raised()
     now = time.time()
     off = set(mentor_settings.get("watch_off") or [])
     if mentor_settings.get("auto_review"):
@@ -203,10 +234,8 @@ def main():
     for key, level, title, text, request in found:
         if now - raised.get(key, 0) < REMIND_AFTER or group(key) in off:
             continue
-        raised[key] = now
-        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-        with open(STATE_PATH, "w") as f:
-            json.dump(raised, f)
+        if not remember(raised, {key: now}, unless_recent=(key, REMIND_AFTER)):
+            continue  # the other run told of it a moment ago
         # A program waiting to go online (key "security:guard-net:BOOT:PROGRAM"): its card has Allow and Block.
         if key.startswith("security:guard-net:") and key.count(":") >= 3:
             waiting.append((key.split(":", 3)[3], level, title, text, request))
@@ -238,11 +267,7 @@ def net_notices(waiting, raised, now):
     card that names them, with Open Network… to answer each (twelve programs at once gave twelve cards and twelve
     looks, 2026-10-23). With "Let Mentor look by itself", one look, at most every NET_LOOK_EVERY seconds."""
     look = mentor_settings.get("auto_review") and now - raised.get("net-look", 0) >= NET_LOOK_EVERY
-    raised["net-card"] = now
-    if look:
-        raised["net-look"] = now
-    with open(STATE_PATH, "w") as f:
-        json.dump(raised, f)
+    remember(raised, {"net-card": now, **({"net-look": now} if look else {})})
     by_itself = (" This was noticed just now, by itself, and I did not ask: answer in three or four short sentences, "
                  "in simple words, what it is and what you would do.")
     if len(waiting) == 1:

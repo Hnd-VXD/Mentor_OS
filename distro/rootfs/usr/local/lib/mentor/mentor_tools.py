@@ -15,6 +15,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -125,19 +126,45 @@ def _clip(text, raw=False):
 
 def _run(argv, timeout=120, stdin=None, raw=False):
     """Run a command, returning (exit_code, combined output). `stdin` is text to feed it. RAW: not cut (_clip)."""
-    try:
-        p = subprocess.run(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", timeout=timeout,
-            **({"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}),
-        )
-        return p.returncode, _clip(p.stdout, raw)
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout or ""
-        if isinstance(out, bytes):
-            out = out.decode(errors="replace")
-        return 124, _clip(out, raw) + f"\n[timed out after {timeout}s]"
-    except FileNotFoundError:
-        return 127, f"command not found: {argv[0]}"
+    # The output goes to a file, and the wait is for the command itself, in a process group of its own. Through a
+    # pipe, `some-daemon &` kept it open: the call waited out its whole time, said "timed out" of a command that had
+    # worked, and the agent started it again; and on a real time-out only bash was stopped, not what it had started
+    # (review of 2026-11-14). A program left running in the background keeps running, as it would in a terminal.
+    with tempfile.TemporaryFile() as out:
+        try:
+            p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+                                 stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL)
+        except FileNotFoundError:
+            return 127, f"command not found: {argv[0]}"
+        try:
+            p.communicate(stdin.encode() if stdin is not None else None, timeout=timeout)
+            code = p.returncode
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)  # the command and all it started
+            except OSError:
+                pass
+            p.wait()
+            code = None
+        text = _read_output(out, raw)
+    if code is None:
+        return 124, _clip(text, raw) + f"\n[timed out after {timeout}s]"
+    return code, _clip(text, raw)
+
+
+def _read_output(out, raw):
+    """What a command wrote, from its file: whole when RAW, else its start and its end only (all _clip keeps), so
+    that a command that wrote gigabytes is not read into memory."""
+    size = out.seek(0, os.SEEK_END)
+    if raw or size <= 4 * MAX_OUTPUT:
+        out.seek(0)
+        return out.read().decode(errors="replace")
+    out.seek(0)
+    head = out.read(MAX_OUTPUT)
+    out.seek(size - 2 * MAX_OUTPUT)
+    tail = out.read()
+    return (head.decode(errors="replace") + f"\n[... {size - len(head) - len(tail)} bytes left out ...]\n"
+            + tail.decode(errors="replace"))
 
 
 # What the call in progress has to say to the journal beyond its arguments and its output.

@@ -87,6 +87,8 @@ mkinitcpio -P
 
 ## When Windows sleeps, and the launcher's shut down
 
+The trial start's three minutes (`deadline`) are counted in steps of at most 5 seconds, so a time the VM was paused does not count, and the desktop is looked for once more before giving up (since 2026-11-14: a working change was undone, and its update marked failed, after the PC slept during a trial start).
+
 A Mentor.exe from 2026-10-18 on pauses the VM itself just before Windows sleeps (QMP `stop`) and lets it go on when Windows wakes (`cont`), and shuts it down properly when Windows shuts down (WINDOWS.md, section 2; its lines are in `vm\launcher.log` on Windows, which the diagnostics file holds). The gap looks the same from here either way, so everything below still holds.
 
 **Windows pauses the VM while the PC sleeps** (Modern Standby). On 2026-10-14 a sleep of 88 minutes (Windows' System log: Kernel-Power 506 "entering Modern Standby", 507 "exiting") left the kernel saying `rcu: ... kthread starved for 5280247 jiffies`, and every service with a systemd watchdog (journald, logind, udevd, hostnamed: 3 minutes) was killed as hung on waking. logind restarting broke the desktop: the login screen started over the running session, which lost its screen and keyboard (`Device already taken`), and the VM's window looked frozen. A pause is not a hang, so **no service is watched that way here**: `/etc/systemd/system/service.d/10-mentor-no-watchdog.conf` and `/etc/systemd/user/service.d/…` set `WatchdogSec=0` for every service (`systemctl show -p WatchdogUSec systemd-logind` says 0). Tested by stopping the VM 4 minutes (QMP `stop`, `cont`): before, `systemd-hostnamed.service: Watchdog timeout`; after, nothing, and the session goes on.

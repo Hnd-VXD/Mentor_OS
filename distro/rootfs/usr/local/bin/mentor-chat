@@ -1871,6 +1871,10 @@ class Conversation(Gtk.Box):
         if self.steps is not None and self.steps.get("restored"):  # a turn that was stopped: its card folds too
             self.end_steps()
 
+    def same_model(self):
+        """Whether the model chosen now is the one the running answer is for (run_model_index, set in send)."""
+        return getattr(self, "run_model_index", self.window.model_index) == self.window.model_index
+
     def stop(self):
         """Stop the engine at work, with whatever it started: Codex and Claude Code are
         launchers that run the real program as a child, which would otherwise go on."""
@@ -2760,6 +2764,10 @@ class Conversation(Gtk.Box):
                 self.attachment_bar.set_visible(False)
                 self.entry.set_placeholder_text("Ask Mentor to do something\u2026")
         _, provider, model, _ = MODELS[self.window.model_index]
+        # The model this run is for: what it says of its model or its sign-in is about this one, and not about another
+        # chosen while it runs (it was: a finished run's auth error replaced the chat with "the key was not accepted"
+        # for the newly chosen provider; review of 2026-11-14).
+        self.run_model_index = self.window.model_index
         effort = EFFORTS[self.window.effort_index][1]
         key = folder = None
         prompt = self.handover(ENGINE_OF.get(provider, "agent"), prompt)
@@ -2924,7 +2932,7 @@ class Conversation(Gtk.Box):
         kind = event.get("type")
         if event.get("session_id"):
             self.sessions[self.engine] = event["session_id"]
-        if kind == "system" and event.get("subtype") == "init" and event.get("model"):
+        if kind == "system" and event.get("subtype") == "init" and event.get("model") and self.same_model():
             self.window.show_model(event["model"])
             note_model(self.sandbox, self.window.model_name())  # now with its version
         elif kind == "system" and event.get("subtype") == "status" and self.spinner:
@@ -2948,7 +2956,8 @@ class Conversation(Gtk.Box):
             # The CLI already said why as an assistant message, unless it failed before that.
             if event.get("subtype") != "success":
                 self.add_text(str(event.get("result") or event.get("subtype")), error=True)
-            self.window.check_sign_in(rejected=event.get("subtype") == "auth")
+            if self.same_model():
+                self.window.check_sign_in(rejected=event.get("subtype") == "auth")
 
     def on_codex_event(self, event):
         """The Codex CLI tells the same story in its own words (codex exec --json)."""
@@ -3103,7 +3112,8 @@ class Conversation(Gtk.Box):
         if self.trouble and not self.got_result:
             signed_out = self.engine == "codex" and ("401" in self.trouble or "nauthorized" in self.trouble)
             self.add_text("ChatGPT is not signed in." if signed_out else self.trouble, error=True)
-            self.window.check_sign_in()
+            if self.same_model():
+                self.window.check_sign_in()
         self.process = None
         self.set_busy(False)
         carry, self.carry_prompt = getattr(self, "carry_prompt", None), None

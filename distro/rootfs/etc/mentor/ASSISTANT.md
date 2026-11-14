@@ -170,6 +170,7 @@ In the user's words: the desktop is empty; there is no chat; the chat does not o
    - History reads past an entry longer than 64 KiB (`read_history` reads further back instead of stopping).
    - `chat.json`, `advice.json` and `usage.json` are written whole (`write_json`: a `.new` file, then renamed) and never stop the action that saves them; on reading, values of the wrong kind are dropped (`advice_state`, `suggestions`, `usable_windows`): one wrong value had left a blank desktop at every login.
    - A steps card shown again from the history folds and counts no time (`add_step`, `restore`); Codex's own shell rows count as live (`add_tool(..., restored=False)`).
+   - What an answer says of its model (its version) or its sign-in is applied only to the model it ran on (`run_model_index`, `same_model`): switched to another model meanwhile, a finished run's sign-in error had replaced the chat with "the key was not accepted" for the new one.
    - `mentor-chat --file PATH` takes a relative PATH from the caller's folder (`command_line.get_cwd()`), and pasted pictures get names of their own (`pasted-DATE-TIME-RANDOM.png`: two in one second had shared one).
 
 ## Making it again from nothing

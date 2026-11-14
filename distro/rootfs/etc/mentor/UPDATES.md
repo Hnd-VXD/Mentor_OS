@@ -75,6 +75,8 @@ The user can tell the **Mentor repair center** (that is what the user hears it c
 
 ## When something is wrong
 
+- **Nobody logged in when it looked** (a PC where the user logs in by hand: the daily look runs a minute after the start): it looks again every 10 minutes until someone is (`look_again_soon`: a transient timer `mentor-update-check-again`, `systemctl list-timers mentor-update-check-again` shows it). Before 2026-11-14 such a PC never got an update card.
+
 In the user's words: the update could not be installed; an update failed; the update was undone at the start; take an update back.
 
 - **"The update could not be installed"** (a red card) with "Nothing was changed": the sandbox was thrown away, and if the copy onto the system had begun (a disk that filled up half way), what it had changed was put back (`mentor_sandbox.apply`; the change is in `/var/lib/mentor/changes/ID/manifest.json` with state `rolled back`). With "Part of it could not be put back" instead (`ChangeHalfDone`): its state is still `applying`; `change_undo ID` (the id is in the card's text) tries again, and the next start does too (`mentor-boot check`, BOOT.md). Until 2026-11-14 a copy cut off half way left new files beside old ones with no record, and the card still said nothing was changed (a review found it). Read the last lines of the log and say in plain words why (offline, a package that could not be downloaded, the disk full). It is offered again tomorrow, or with Settings → Look.
