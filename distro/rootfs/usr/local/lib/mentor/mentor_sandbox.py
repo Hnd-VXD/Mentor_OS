@@ -460,30 +460,115 @@ def apply(summary, protected):
                            "discard it and redo the work: " + ", ".join("/" + s for s in stale[:20]))
 
     change_id = time.strftime("%Y%m%d-%H%M%S")
+    if os.path.exists(os.path.join(CHANGES, change_id)):  # a change put back a moment ago keeps its record
+        change_id += "-" + os.urandom(2).hex()
     record = os.path.join(CHANGES, change_id)
     before = os.path.join(record, "before")
     os.makedirs(before, mode=0o700)
     os.chmod(CHANGES, 0o755)
     os.chmod(record, 0o755)
 
-    for rel, kind in entries:
-        real, new = "/" + rel.rstrip("/"), _source(rel.rstrip("/"))
-        if kind != "added" and os.path.lexists(real):
-            _copy_tree(real, os.path.join(before, rel.rstrip("/")))
-        if kind in ("deleted", "replaced"):
-            _remove(real)
-        if kind == "replaced":
-            _copy_tree(new, real)
-        elif kind in ("added", "modified"):
-            _copy(new, real)
-
+    # Written down before the first file is touched, and each path as it is reached (PROGRESS, after its old version
+    # is kept): a change cut off half way is put back, here when a copy fails, at the next start after a power cut
+    # (mentor_boot.cut_off). Before 2026-11-14 the record came only at the end, and a disk that filled up half way
+    # left new files beside old ones with no way back, while the update's card said "Nothing was changed" (review).
     manifest = {"id": change_id, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "summary": summary,
-                "state": "applied", "entries": entries, "skipped": skipped}
-    with open(os.path.join(record, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=1)
+                "state": "applying", "entries": entries, "skipped": skipped}
+    _save_manifest(record, manifest)
+    try:
+        with open(os.path.join(record, PROGRESS), "a") as progress:
+            for rel, kind in entries:
+                real, new = "/" + rel.rstrip("/"), _source(rel.rstrip("/"))
+                if kind != "added" and os.path.lexists(real):
+                    _copy_tree(real, os.path.join(before, rel.rstrip("/")))
+                progress.write(rel + "\n")
+                progress.flush()
+                os.fsync(progress.fileno())
+                if kind in ("deleted", "replaced"):
+                    _remove(real)
+                if kind == "replaced":
+                    _copy_tree(new, real)
+                elif kind in ("added", "modified"):
+                    _copy(new, real)
+    except BaseException as e:
+        try:
+            _roll_back(record, manifest)
+        except Exception as again:
+            raise ChangeHalfDone(f"{e}; and putting back what it had changed failed too: {again}. The change "
+                                 f"is {change_id}: change_undo {change_id} tries again") from e
+        raise SandboxError(f"{e}. Everything it had changed was put back as it was") from e
+    manifest["state"] = "applied"
+    _save_manifest(record, manifest)
+    os.remove(os.path.join(record, PROGRESS))
     discard()
     refresh_others()
     return manifest
+
+
+PROGRESS = "progress"  # in a change being applied: the paths reached, one a line
+
+
+class ChangeHalfDone(SandboxError):
+    """A change failed half way and could not be put back fully."""
+
+
+def _save_manifest(record, manifest):
+    path = os.path.join(record, "manifest.json")
+    with open(path + ".new", "w") as f:
+        json.dump(manifest, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + ".new", path)
+
+
+def _roll_back(record, manifest):
+    """Put back what a change being applied had reached (PROGRESS): each such path as it was before."""
+    try:
+        with open(os.path.join(record, PROGRESS)) as f:
+            reached = set(f.read().splitlines())
+    except FileNotFoundError:
+        reached = set()
+    entries = [(rel, kind) for rel, kind in manifest["entries"] if rel in reached]
+    for rel, kind in sorted(entries, reverse=True):  # children first
+        real = "/" + rel.rstrip("/")
+        if kind == "added" and rel.endswith("/"):
+            if os.path.isdir(real) and not os.path.islink(real) and not os.listdir(real):
+                os.rmdir(real)
+        else:
+            _remove(real)
+    before = os.path.join(record, "before")
+    for rel, kind in sorted(entries):
+        saved = os.path.join(before, rel.rstrip("/"))
+        if kind != "added" and os.path.lexists(saved):
+            _copy_tree(saved, "/" + rel.rstrip("/"))
+    manifest["state"] = "rolled back"
+    _save_manifest(record, manifest)
+    try:
+        os.remove(os.path.join(record, PROGRESS))
+    except FileNotFoundError:
+        pass
+
+
+def unfinished():
+    """The changes that were being applied when the computer stopped."""
+    found = []
+    for change in changes():
+        if change.get("state") == "applying":
+            found.append(change)
+    return found
+
+
+def roll_back_unfinished():
+    """Put back every change cut off half way (mentor_boot.cut_off, early in a start). Returns (undone, not undone)
+    as mentor_boot.restore reports them."""
+    undone, kept = [], []
+    for manifest in unfinished():
+        try:
+            _roll_back(os.path.join(CHANGES, os.path.basename(manifest["id"])), manifest)
+            undone.append({"id": manifest["id"], "summary": manifest.get("summary", "")})
+        except Exception as e:
+            kept.append({"id": manifest["id"], "error": str(e)})
+    return undone, kept
 
 
 def changes():
@@ -506,6 +591,10 @@ def undo(change_id):
         raise SandboxError(f"there is no recorded change {change_id!r}")
     with open(path) as f:
         manifest = json.load(f)
+    if manifest["state"] == "applying":  # cut off half way: only what it reached is put back
+        _roll_back(record, manifest)
+        refresh_others()
+        return manifest
     if manifest["state"] != "applied":
         raise SandboxError(f"change {change_id} was already undone")
     # Take away what the change put there, children first, then put the old files back.

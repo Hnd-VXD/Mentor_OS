@@ -205,7 +205,7 @@ def kernel_version(path):
             offset = struct.unpack("<H", f.read(2))[0]
             f.seek(0x200 + offset)
             return f.read(256).split(b"\0")[0].decode().split()[0]
-    except (OSError, IndexError, UnicodeDecodeError):
+    except (OSError, IndexError, UnicodeDecodeError, struct.error):
         return None
 
 
@@ -225,9 +225,10 @@ def _keep_modules(version):
     """
     source = f"/usr/lib/modules/{version}"
     os.makedirs(MODULES, exist_ok=True)
-    if version and os.path.isdir(source):
-        shutil.rmtree(f"{MODULES}/{version}", ignore_errors=True)
-        subprocess.run(["cp", "-al", source, f"{MODULES}/{version}"], check=True)
+    if not version or not os.path.isdir(source):
+        return  # nothing to keep instead: what is kept stays (an unreadable version had them all deleted)
+    shutil.rmtree(f"{MODULES}/{version}", ignore_errors=True)
+    subprocess.run(["cp", "-al", source, f"{MODULES}/{version}"], check=True)
     for other in os.listdir(MODULES):
         if other != version:
             shutil.rmtree(f"{MODULES}/{other}", ignore_errors=True)
@@ -402,6 +403,35 @@ def restore(state, why):
         _restart()
 
 
+def cut_off():
+    """A change that was being applied when the computer stopped (power cut, a crash): half its files new, half
+    old, and no record that it was applied, so no trial and no undo would ever see it (review of 2026-11-14).
+    mentor_sandbox writes down what it touches as it goes; this puts those back, then starts again."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mentor_sandbox
+    try:
+        if not mentor_sandbox.unfinished():
+            return
+        mount_esp()  # what it touched may be on the boot partition, not mounted this early
+        undone, kept = mentor_sandbox.roll_back_unfinished()
+    except Exception as e:  # the start goes on whatever happens here
+        print(f"mentor-boot: unfinished changes: {e}", file=sys.stderr)
+        return
+    if not undone and not kept:
+        return
+    report = {"time": time.strftime("%Y-%m-%d %H:%M:%S"),
+              "why": "the computer stopped while a change was being applied, so it was put back",
+              "undone": undone, "not_undone": kept, "kernel_held": False}
+    _write(RESTORED, json.dumps(report, indent=1))
+    os.chmod(RESTORED, 0o644)
+    _audit("boot_cut_off", report)
+    if undone:
+        _fallback_emblem()
+        open(FELL_BACK, "w").close()
+        tell_host({"boot": "restoring"})
+        _restart()
+
+
 def check():
     """Early in every start: did the previous one, if it was a trial, make it?"""
     ensure_modules()
@@ -412,6 +442,7 @@ def check():
     if os.path.exists(FELL_BACK):
         os.remove(FELL_BACK)
         _fallback_emblem()
+    cut_off()
     state = load()
     trial = _trial_boot()
     if state["phase"] == "running":
@@ -470,16 +501,26 @@ def confirm():
     """The desktop is up: what this start tried has worked."""
     lock = _locked()
     state = load()
-    if mount_esp():
-        found = candidate()
-        mark = fingerprint(found)
-        tried = _trial_boot() and mark and mark == (state["candidate"] or mark)
-        if mark and (tried or not state["good"]):
-            promote(state, found, mark)
-        _default_is_ours()
+    # That it worked is written down first. The copy to the boot partition came first before 2026-11-14: when it
+    # failed (the partition full, or read-only after an unclean stop), the start stayed "running", and the next
+    # ordinary start undid every change that had worked and marked the working kernel as failed (review).
+    tried_kernel = state["kernel"]
     if state["phase"] == "running":
         state.update(phase="ok", attempts=0, changes=[], kernel=False, reason=None)
     save(state)
+    try:
+        if mount_esp():
+            found = candidate()
+            mark = fingerprint(found)
+            tried = _trial_boot() and mark and mark == (state["candidate"] or mark)
+            if mark and (tried or not state["good"]):
+                promote(state, found, mark)
+                save(state)
+            _default_is_ours()
+    except (OSError, ValueError, struct.error, subprocess.CalledProcessError) as e:
+        # Not kept as the one that works: arm() below offers it to the next start again, as a trial.
+        _audit("boot_confirm", {"kept_kernel": False, "error": str(e), "tried_kernel": tried_kernel})
+        print(f"mentor-boot: the kernel that started could not be kept as the one that works: {e}", file=sys.stderr)
     lock.close()
     arm()  # whatever changed in the meantime is for the start after this one
     tell_host({"boot": "ok"}, tries=5)

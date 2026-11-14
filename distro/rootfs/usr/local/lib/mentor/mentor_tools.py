@@ -113,26 +113,28 @@ def leave_notice(level, title, text="", prompt=None, auto=False, update=None, ac
     return path
 
 
-def _clip(text):
-    if len(text) <= MAX_OUTPUT:
+def _clip(text, raw=False):
+    """Long output cut in the middle, for the agent to read. RAW: whole, for what code parses (a JSON report, a
+    list looked up in): cut, those failed as soon as they passed 20,000 characters (review of 2026-11-14)."""
+    if raw or len(text) <= MAX_OUTPUT:
         return text
     head, tail = MAX_OUTPUT // 5, MAX_OUTPUT - MAX_OUTPUT // 5
     return f"{text[:head]}\n[... {len(text) - MAX_OUTPUT} characters omitted ...]\n{text[-tail:]}"
 
 
-def _run(argv, timeout=120, stdin=None):
-    """Run a command, returning (exit_code, combined output). `stdin` is text to feed it."""
+def _run(argv, timeout=120, stdin=None, raw=False):
+    """Run a command, returning (exit_code, combined output). `stdin` is text to feed it. RAW: not cut (_clip)."""
     try:
         p = subprocess.run(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", timeout=timeout,
             **({"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}),
         )
-        return p.returncode, _clip(p.stdout)
+        return p.returncode, _clip(p.stdout, raw)
     except subprocess.TimeoutExpired as e:
         out = e.stdout or ""
         if isinstance(out, bytes):
             out = out.decode(errors="replace")
-        return 124, _clip(out) + f"\n[timed out after {timeout}s]"
+        return 124, _clip(out, raw) + f"\n[timed out after {timeout}s]"
     except FileNotFoundError:
         return 127, f"command not found: {argv[0]}"
 
@@ -177,7 +179,7 @@ def _explained(door, a, plain, detail=""):
 ROOT_SOCKET = "/run/mentor-root.sock"
 
 
-def _ask_root(helper, action, args, timeout, stdin):
+def _ask_root(helper, action, args, timeout, stdin, raw=False):
     """Have Mentor's own root service do it (mentor-rootd): it asks for the password through
     the system's dialog like pkexec, but with words that say exactly what this is, and the
     agent's reason after them. None when the service is not there."""
@@ -188,16 +190,17 @@ def _ask_root(helper, action, args, timeout, stdin):
     except OSError:
         link.close()
         return None
+    answer = b""  # before the send: a send that timed out (a large file, the password not yet given) used it unset
     try:
         link.settimeout(timeout)
         link.sendall(json.dumps({"helper": os.path.basename(helper), "action": action, "args": args,
                                  "explain": _noted.get("explain"), "exact": bool(mentor_settings.get("exact")),
                                  "stdin": len(data)}).encode() + b"\n" + data)
-        answer = b""
         while chunk := link.recv(65536):
             answer += chunk
     except socket.timeout:
-        return 124, _clip(answer.decode(errors="replace")) + f"\n[timed out after {timeout}s]"
+        return 124, (_clip(answer.decode(errors="replace")) + f"\n[timed out after {timeout}s. It may still "
+                     "be running as root: look before trying again]")
     except OSError as e:
         return 1, f"the connection to Mentor's root service broke: {e}"
     finally:
@@ -205,13 +208,13 @@ def _ask_root(helper, action, args, timeout, stdin):
     out, mark, code = answer.rpartition(b"\n\0exit ")
     if not mark or not code.strip().isdigit():
         return 1, _clip(answer.decode(errors="replace")) + "\n[Mentor's root service ended without saying how]"
-    return int(code), _clip(out.decode(errors="replace"))
+    return int(code), _clip(out.decode(errors="replace"), raw)
 
 
-def _privileged(helper, action, args, timeout=1800, stdin=None):
+def _privileged(helper, action, args, timeout=1800, stdin=None, raw=False):
     # Mentor's own service first; pkexec, with its fixed words, when that is not there.
-    code, out = _ask_root(helper, action, args, timeout, stdin) or \
-        _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin)
+    code, out = _ask_root(helper, action, args, timeout, stdin, raw) or \
+        _run(["pkexec", helper, action, json.dumps(args)], timeout, stdin, raw)
     if code in (126, 127) or (code == 3 and "denied by policy" in out):
         _noted["declined"] = True  # nothing was done: not a line for the journal
     if code == 126:
@@ -251,10 +254,22 @@ def package_list(a):
     return _run(["pacman", "-Q" if a.get("include_dependencies") else "-Qe"])
 
 
+def _installed_packages(names):
+    """Which of these names are installed packages now."""
+    try:
+        p = subprocess.run(["pacman", "-Qq", "--", *names], capture_output=True, text=True, timeout=30)
+        return set(p.stdout.split())
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+
+
 def package_install(a):
     stop = _explained("manage", a, f"Mentor wants to add these programs to your system: {', '.join(a['packages'])}.")
     if stop:
         return stop
+    # What was there already is not this call's to take away: its undo names only the new ones (JOURNAL). "Install
+    # VLC" with VLC there was written down as an install, and undoing it uninstalled VLC (review of 2026-11-14).
+    _noted["already"] = sorted(_installed_packages(a["packages"]))
     return _privileged(HELPER, "pkg_install", {"packages": a["packages"]})
 
 
@@ -449,7 +464,7 @@ def _settings_catalog():
     except (OSError, ValueError, subprocess.TimeoutExpired) as e:
         return None, f"the settings' descriptions could not be read: {e}"
     if not language.lower().startswith(("c", "en", "posix")):
-        code, out = _run(["python3", "-c", _SETTINGS_DUMP], timeout=120)
+        code, out = _run(["python3", "-c", _SETTINGS_DUMP], timeout=120, raw=True)
         try:
             local = {(k["schema"], k["key"]): k for k in json.loads(out)} if code == 0 else {}
         except ValueError:
@@ -959,6 +974,8 @@ def flatpak_install(a):
     code, out = _flathub()
     if code:
         return code, out
+    # Already installed: no undo that would remove it (JOURNAL).
+    _noted["already"] = _run(["flatpak", "info", "--user", a["app_id"]], timeout=30)[0] == 0
     return _run(["flatpak", "install", "--user", "--noninteractive", "-y", "flathub", a["app_id"]], timeout=3600)
 
 
@@ -972,7 +989,18 @@ def extension_list(a):
     return _run(["gnome-extensions", "list", "--details"])
 
 
+def _enabled_extensions():
+    """The shell's list of enabled extensions (org.gnome.shell enabled-extensions), or None."""
+    code, out = _run(["gsettings", "get", "org.gnome.shell", "enabled-extensions"], timeout=15)
+    try:
+        return set(ast.literal_eval(out.strip().removeprefix("@as").strip())) if code == 0 else None
+    except (ValueError, SyntaxError):
+        return None
+
+
 def extension_set(a):
+    enabled = _enabled_extensions()  # as it was: an undo only when this call changed it (JOURNAL)
+    _noted["already"] = enabled is not None and (a["uuid"] in enabled) == bool(a["enabled"])
     code, out = _run(["gnome-extensions", "enable" if a["enabled"] else "disable", "--", a["uuid"]])
     folders = [os.path.expanduser(f"~/.local/share/gnome-shell/extensions/{a['uuid']}"),
                f"/usr/share/gnome-shell/extensions/{a['uuid']}"]
@@ -1026,7 +1054,7 @@ def sandbox_run(a):
 
 
 def _sandbox_report():
-    code, out = _privileged(SANDBOX, "sandbox_changes", {"sandbox": _sandbox()}, timeout=600)
+    code, out = _privileged(SANDBOX, "sandbox_changes", {"sandbox": _sandbox()}, timeout=600, raw=True)
     if code:
         return None, out
     try:
@@ -1983,6 +2011,7 @@ def webapp_install(a):
     wm_class = f"chrome-{parts.hostname}_{path_part}-Default"  # the host without a port, as Chromium names it
     os.makedirs(WEBAPP_FOLDER, exist_ok=True)
     target = os.path.join(WEBAPP_FOLDER, f"{WEBAPP_PREFIX}{slug}.desktop")
+    _noted["already"] = os.path.exists(target)  # one of that name was replaced: removing it is no way back (JOURNAL)
     with open(target + ".new", "w", encoding="utf-8") as f:
         f.write("[Desktop Entry]\nVersion=1.0\nType=Application\n"
                 f"Name={name}\nComment={name} in a window of its own\n"
@@ -2033,6 +2062,8 @@ def desktop_layout(a):
     layout = a["layout"]
     if layout not in LAYOUTS:
         return 2, f"layout must be one of: {', '.join(LAYOUTS)}"
+    enabled = _enabled_extensions()  # as it was: an undo only when this call changed it (JOURNAL)
+    _noted["already"] = enabled is not None and (TASKBAR_EXTENSION in enabled) == (layout == "taskbar")
     code, out = _run(["gnome-extensions", LAYOUTS[layout], TASKBAR_EXTENSION])
     return code, out or f"desktop layout is now: {layout}"
 
@@ -3701,9 +3732,9 @@ def package_peek(a):
         return 1, "not a package name"
     path = str(a.get("path") or "").strip()
     if _run(["pacman", "-Qq", name], timeout=30)[0] == 0:  # installed: its files are here
-        code, listed = _run(["pacman", "-Qlq", name], timeout=60)
+        code, listed = _run(["pacman", "-Qlq", name], timeout=60, raw=True)  # looked up in whole, shown cut
         if not path:
-            return code, f"{name} is installed; its files:\n{listed}"
+            return code, _clip(f"{name} is installed; its files:\n{listed}")
         target = path if path.startswith("/") else "/" + path
         if target not in listed.split("\n"):
             return 1, f"{target} is not a file of {name}"
@@ -4106,7 +4137,7 @@ TOOLS = {
         _schema({"path": _STR, "content": _STR, "explain": _EXPLAIN}, ["path", "content"]), file_write),
     "file_restore": (
         "Undo the last file_write to a file by restoring its previous version. Call again to go further back.",
-        _schema({"path": _STR}, ["path"]), file_restore),
+        _schema({"path": _STR, "explain": _EXPLAIN}, ["path"]), file_restore),
     "flatpak_search": (
         "Search Flathub for an application. Use it when pacman does not have the app.",
         _schema({"query": _STR}, ["query"]), flatpak_search),
@@ -4427,7 +4458,11 @@ def _commanded(where=""):
 
 
 JOURNAL = {
-    "package_install": lambda a, out: (f"installed packages: {', '.join(a['packages'])}", "package_remove, the same names"),
+    # Only what the call changed, and a way back only to that (_noted["already"], review of 2026-11-14).
+    "package_install": lambda a, out: (
+        lambda new: None if not new else (f"installed packages: {', '.join(new)}",
+                                          "package_remove, the same names"))(
+        [p for p in a["packages"] if p not in (_noted.get("already") or [])]),
     "package_remove": lambda a, out: (f"removed packages, and what only they needed: {', '.join(a['packages'])}",
                                       "package_install, the same names"),
     "system_upgrade": lambda a, out: None if "Nothing was upgraded" in out else (
@@ -4443,18 +4478,21 @@ JOURNAL = {
         f"wrote the file {os.path.abspath(os.path.expanduser(a['path']))}",
         f"file_restore {a['path']}" if "previous version saved" in out else "the file was new: remove it"),
     "file_restore": lambda a, out: f"put back the version before of {os.path.abspath(os.path.expanduser(a['path']))}",
-    "flatpak_install": lambda a, out: (f"installed the application {a['app_id']} from Flathub", f"flatpak_remove {a['app_id']}"),
+    "flatpak_install": lambda a, out: None if _noted.get("already") else (
+        f"installed the application {a['app_id']} from Flathub", f"flatpak_remove {a['app_id']}"),
     "flatpak_remove": lambda a, out: (f"removed the application {a['app_id']} (Flathub)", f"flatpak_install {a['app_id']}"),
-    "extension_set": lambda a, out: (
+    "extension_set": lambda a, out: None if _noted.get("already") else (
         f"{'enabled' if a['enabled'] else 'disabled'} the shell extension {a['uuid']}",
         f"extension_set {a['uuid']}, enabled {'false' if a['enabled'] else 'true'}"),
     "sandbox_apply": _applied,
     "change_undo": lambda a, out: f"undid the applied change {a['id']}",
     "wallpaper_set": lambda a, out: f"wallpaper: {os.path.abspath(os.path.expanduser(a['path']))}",
-    "desktop_layout": lambda a, out: (f"desktop layout: {a['layout']}",
+    "desktop_layout": lambda a, out: None if _noted.get("already") else (f"desktop layout: {a['layout']}",
                                       f"desktop_layout {'normal' if a['layout'] == 'taskbar' else 'taskbar'}"),
     "suggestions_restore": lambda a, out: f"brought back suggestions that were turned away: {a['what']}",
-    "webapp_install": lambda a, out: (f"made the web app {a['name']} ({a['url']})", f"webapp_remove {a['name']}"),
+    "webapp_install": lambda a, out: (
+        (f"made the web app {a['name']} ({a['url']}) in place of one of the same name", None) if _noted.get("already")
+        else (f"made the web app {a['name']} ({a['url']})", f"webapp_remove {a['name']}")),
     "webapp_remove": lambda a, out: f"removed the web app {a['name']}",
     "run_root_command": lambda a, out: f"as root: {a['command']}",
     "dbus": lambda a, out: (f"D-Bus call on the {a.get('bus') or 'session'} bus: {a.get('service')} "

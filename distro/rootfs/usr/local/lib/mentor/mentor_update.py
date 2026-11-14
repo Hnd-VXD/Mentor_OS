@@ -222,15 +222,18 @@ def download(update):
     path = f"{STATE_DIR}/{update['file']}"
     if _package_ok(update):
         return path
-    for old in os.listdir(STATE_DIR):  # one package at a time
-        if old.startswith("mentor-update-") and old != update.get("notes"):
-            os.remove(f"{STATE_DIR}/{old}")
+    # Fetched and checked beside the one waiting, which goes only once this one is whole: the waiting one's card
+    # may still be up, and a download that broke had left it with no package behind its Update button
+    # (review of 2026-11-14).
     with open(path + ".part", "wb") as f:
         f.write(_fetch(update["file"], update["size"], timeout=600))
-    os.replace(path + ".part", path)
-    if not _package_ok(update):
-        os.remove(path)
+    if os.path.getsize(path + ".part") != update["size"] or _sha256(path + ".part") != update["sha256"]:
+        os.remove(path + ".part")
         raise UpdateError("the package that arrived is not the one update.json describes")
+    os.replace(path + ".part", path)
+    for old in os.listdir(STATE_DIR):  # one package at a time
+        if old.startswith("mentor-update-") and old not in (update["file"], update.get("notes")):
+            os.remove(f"{STATE_DIR}/{old}")
     return path
 
 
@@ -605,7 +608,11 @@ def main(argv):
                 mentor_sandbox.discard()
             except Exception:
                 pass
-            notice("problem", "The update could not be installed", f"Nothing was changed. {e}",
+            # Said only when it is so: a change that failed half way is put back by mentor_sandbox.apply, and says
+            # so; one that could not be put back fully says that instead (review of 2026-11-14).
+            said = (f"Part of it could not be put back: {e}" if isinstance(e, mentor_sandbox.ChangeHalfDone)
+                    else f"Nothing was changed. {e}")
+            notice("problem", "The update could not be installed", said,
                    "--prompt", f"Mentor's update failed with this ({LOG} has the details): {e}\n\nExplain in plain "
                    "words what went wrong, using /etc/mentor/UPDATES.md. Do not change anything before I agree.")
         return 1

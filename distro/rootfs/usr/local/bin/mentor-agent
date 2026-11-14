@@ -235,13 +235,40 @@ def ask(base, key, body):
             raise Failed("error", "The provider sent an answer that could not be understood.")
 
 
+SHOWN = "What the tool showed:"  # the first words of the message a tool's picture comes in (not the user's)
+
+
+def _pictures_in(message):
+    content = message.get("content")
+    return isinstance(content, list) and any(part.get("type") == "image_url" for part in content)
+
+
+def _asked(message):
+    """A message of the user's: where a turn starts. Not the one a tool's picture came in."""
+    content = message.get("content")
+    first = content[0].get("text", "") if isinstance(content, list) and content else ""
+    return message.get("role") == "user" and first != SHOWN
+
+
 def trimmed(history):
-    """Drop the oldest turns once the conversation is too long to send; a turn starts at a user message."""
+    """The conversation, short enough to send. Older pictures go first (each about 300,000 characters as base64),
+    the newest kept; then the oldest turns, a turn starting at a message of the user's. Two screenshots in one
+    request had passed the limit, and the cut at the second picture's message dropped the request itself
+    (review of 2026-11-14)."""
+    if len(json.dumps(history)) <= MAX_HISTORY_CHARS:
+        return history
+    with_pictures = [i for i, m in enumerate(history) if _pictures_in(m)]
+    for i in with_pictures[:-1]:
+        history[i] = without_pictures([history[i]])[0]
+        if len(json.dumps(history)) <= MAX_HISTORY_CHARS:
+            return history
     while len(json.dumps(history)) > MAX_HISTORY_CHARS:
-        later = [i for i, m in enumerate(history) if m["role"] == "user" and i > 0]
+        later = [i for i, m in enumerate(history) if _asked(m) and i > 0]
         if not later:
             break
         history = history[later[0]:]
+    if len(json.dumps(history)) > MAX_HISTORY_CHARS:  # one request alone, still too long: no picture at all
+        history = without_pictures(history)
     return history
 
 
@@ -494,7 +521,7 @@ def main():
             emit({"type": "user", "message": {"content": [
                 {"type": "tool_result", "tool_use_id": call.get("id"), "content": output, "is_error": not ok}]}})
         if seen:  # a tool's answer is text; what it showed follows as a message of its own
-            history.append({"role": "user", "content": [{"type": "text", "text": "What the tool showed:"}, *seen]})
+            history.append({"role": "user", "content": [{"type": "text", "text": SHOWN}, *seen]})
         save()
 
     save()

@@ -366,6 +366,8 @@ To tell it works: `mentor --help` lists all of these, and `mentor boot` answers 
 
 How root writes a file (`write_file`, `restore_file`, `sandbox_apply`, undo): in the folder it opened and checked (`mentor_sandbox.open_folder`: refused, "is not the folder it was a moment ago", when a folder on the way became a link), to a new name made only where nothing is (`new_file`: `.NAME.mentor-new-RANDOM`, a link there is not followed), then renamed over the file in one step; the version there before is read without following a link. Until 2026-11-14 it wrote to the fixed name `PATH.mentor-new`, and a link a user's program put at that name sent root's write to any file, sudoers among them (a review found it). A leftover `.NAME.mentor-new-*` beside a file is from a write that was cut off: safe to remove.
 
+Output is cut to 20,000 characters for the agent to read (`_clip`), but kept whole where the tools themselves parse it (`raw`): the sandbox's report (`sandbox_changes`, `sandbox_apply`), the settings' descriptions in the user's language (`settings_find`), and a package's file list that `package_peek` looks a path up in. Cut, the report of a large change could not be read, so it could be neither previewed nor applied; Greek descriptions never loaded; and a file of a large package was called "not a file of" it (until 2026-11-14). A root request that runs past its time says "It may still be running as root: look before trying again" (a second pacman meets the lock of the first).
+
 ## How to tell that it works
 
 | Check | Good answer |

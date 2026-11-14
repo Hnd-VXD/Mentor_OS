@@ -5,6 +5,19 @@
 # stay safe to run again and again. A new service of Mentor's is enabled here, not in customize.sh,
 # or updates would never turn it on (UPDATES.md).
 set -e
+# A unit that comes with a package the user may have removed (qemu-guest-agent on a PC of its own, nftables): enabled
+# when it is there. With `set -e` one missing unit stopped this script, and so every update after it (review of
+# 2026-11-14). Mentor's own units are always there and are enabled directly, so that a fault in them still shows.
+enable_present() {
+    for unit in "$@"; do
+        # by its file, not `systemctl cat`: this runs where no systemd is running too (the image build's chroot)
+        if [ -e "/usr/lib/systemd/system/$unit" ] || [ -e "/etc/systemd/system/$unit" ]; then
+            systemctl enable "$unit" || echo "mentor-enable: $unit could not be enabled (masked?): left as it is" >&2
+        else
+            echo "mentor-enable: $unit is not installed: left as it is" >&2
+        fi
+    done
+}
 dconf update
 systemctl --global enable mentor-watch.timer mentor-firewall-watch.service mentor-recipe-watch.service \
     mentor-taskbar-quiet.service
@@ -36,7 +49,7 @@ systemctl enable mentor-geo.timer
 # GNOME asks after a change of language whether to rename Desktop, Documents, Downloads... into it; the
 # folders keep their names: Mentor's recipes live in ~/Documents/Mentor recipes (DESKTOP.md, "Folders").
 systemctl --global mask user-dirs-update-gtk.service
-systemctl enable gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
+enable_present gdm.service NetworkManager.service systemd-timesyncd.service qemu-guest-agent.service
 # Safe start-up: see usr/local/lib/mentor/mentor_boot.py.
 systemctl enable mentor-boot-check.service mentor-boot-deadline.service mentor-boot-confirm.path mentor-boot-arm.service
 # What each start says, to the launcher's file on Windows until the desktop is up (etc/mentor/BOOT.md,
@@ -46,7 +59,7 @@ systemctl enable mentor-advisor.timer
 # Updates of Mentor's own files, signed by its maker (etc/mentor/UPDATES.md).
 systemctl enable mentor-update-check.timer
 # The firewall: what comes in from other computers is refused (etc/nftables.conf, etc/mentor/SECURITY.md).
-systemctl enable nftables.service
+enable_present nftables.service
 # Where the agent's tools ask for root, with a password dialog that says exactly what for (mentor-rootd).
 systemctl enable mentor-root.socket
 systemctl enable mentor-power-button.service
@@ -54,7 +67,7 @@ systemctl enable mentor-power-button.service
 systemctl enable mentor-sentinel.service
 # The disk is told what has been deleted, after every start and weekly (etc/systemd/system/fstrim.timer.d,
 # etc/mentor/DESKTOP.md "Disk space"): on Windows that keeps Mentor's disk file from growing for ever.
-systemctl enable fstrim.timer
+enable_present fstrim.timer
 # The emergency key: Ctrl+Alt+Backspace opens the agent on tty3 even when the desktop is frozen.
 systemctl enable mentor-emergency-key.service
 # The languages offered in Settings, System, Region & Language (etc/mentor/DESKTOP.md, "Languages").
